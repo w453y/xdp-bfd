@@ -1,0 +1,16 @@
+CLANG   ?= clang
+CC      ?= gcc
+CFLAGS  := -O2 -g -Wall
+
+all: bfd_xdp.o bfd_loader
+
+bfd_xdp.o: bfd_xdp.c
+	$(CLANG) -O2 -g -Wall -target bpf -I/usr/include/x86_64-linux-gnu -c $< -o $@
+
+bfd_loader: loader.c
+	$(CC) $(CFLAGS) $< -o $@ -lbpf
+
+clean:
+	rm -f bfd_xdp.o bfd_loader
+
+.PHONY: all clean

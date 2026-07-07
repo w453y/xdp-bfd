@@ -62,6 +62,12 @@ The p50 of 8.75ms (not 10.00) is the signature: the wire distribution
 is the peer's own jittered TX echoed from softirq — the transmit clock
 has left userspace entirely.
 
+**FRR integration result:** the same session, created by an unmodified
+FRR bfdd and offloaded to this engine over FRR's own distributed-BFD
+dataplane protocol, survived the identical SCHED_FIFO stress with 0
+flaps (p50 8.99, p99 11.01, max 13.01ms) and uninterrupted uptime in
+`show bfd peers`. Putting FRR in the control loop cost nothing.
+
 Findings along the way:
 
 - "Userspace BFD inherently fails" is false: a tight recv-loop survives
@@ -94,6 +100,31 @@ Findings along the way:
   qdisc silently drops all untimestamped traffic on its band —
   including ARP. Scope its filter precisely and tear it down after.
 
+## Running under FRR (distributed BFD)
+
+Works with stock FRR (tested: 10.5.1), no patches. bfdd hands session
+lifecycle to this engine over its bfddp dataplane socket and displays
+state/counters it reads back from us (counters come from the XDP maps).
+
+1. `/etc/frr/daemons`:
+   `bfdd_options="  --daemon -A 127.0.0.1 --dplaneaddr ipv4c:127.0.0.1:50700"`
+2. Start the engine first: `sudo ./bfd_tx --dplane 50700 --kernel-tx <if>`
+3. `systemctl restart frr`, configure peers in vtysh as usual.
+
+Notes:
+- Use the TCP transport. FRR's `unixc:` dataplane client mode fails with
+  EINVAL: `bfd_dplane_client_init()` discards the caller's `salen` and
+  passes `sizeof(union)` (= 112, padded by `sockaddr_in6` alignment) to
+  `connect(2)`, which exceeds `sizeof(struct sockaddr_un)` (110) and is
+  rejected for AF_UNIX. strace-confirmed; upstream report pending
+  re-verification.
+- `show bfd peers counters`: input counts come from the XDP session map;
+  the output counter only reflects userspace-sent packets (handshake /
+  slow-rate) — kernel-path XDP_TX replies are not per-packet counted yet.
+- Sessions are torn down when bfdd disconnects and recreated on
+  reconnect (bfdd re-adds them); surviving a control-plane restart
+  without data-plane interruption is future work, not current behavior.
+
 ## Repo layout
 
 - `bfd_xdp.c` — XDP program: parser, session map, sweep timer, RX-clocked TX
@@ -110,8 +141,8 @@ ladders (fair CPU → sched churn → timer storm → SCHED_FIFO hogs).
 
 ## Roadmap
 
-- FRR distributed-BFD dataplane integration (`bfddp_packet.h` socket
-  protocol — no FRR patching required)
+- ~~FRR distributed-BFD dataplane integration~~ **done** — see
+  "Running under FRR" above
 - Multi-session, IPv6
 - Bare-metal benchmark reproduction
 

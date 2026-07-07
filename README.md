@@ -116,6 +116,6 @@ ladders (fair CPU → sched churn → timer storm → SCHED_FIFO hogs).
 - Bare-metal benchmark reproduction
 
 Prior art: [open-oam/bfd_program](https://github.com/open-oam/bfd_program)
-(2020, abandoned PoC — XDP receiver without a TX answer). The 2018
+(2020, abandoned proof-of-concept — XDP receiver and session validation; no released TX path). The 2018
 SRv6/eBPF fast-reroute literature validated the speed hypothesis
 academically.

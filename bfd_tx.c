@@ -63,6 +63,7 @@ static uint64_t now_us(void) {
 }
 
 int main(int argc, char **argv) {
+    setvbuf(stdout, NULL, _IOLBF, 0);
     if (argc >= 4 && !strcmp(argv[3], "--txtime")) use_txtime = 1;
     if (argc >= 5 && !strcmp(argv[3], "--kernel-tx")) {
         use_ktx = 1;

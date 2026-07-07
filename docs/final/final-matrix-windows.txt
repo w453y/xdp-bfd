@@ -1,0 +1,34 @@
+L1 1783427838
+stress-ng: info:  [11462] setting to a 1 min 30 secs run per stressor
+stress-ng: info:  [11462] dispatching hogs: 4 cpu
+stress-ng: info:  [11462] skipped: 0
+stress-ng: info:  [11462] passed: 4: cpu (4)
+stress-ng: info:  [11462] failed: 0
+stress-ng: info:  [11462] metrics untrustworthy: 0
+stress-ng: info:  [11462] successful run completed in 1 min 30.01 secs
+L2 1783427928
+stress-ng: info:  [11470] setting to a 1 min 30 secs run per stressor
+stress-ng: info:  [11470] dispatching hogs: 8 cpu, 4 switch, 4 yield
+stress-ng: info:  [11470] skipped: 0
+stress-ng: info:  [11470] passed: 16: cpu (8) switch (4) yield (4)
+stress-ng: info:  [11470] failed: 0
+stress-ng: info:  [11470] metrics untrustworthy: 0
+stress-ng: info:  [11470] successful run completed in 1 min 30.02 secs
+L3 1783428018
+stress-ng: info:  [11501] setting to a 1 min 30 secs run per stressor
+stress-ng: info:  [11501] dispatching hogs: 4 cpu, 8 timer, 4 timerfd, 2 hrtimers
+stress-ng: info:  [11501] skipped: 0
+stress-ng: info:  [11501] passed: 18: cpu (4) timer (8) timerfd (4) hrtimers (2)
+stress-ng: info:  [11501] failed: 0
+stress-ng: info:  [11501] metrics untrustworthy: 0
+stress-ng: info:  [11501] successful run completed in 1 min 30.03 secs
+L4 1783428108
+stress-ng: info:  [11547] setting to a 1 min 30 secs run per stressor
+stress-ng: info:  [11547] dispatching hogs: 4 cpu
+stress-ng: info:  [11547] skipped: 0
+stress-ng: info:  [11547] passed: 4: cpu (4)
+stress-ng: info:  [11547] failed: 0
+stress-ng: info:  [11547] metrics untrustworthy: 0
+stress-ng: info:  [11547] successful run completed in 1 min 30.00 secs
+SOAK 1783428198
+END 1783428498

@@ -1,0 +1,1 @@
+note: original run log accidentally overwritten post-test; log was silent during stress by design - see pcap for wire evidence

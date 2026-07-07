@@ -14,3 +14,6 @@ clean:
 	rm -f bfd_xdp.o bfd_loader
 
 .PHONY: all clean
+
+bfd_tx: bfd_tx.c
+	$(CC) $(CFLAGS) bfd_tx.c -o bfd_tx

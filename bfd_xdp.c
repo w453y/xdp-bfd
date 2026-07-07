@@ -78,6 +78,26 @@ struct {
 	__uint(max_entries, 1 << 18);
 } bfd_events SEC(".maps");
 
+/* What to say when we speak: written by userspace FSM. */
+struct tx_cfg {
+	__u32 enable;        /* 1 = kernel replies to each RX (Up only) */
+	__u32 my_disc;
+	__u32 your_disc;
+	__u32 min_tx_us;
+	__u32 min_rx_us;
+	__u8  state;
+	__u8  diag;
+	__u8  mult;
+	__u8  pad;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 64);
+	__type(key, struct session_key);
+	__type(value, struct tx_cfg);
+} tx_config SEC(".maps");
+
 struct sweep {
 	struct bpf_timer timer;
 	__u32 inited;
@@ -231,6 +251,42 @@ int bfd_observer(struct xdp_md *ctx)
 	if (!st->alive) {
 		st->alive = 1;
 		emit(&key, st, now, 1);
+	}
+
+	/* RX-clocked TX: rewrite this very frame into our control packet
+	 * and bounce it. Peer's clock becomes our clock; runs in softirq. */
+	struct tx_cfg *cfg = bpf_map_lookup_elem(&tx_config, &key);
+	if (cfg && cfg->enable) {
+		__u8 send_final = (bfd->flags & 0x20) ? 0x10 : 0;
+
+		/* L2 swap */
+		__u8 tmp[6];
+		__builtin_memcpy(tmp, eth->h_dest, 6);
+		__builtin_memcpy(eth->h_dest, eth->h_source, 6);
+		__builtin_memcpy(eth->h_source, tmp, 6);
+
+		/* L3 swap (checksum unaffected by swapping halves) */
+		__be32 tip = iph->saddr;
+		iph->saddr = iph->daddr;
+		iph->daddr = tip;
+
+		/* L4: our source port, dst 3784, no UDP csum (legal v4) */
+		udp->source = bpf_htons(49152);
+		udp->dest   = bpf_htons(BFD_PORT_1HOP);
+		udp->check  = 0;
+
+		/* BFD payload from config */
+		bfd->vers_diag   = (1 << 5) | (cfg->diag & 0x1f);
+		bfd->flags       = ((cfg->state & 0x3) << 6) | send_final;
+		bfd->detect_mult = cfg->mult;
+		bfd->len         = 24;
+		bfd->my_disc     = bpf_htonl(cfg->my_disc);
+		bfd->your_disc   = bpf_htonl(cfg->your_disc);
+		bfd->min_tx      = bpf_htonl(cfg->min_tx_us);
+		bfd->min_rx      = bpf_htonl(cfg->min_rx_us);
+		bfd->min_echo_rx = 0;
+
+		return XDP_TX;
 	}
 
 	return XDP_PASS;

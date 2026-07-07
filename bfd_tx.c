@@ -19,7 +19,24 @@
 
 static int use_txtime = 0;
 static uint64_t txtime_lead_ns = 5000000;
-static uint64_t pipe_until = 0;   /* enqueue 5ms early */
+static uint64_t pipe_until = 0;
+
+#include <bpf/libbpf.h>
+#include <bpf/bpf.h>
+#include <net/if.h>
+#include <linux/if_link.h>
+
+static int use_ktx = 0;
+static int ktx_ifindex = 0;
+static int tx_cfg_fd = -1, sess_map_fd = -1;
+struct skey { uint32_t peer_ip, local_ip; };
+static struct skey skey;
+struct scfg { uint32_t enable, my_disc, your_disc, min_tx_us, min_rx_us;
+              uint8_t state, diag, mult, pad; };
+struct sstate { uint64_t last_seen_ns, rx_pkts;
+                uint32_t remote_disc, local_disc, min_tx_us, min_rx_us;
+                uint8_t remote_state, remote_diag, detect_mult, alive; };
+   /* enqueue 5ms early */
 
 
 #define PORT_CTRL   3784
@@ -47,6 +64,11 @@ static uint64_t now_us(void) {
 
 int main(int argc, char **argv) {
     if (argc >= 4 && !strcmp(argv[3], "--txtime")) use_txtime = 1;
+    if (argc >= 5 && !strcmp(argv[3], "--kernel-tx")) {
+        use_ktx = 1;
+        ktx_ifindex = if_nametoindex(argv[4]);
+        if (!ktx_ifindex) { perror("ifname"); return 1; }
+    }
     if (argc < 3) { fprintf(stderr,"usage: %s <local-ip> <peer-ip> [--txtime]\n",argv[0]); return 1; }
 
     /* RX socket: bind <local-ip>:3784 */
@@ -67,6 +89,25 @@ int main(int argc, char **argv) {
     inet_pton(AF_INET, argv[2], &pa.sin_addr);
     connect(tx,(void*)&pa,sizeof pa);
 
+    if (use_ktx) {
+        struct bpf_object *obj = bpf_object__open_file("bfd_xdp.o", NULL);
+        if (!obj || bpf_object__load(obj)) {
+            fprintf(stderr, "bfd_xdp.o load failed\n"); return 1;
+        }
+        struct bpf_program *pr =
+            bpf_object__find_program_by_name(obj, "bfd_observer");
+        if (bpf_xdp_attach(ktx_ifindex, bpf_program__fd(pr),
+                           XDP_FLAGS_DRV_MODE, NULL)) {
+            fprintf(stderr, "XDP attach failed (is bfd_loader running?)\n");
+            return 1;
+        }
+        tx_cfg_fd   = bpf_object__find_map_fd_by_name(obj, "tx_config");
+        sess_map_fd = bpf_object__find_map_fd_by_name(obj, "bfd_sessions");
+        inet_pton(AF_INET, argv[2], &skey.peer_ip);
+        inet_pton(AF_INET, argv[1], &skey.local_ip);
+        printf("bfd_tx: kernel-tx mode, XDP attached\n");
+    }
+
     if (use_txtime) {
         struct sock_txtime st = { .clockid = CLOCK_TAI, .flags = 0 };
         if (setsockopt(tx, SOL_SOCKET, SO_TXTIME, &st, sizeof st)) {
@@ -84,6 +125,7 @@ int main(int argc, char **argv) {
     uint32_t r_min_rx = 0, r_min_tx = 0;
     int      r_mult = 0;
     int      send_final = 0;
+    int      just_up = 0;
     uint64_t last_rx = 0, next_tx = now_us();
 
     printf("bfd_tx: disc=%u %s -> %s\n", my_disc, argv[1], argv[2]);
@@ -118,6 +160,7 @@ int main(int argc, char **argv) {
                 break;
             }
             if (state != old) {
+                just_up = (state == ST_UP);
                 printf("[%llu] %s -> %s (peer sent %s)\n",
                        (unsigned long long)now_us(),
                        stname[old], stname[state], stname[ps]);
@@ -138,10 +181,38 @@ int main(int argc, char **argv) {
                 next_tx = t + cur_iv;
         }
 
+        if (use_ktx) {
+            static int pushed_state = -1;
+            struct sstate ss;
+            if (state == ST_UP &&
+                bpf_map_lookup_elem(sess_map_fd, &skey, &ss) == 0) {
+                if (ss.last_seen_ns/1000 > last_rx)
+                    last_rx = ss.last_seen_ns/1000;
+                if (ss.remote_state == ST_DOWN) {
+                    printf("[%llu] Up -> Down (map: peer sent Down)\n",
+                           (unsigned long long)now_us());
+                    state = ST_DOWN; diag = 3;
+                    next_tx = now_us();
+                }
+            }
+            if (state != pushed_state) {
+                struct scfg c = {
+                    .enable = (state == ST_UP),
+                    .my_disc = my_disc, .your_disc = rdisc,
+                    .min_tx_us = MIN_TX_US, .min_rx_us = MIN_RX_US,
+                    .state = state, .diag = diag, .mult = DETECT_MULT,
+                };
+                bpf_map_update_elem(tx_cfg_fd, &skey, &c, 0);
+                pushed_state = state;
+            }
+        }
+
         /* ---- detect timeout ---- */
         if (state != ST_DOWN && last_rx) {
             uint64_t iv = r_min_tx > MIN_RX_US ? r_min_tx : MIN_RX_US;
-            if (t - last_rx > (uint64_t)(r_mult ? r_mult : DETECT_MULT) * iv) {
+            int64_t sdelta = (int64_t)(t - last_rx);
+            if (sdelta < 0) sdelta = 0;   /* map stamped newer than our t snapshot */
+            if ((uint64_t)sdelta > (uint64_t)(r_mult ? r_mult : DETECT_MULT) * iv) {
                 printf("[%llu] DETECT TIMEOUT: %s -> Down (silent %.1fms)\n",
                        (unsigned long long)t, stname[state],
                        (t - last_rx)/1000.0);
@@ -150,7 +221,7 @@ int main(int argc, char **argv) {
         }
 
         /* ---- TX ---- */
-        if (t >= next_tx || send_final) {
+        if ((t >= next_tx || send_final) && !(use_ktx && state == ST_UP && !send_final && !just_up)) {
             struct bfdpkt o = {0};
             o.vers_diag = (1<<5) | (diag & 0x1f);
             o.flags     = (state<<6) | (send_final ? F_F : 0);
@@ -196,6 +267,7 @@ int main(int argc, char **argv) {
             }
             printf("TX st=%d f=%02x\n", state, o.flags);
             send_final = 0;
+            just_up = 0;
 
             uint64_t iv;
             if (state == ST_UP) {

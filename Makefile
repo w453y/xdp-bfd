@@ -16,4 +16,4 @@ clean:
 .PHONY: all clean
 
 bfd_tx: bfd_tx.c
-	$(CC) $(CFLAGS) bfd_tx.c -o bfd_tx
+	$(CC) $(CFLAGS) bfd_tx.c -o bfd_tx -lbpf

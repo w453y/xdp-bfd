@@ -1,2 +1,3 @@
 *.o
 bfd_loader
+bfd_tx

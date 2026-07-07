@@ -14,6 +14,13 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
+#include <linux/net_tstamp.h>
+#include <linux/errqueue.h>
+
+static int use_txtime = 0;
+static uint64_t txtime_lead_ns = 5000000;
+static uint64_t pipe_until = 0;   /* enqueue 5ms early */
+
 
 #define PORT_CTRL   3784
 #define SRC_PORT    49152        /* RFC 5881: source in 49152..65535 */
@@ -39,7 +46,8 @@ static uint64_t now_us(void) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 3) { fprintf(stderr,"usage: %s <local-ip> <peer-ip>\n",argv[0]); return 1; }
+    if (argc >= 4 && !strcmp(argv[3], "--txtime")) use_txtime = 1;
+    if (argc < 3) { fprintf(stderr,"usage: %s <local-ip> <peer-ip> [--txtime]\n",argv[0]); return 1; }
 
     /* RX socket: bind <local-ip>:3784 */
     int rx = socket(AF_INET, SOCK_DGRAM, 0);
@@ -58,6 +66,14 @@ int main(int argc, char **argv) {
     struct sockaddr_in pa = { .sin_family=AF_INET, .sin_port=htons(PORT_CTRL) };
     inet_pton(AF_INET, argv[2], &pa.sin_addr);
     connect(tx,(void*)&pa,sizeof pa);
+
+    if (use_txtime) {
+        struct sock_txtime st = { .clockid = CLOCK_TAI, .flags = 0 };
+        if (setsockopt(tx, SOL_SOCKET, SO_TXTIME, &st, sizeof st)) {
+            perror("SO_TXTIME"); return 1;
+        }
+        printf("bfd_tx: SO_TXTIME mode, lead=%.1fms\n", txtime_lead_ns/1e6);
+    }
 
     srandom(getpid() ^ time(NULL));
     uint32_t my_disc = (random() & 0x7fffffff) | 1;
@@ -106,6 +122,7 @@ int main(int argc, char **argv) {
                        (unsigned long long)now_us(),
                        stname[old], stname[state], stname[ps]);
                 next_tx = now_us();          /* speak up immediately */
+                pipe_until = 0;
             }
         }
 
@@ -143,7 +160,41 @@ int main(int argc, char **argv) {
             o.your_disc = htonl(rdisc);
             o.min_tx    = htonl(state==ST_UP ? MIN_TX_US : SLOW_TX_US);
             o.min_rx    = htonl(MIN_RX_US);
-            send(tx, &o, 24, 0); printf("TX st=%d f=%02x\n", state, o.flags);
+            if (!use_txtime) {
+                send(tx, &o, 24, 0);
+            } else {
+                struct timespec rt; clock_gettime(CLOCK_TAI, &rt);
+                uint64_t now_tai = (uint64_t)rt.tv_sec*1000000000ull + rt.tv_nsec;
+                uint64_t min_launch = now_tai + txtime_lead_ns;
+                uint64_t iv_ns = (uint64_t)(MIN_TX_US > r_min_rx ? MIN_TX_US : r_min_rx) * 1000ull;
+                char cbuf[CMSG_SPACE(sizeof(uint64_t))];
+                struct iovec iov = { .iov_base = &o, .iov_len = 24 };
+                struct msghdr mh = { .msg_iov = &iov, .msg_iovlen = 1,
+                                     .msg_control = cbuf,
+                                     .msg_controllen = sizeof cbuf };
+                struct cmsghdr *cm = CMSG_FIRSTHDR(&mh);
+                cm->cmsg_level = SOL_SOCKET;
+                cm->cmsg_type  = SCM_TXTIME;
+                cm->cmsg_len   = CMSG_LEN(sizeof(uint64_t));
+
+                if (state != ST_UP || send_final) {
+                    /* urgent or handshake: launch ASAP, drop pipeline */
+                    memcpy(CMSG_DATA(cm), &min_launch, sizeof min_launch);
+                    if (sendmsg(tx, &mh, 0) < 0) perror("sendmsg txtime");
+                    pipe_until = 0;
+                } else {
+                    /* steady Up: top the etf queue up to 5 intervals,
+                     * send nothing if already full (no cursor drift) */
+                    if (pipe_until < min_launch) pipe_until = min_launch;
+                    while (pipe_until < now_tai + 5*iv_ns) {
+                        uint64_t launch = pipe_until;
+                        memcpy(CMSG_DATA(cm), &launch, sizeof launch);
+                        if (sendmsg(tx, &mh, 0) < 0) perror("sendmsg txtime");
+                        pipe_until = launch + iv_ns;
+                    }
+                }
+            }
+            printf("TX st=%d f=%02x\n", state, o.flags);
             send_final = 0;
 
             uint64_t iv;

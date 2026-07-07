@@ -1,0 +1,148 @@
+bfd_tx: SO_TXTIME mode, lead=5.0ms
+bfd_tx: disc=1316591367 10.66.0.1 -> 10.66.0.2
+TX st=1 f=40
+[51119576807] Down -> Up (peer sent Init)
+TX st=3 f=d0
+[51160311943] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51160311948] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51160315272] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51162262744] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51162262749] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51162265859] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51164213457] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51164213461] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51164216563] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51165654072] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51165654080] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51165661635] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51166433081] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51166433086] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51166436185] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51167493213] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51167493218] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51167498031] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51168534071] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51168534075] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51168537172] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51169328084] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51169328091] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51169332040] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51171565069] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51171565075] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51171569038] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51172417100] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51172417106] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51172420211] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51174096059] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51174096065] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51174099239] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51175192055] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51175192060] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51175195167] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51176067090] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51176067095] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51176070230] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51177239125] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51177239132] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51177243017] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51178792080] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51178792085] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51178795195] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51180776049] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51180776053] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51180779155] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51181737051] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51181737058] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51181740168] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51182750088] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51182750092] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51182753194] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51183574088] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51183574094] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51183578027] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51184744094] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51184744099] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51184747197] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51186694778] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51186694783] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51186697884] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51188007069] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51188007075] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51188010170] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51188692085] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51188692090] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51188695194] Init -> Up (peer sent Up)
+TX st=3 f=d0
+[51190211066] Up -> Down (peer sent Down)
+TX st=1 f=40
+[51190211072] Down -> Init (peer sent Down)
+TX st=2 f=80
+[51190215033] Init -> Up (peer sent Up)

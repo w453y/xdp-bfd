@@ -116,8 +116,9 @@ Notes:
   EINVAL: `bfd_dplane_client_init()` discards the caller's `salen` and
   passes `sizeof(union)` (= 112, padded by `sockaddr_in6` alignment) to
   `connect(2)`, which exceeds `sizeof(struct sockaddr_un)` (110) and is
-  rejected for AF_UNIX. strace-confirmed; upstream report pending
-  re-verification.
+  rejected for AF_UNIX. strace-confirmed. Reported upstream as
+  [FRRouting/frr#22608](https://github.com/FRRouting/frr/issues/22608);
+  fix submitted as [FRRouting/frr#22621](https://github.com/FRRouting/frr/pull/22621).
 - `show bfd peers counters`: input counts come from the XDP session map;
   the output counter only reflects userspace-sent packets (handshake /
   slow-rate) — kernel-path XDP_TX replies are not per-packet counted yet.

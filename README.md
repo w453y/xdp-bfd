@@ -3,6 +3,8 @@
 BFD (RFC 5880/5881) with the fast path in XDP — failure detection and
 transmission that survive CPU load that kills userspace BFD daemons.
 
+Full writeup: [docs/writeup.md](docs/writeup.md)
+
 ## Problem
 
 BFD is the failure detector under BGP/OSPF/IS-IS: miss N packets in

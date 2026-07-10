@@ -135,7 +135,7 @@ struct bfddp_counters {
 struct map_key   { uint32_t peer_ip, local_ip; };
 struct map_cfg   { uint32_t enable, my_disc, your_disc, min_tx_us, min_rx_us;
 		   uint8_t state, diag, mult, pad; };
-struct map_state { uint64_t last_seen_ns, rx_pkts;
+struct map_state { uint64_t last_seen_ns, rx_pkts, tx_pkts;
 		   uint32_t remote_disc, local_disc, min_tx_us, min_rx_us;
 		   uint8_t remote_state, remote_diag, detect_mult, alive; };
 
@@ -155,7 +155,8 @@ struct session {
 	uint8_t  r_mult, r_flags;     /* r_flags: last rx flags & 0x3f */
 	int      r_state;
 	int      send_final, just_up;
-	int      pushed_state;
+	int      pushed_valid;
+	struct map_cfg pushed_cfg;
 	uint64_t last_rx_us, next_tx_us;
 	uint64_t tx_pkts;             /* userspace-sent control packets */
 };
@@ -248,9 +249,8 @@ static int ktx_attach(const char *ifname)
 
 static void ktx_mirror(struct session *s)
 {
-	if (!use_ktx || s->state == s->pushed_state)
+	if (!use_ktx)
 		return;
-	struct map_key k = { .peer_ip = s->peer_ip, .local_ip = s->local_ip };
 	struct map_cfg c = {
 		.enable    = (s->state == ST_UP),
 		.my_disc   = s->lid,
@@ -261,8 +261,12 @@ static void ktx_mirror(struct session *s)
 		.diag      = s->diag,
 		.mult      = s->detect_mult,
 	};
+	if (s->pushed_valid && !memcmp(&c, &s->pushed_cfg, sizeof(c)))
+		return;
+	struct map_key k = { .peer_ip = s->peer_ip, .local_ip = s->local_ip };
 	bpf_map_update_elem(cfg_fd, &k, &c, 0);
-	s->pushed_state = s->state;
+	s->pushed_cfg = c;
+	s->pushed_valid = 1;
 }
 
 static void ktx_clear(struct session *s)
@@ -274,6 +278,8 @@ static void ktx_clear(struct session *s)
 	bpf_map_delete_elem(sess_fd, &k);
 }
 
+static void dp_notify_state(struct session *s);
+
 static void ktx_poll_map(struct session *s, uint64_t t)
 {
 	if (!use_ktx || s->state != ST_UP)
@@ -284,6 +290,12 @@ static void ktx_poll_map(struct session *s, uint64_t t)
 		return;
 	if (ms.last_seen_ns / 1000 > s->last_rx_us)
 		s->last_rx_us = ms.last_seen_ns / 1000;
+	if (ms.min_tx_us && (ms.min_tx_us != s->r_min_tx ||
+			     ms.min_rx_us != s->r_min_rx)) {
+		s->r_min_tx = ms.min_tx_us;
+		s->r_min_rx = ms.min_rx_us;
+		dp_notify_state(s);
+	}
 	if (ms.remote_state == ST_DOWN) {
 		printf("[%llu] lid=%u Up -> Down (map: peer sent Down)\n",
 		       (unsigned long long)t, s->lid);
@@ -527,7 +539,7 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	if (fresh) {
 		s->state = s->admin_down ? ST_ADMINDOWN : ST_DOWN;
 		s->diag  = 0;
-		s->pushed_state = -1;
+		s->pushed_valid = 0;
 		s->next_tx_us = t;
 	}
 
@@ -589,18 +601,21 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h,
 	m.h.length  = htons(sizeof(m));
 	m.c.lid     = htonl(lid);
 	if (s) {
-		uint64_t rx = 0;
+		uint64_t rx = 0, ktx = 0;
 		if (use_ktx) {
 			struct map_key k = { .peer_ip = s->peer_ip,
 					     .local_ip = s->local_ip };
 			struct map_state ms;
-			if (!bpf_map_lookup_elem(sess_fd, &k, &ms))
-				rx = ms.rx_pkts;
+			if (!bpf_map_lookup_elem(sess_fd, &k, &ms)) {
+				rx  = ms.rx_pkts;
+				ktx = ms.tx_pkts;
+			}
 		}
+		uint64_t tx = s->tx_pkts + ktx;
 		m.c.control_input_bytes    = htobe64(rx * 24);
 		m.c.control_input_packets  = htobe64(rx);
-		m.c.control_output_bytes   = htobe64(s->tx_pkts * 24);
-		m.c.control_output_packets = htobe64(s->tx_pkts);
+		m.c.control_output_bytes   = htobe64(tx * 24);
+		m.c.control_output_packets = htobe64(tx);
 	}
 	dp_send(&m, sizeof(m));
 }
@@ -806,7 +821,7 @@ int main(int argc, char **argv)
 		s->min_rx_us   = DEF_MIN_RX;
 		s->detect_mult = DEF_MULT;
 		s->state       = ST_DOWN;
-		s->pushed_state = -1;
+		s->pushed_valid = 0;
 		s->next_tx_us  = now_us();
 		printf("bfd_tx: static session lid=%u %s -> %s%s\n",
 		       s->lid, static_local, static_peer,

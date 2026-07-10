@@ -21,6 +21,7 @@ struct session_key {
 struct session_state {
 	__u64 last_seen_ns;
 	__u64 rx_pkts;
+	__u64 tx_pkts;
 	__u32 remote_disc;
 	__u32 local_disc;
 	__u32 min_tx_us;
@@ -99,6 +100,14 @@ int main(int argc, char **argv)
 	int stats_fd = bpf_object__find_map_fd_by_name(obj, "bfd_stats");
 	int rb_fd    = bpf_object__find_map_fd_by_name(obj, "bfd_events");
 
+	/* Standalone observer tracks everything; bfd_tx leaves this 0 so
+	 * only control-plane-configured sessions create map state. */
+	int flags_fd = bpf_object__find_map_fd_by_name(obj, "prog_flags");
+	if (flags_fd >= 0) {
+		__u32 zero = 0, promisc = 1;
+		bpf_map_update_elem(flags_fd, &zero, &promisc, 0);
+	}
+
 	struct ring_buffer *rb =
 		ring_buffer__new(rb_fd, on_event, NULL, NULL);
 	if (!rb) { fprintf(stderr, "ringbuf setup failed\n"); return 1; }
@@ -122,18 +131,19 @@ int main(int argc, char **argv)
 			continue;
 		last_dump = time(NULL);
 
-		__u64 totals[3] = {0};
-		for (__u32 i = 0; i < 3; i++) {
+		__u64 totals[4] = {0};
+		for (__u32 i = 0; i < 4; i++) {
 			__u64 vals[ncpu];
 			memset(vals, 0, sizeof(vals));
 			if (!bpf_map_lookup_elem(stats_fd, &i, vals))
 				for (int c = 0; c < ncpu; c++)
 					totals[i] += vals[c];
 		}
-		printf("-- pkts:%llu bfd:%llu bad:%llu --\n",
+		printf("-- pkts:%llu bfd:%llu bad:%llu rej:%llu --\n",
 		       (unsigned long long)totals[0],
 		       (unsigned long long)totals[1],
-		       (unsigned long long)totals[2]);
+		       (unsigned long long)totals[2],
+		       (unsigned long long)totals[3]);
 
 		struct session_key key, next;
 		void *pkey = NULL;

@@ -99,6 +99,12 @@ required rate. Every fix carries wire evidence (pcap + analysis) in
 docs/m5-hardening, including two invalidated test runs kept for the
 record.
 
+Graceful restart: `--dp-hold <sec>` keeps wire sessions alive across
+bfdd restarts (orphan on disconnect, adopt on re-ADD with
+discriminator continuity, mark-and-sweep reconciliation). Default 0
+preserves drop-and-recreate. Verified: two back-to-back FRR restarts
+with zero peer-visible events.
+
 ## Honest limitations
 
 - IPv4 only, single-hop only, no authentication, no echo mode. Maps

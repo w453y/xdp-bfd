@@ -158,6 +158,10 @@ struct session {
 	uint32_t detect_iv_us;        /* poll-aware effective detect basis */
 	int      send_final, just_up;
 	int      polling;             /* our Poll sequence in flight */
+	uint32_t wire_disc;           /* my_disc on the wire; survives bfdd
+	                               * restarts even when lid changes */
+	int      orphaned;            /* held across a bfdd disconnect */
+	uint64_t orphan_deadline_us;
 	uint32_t applied_tx_us;       /* actual TX pace; lags an advertised
 	                               * min_tx increase until poll ends */
 	int      pushed_valid;
@@ -177,6 +181,10 @@ static struct bpf_object *bpf_obj;
 static int dp_listen = -1, dp_conn = -1;
 static uint8_t dp_buf[4096];
 static size_t dp_have;
+static uint64_t dp_hold_us;              /* --dp-hold: keep sessions
+                                          * across bfdd restarts */
+static uint64_t dp_reconcile_us;         /* sweep deadline after reconnect */
+#define DP_RECONCILE_US (10ull * 1000000)
 
 static uint64_t now_us(void)
 {
@@ -203,6 +211,16 @@ static struct session *sess_by_lid(uint32_t lid)
 		return NULL;
 	for (int i = 0; i < MAX_SESSIONS; i++)
 		if (sessions[i].used && sessions[i].lid == lid)
+			return &sessions[i];
+	return NULL;
+}
+
+static struct session *sess_by_wire(uint32_t disc)
+{
+	if (!disc)
+		return NULL;
+	for (int i = 0; i < MAX_SESSIONS; i++)
+		if (sessions[i].used && sessions[i].wire_disc == disc)
 			return &sessions[i];
 	return NULL;
 }
@@ -258,7 +276,7 @@ static void ktx_mirror(struct session *s)
 		return;
 	struct map_cfg c = {
 		.enable    = (s->state == ST_UP),
-		.my_disc   = s->lid,
+		.my_disc   = s->wire_disc,
 		.your_disc = s->rdisc,
 		.min_tx_us = s->min_tx_us,
 		.min_rx_us = s->min_rx_us,
@@ -298,7 +316,7 @@ static void ktx_poll_map(struct session *s, uint64_t t)
 		s->last_rx_us = ms.last_seen_ns / 1000;
 	if (ms.detect_iv_us)
 		s->detect_iv_us = ms.detect_iv_us;
-	if (s->polling && s->pushed_valid && s->pushed_cfg.poll) {
+	if (s->polling) {
 		/* Kernel clears cfg.poll when the peer's F arrives. Adopt
 		 * that here and in pushed_cfg so the next mirror push
 		 * doesn't resurrect a finished poll. */
@@ -340,6 +358,35 @@ static void dp_sessions_teardown(const char *why)
 		printf("dplane: %s - tore down %d session(s)\n", why, n);
 }
 
+static void sess_teardown_one(struct session *s, const char *why)
+{
+	printf("dplane: lid=%u %s - torn down\n", s->lid, why);
+	ktx_clear(s);
+	memset(s, 0, sizeof(*s));
+}
+
+/* Connection lost: with --dp-hold, keep the wire sessions alive and
+ * mark them orphaned (graceful restart); otherwise the historical
+ * drop-and-recreate. Reconciliation happens after reconnect. */
+static void dp_sessions_orphan(const char *why)
+{
+	if (!dp_hold_us) {
+		dp_sessions_teardown(why);
+		return;
+	}
+	uint64_t t = now_us();
+	int n = 0;
+	for (int i = 0; i < MAX_SESSIONS; i++)
+		if (sessions[i].used && !sessions[i].orphaned) {
+			sessions[i].orphaned = 1;
+			sessions[i].orphan_deadline_us = t + dp_hold_us;
+			n++;
+		}
+	if (n)
+		printf("dplane: %s - holding %d session(s) up to %llus\n",
+		       why, n, (unsigned long long)(dp_hold_us / 1000000));
+}
+
 static void dp_send(const void *msg, size_t len)
 {
 	if (dp_conn < 0)
@@ -350,7 +397,7 @@ static void dp_send(const void *msg, size_t len)
 		close(dp_conn);
 		dp_conn = -1;
 		dp_have = 0;
-		dp_sessions_teardown("send failure");
+		dp_sessions_orphan("send failure");
 	}
 }
 
@@ -517,7 +564,7 @@ static void fsm_tx(struct session *s, uint64_t t)
 		      (s->send_final ? F_F : (s->polling ? F_P : 0));
 	o.mult      = s->detect_mult;
 	o.len       = 24;
-	o.my_disc   = htonl(s->lid);
+	o.my_disc   = htonl(s->wire_disc);
 	o.your_disc = htonl(s->rdisc);
 	o.min_tx    = htonl(s->state == ST_UP ? s->min_tx_us
 					      : (uint32_t)SLOW_TX_US);
@@ -561,10 +608,20 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	}
 
 	struct session *s = sess_by_lid(lid);
-	int fresh = 0;
+	int fresh = 0, adopted = 0;
 	if (!s) {
 		struct session *stale = sess_by_addr_pair_local(sm);
-		if (stale) {
+		if (stale && dp_hold_us && stale->state == ST_UP) {
+			/* Graceful restart: bfdd re-registered this addr
+			 * pair under a new lid. Adopt the live session in
+			 * place; wire_disc, FSM state, kernel maps and
+			 * counters all survive. */
+			printf("dplane: ADD lid=%u adopts live session (old lid=%u)\n",
+			       lid, stale->lid);
+			s = stale;
+			s->orphaned = 0;
+			adopted = 1;
+		} else if (stale) {
 			printf("dplane: ADD lid=%u replaces stale lid=%u\n",
 			       lid, stale->lid);
 			ktx_clear(stale);
@@ -581,6 +638,10 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	}
 
 	s->lid         = lid;
+	if (fresh || !s->wire_disc)
+		s->wire_disc = lid;   /* adopted sessions keep their wire
+		                       * discriminator (RFC 5880: constant
+		                       * while Up) */
 	memcpy(&s->local_ip, &sm->src.s6_addr[0], 4);  /* v4 in first word */
 	memcpy(&s->peer_ip,  &sm->dst.s6_addr[0], 4);
 	uint32_t old_tx = s->min_tx_us, old_rx = s->min_rx_us;
@@ -615,6 +676,8 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	       s->min_tx_us, s->min_rx_us, s->detect_mult,
 	       s->passive ? " passive" : "",
 	       s->admin_down ? " shutdown" : "");
+	if (adopted)
+		dp_notify_state(s);
 	(void)h;
 }
 
@@ -727,7 +790,7 @@ static void dp_read(void)
 		close(dp_conn);
 		dp_conn = -1;
 		dp_have = 0;
-		dp_sessions_teardown("bfdd disconnected");
+		dp_sessions_orphan("bfdd disconnected");
 		return;
 	}
 	if (n < 0)
@@ -768,11 +831,18 @@ static void dp_accept(void)
 		printf("dplane: replacing existing bfdd connection\n");
 		close(dp_conn);
 		dp_have = 0;
-		dp_sessions_teardown("connection replaced");
+		dp_sessions_orphan("connection replaced");
 	}
 	fcntl(c, F_SETFL, O_NONBLOCK);
 	dp_conn = c;
 	printf("dplane: bfdd connected\n");
+	for (int i = 0; i < MAX_SESSIONS; i++)
+		if (sessions[i].used && sessions[i].orphaned) {
+			dp_reconcile_us = now_us() + DP_RECONCILE_US;
+			printf("dplane: reconcile sweep armed (%llus)\n",
+			       (unsigned long long)(DP_RECONCILE_US / 1000000));
+			break;
+		}
 }
 
 static int dp_listen_init(const char *arg)
@@ -831,6 +901,8 @@ int main(int argc, char **argv)
 			dplane_path = argv[++i];
 		else if (!strcmp(argv[i], "--kernel-tx") && i + 1 < argc)
 			ktx_if = argv[++i];
+		else if (!strcmp(argv[i], "--dp-hold") && i + 1 < argc)
+			dp_hold_us = strtoull(argv[++i], NULL, 10) * 1000000ull;
 		else if (!static_local)
 			static_local = argv[i];
 		else if (!static_peer)
@@ -839,7 +911,7 @@ int main(int argc, char **argv)
 	if (!dplane_path && (!static_local || !static_peer)) {
 		fprintf(stderr,
 			"usage: %s <local-ip> <peer-ip> [--kernel-tx <if>]\n"
-			"       %s --dplane <sock-path> [--kernel-tx <if>]\n",
+			"       %s --dplane <sock-path> [--kernel-tx <if>] [--dp-hold <sec>]\n",
 			argv[0], argv[0]);
 		return 1;
 	}
@@ -881,6 +953,7 @@ int main(int argc, char **argv)
 		inet_pton(AF_INET, static_local, &s->local_ip);
 		inet_pton(AF_INET, static_peer, &s->peer_ip);
 		s->lid         = (random() & 0x7fffffff) | 1;
+		s->wire_disc   = s->lid;
 		s->min_tx_us   = DEF_MIN_TX;
 		s->applied_tx_us = DEF_MIN_TX;
 		s->min_rx_us   = DEF_MIN_RX;
@@ -906,17 +979,29 @@ int main(int argc, char **argv)
 
 		if (n >= 24 && ((p.vers_diag >> 5) & 7) == 1 &&
 		    p.mult && p.my_disc) {
-			struct session *rs = sess_by_lid(ntohl(p.your_disc));
+			struct session *rs = sess_by_wire(ntohl(p.your_disc));
 			if (!rs)
 				rs = sess_by_addr(from.sin_addr.s_addr);
 			if (rs)
 				fsm_rx(rs, &p, t);
 		}
 
+		if (dp_reconcile_us && t >= dp_reconcile_us) {
+			dp_reconcile_us = 0;
+			for (int i = 0; i < MAX_SESSIONS; i++)
+				if (sessions[i].used && sessions[i].orphaned)
+					sess_teardown_one(&sessions[i],
+						"not re-added by bfdd");
+		}
+
 		for (int i = 0; i < MAX_SESSIONS; i++) {
 			struct session *cs = &sessions[i];
 			if (!cs->used)
 				continue;
+			if (cs->orphaned && t >= cs->orphan_deadline_us) {
+				sess_teardown_one(cs, "hold expired");
+				continue;
+			}
 			ktx_poll_map(cs, t);
 			fsm_detect(cs, t);
 			fsm_tx(cs, t);

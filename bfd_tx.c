@@ -134,7 +134,7 @@ struct bfddp_counters {
 /* ---------- BPF map mirror types (must match bfd_xdp.c) ---------- */
 struct map_key   { uint32_t peer_ip, local_ip; };
 struct map_cfg   { uint32_t enable, my_disc, your_disc, min_tx_us, min_rx_us;
-		   uint8_t state, diag, mult, pad; };
+		   uint8_t state, diag, mult, poll; };
 struct map_state { uint64_t last_seen_ns, rx_pkts, tx_pkts;
 		   uint32_t remote_disc, local_disc, min_tx_us, min_rx_us,
 			    detect_iv_us;
@@ -157,6 +157,9 @@ struct session {
 	int      r_state;
 	uint32_t detect_iv_us;        /* poll-aware effective detect basis */
 	int      send_final, just_up;
+	int      polling;             /* our Poll sequence in flight */
+	uint32_t applied_tx_us;       /* actual TX pace; lags an advertised
+	                               * min_tx increase until poll ends */
 	int      pushed_valid;
 	struct map_cfg pushed_cfg;
 	uint64_t last_rx_us, next_tx_us;
@@ -262,6 +265,7 @@ static void ktx_mirror(struct session *s)
 		.state     = s->state,
 		.diag      = s->diag,
 		.mult      = s->detect_mult,
+		.poll      = (s->polling && s->state == ST_UP) ? 1 : 0,
 	};
 	if (s->pushed_valid && !memcmp(&c, &s->pushed_cfg, sizeof(c)))
 		return;
@@ -294,6 +298,17 @@ static void ktx_poll_map(struct session *s, uint64_t t)
 		s->last_rx_us = ms.last_seen_ns / 1000;
 	if (ms.detect_iv_us)
 		s->detect_iv_us = ms.detect_iv_us;
+	if (s->polling && s->pushed_valid && s->pushed_cfg.poll) {
+		/* Kernel clears cfg.poll when the peer's F arrives. Adopt
+		 * that here and in pushed_cfg so the next mirror push
+		 * doesn't resurrect a finished poll. */
+		struct map_cfg mc;
+		if (!bpf_map_lookup_elem(cfg_fd, &k, &mc) && !mc.poll) {
+			s->polling = 0;
+			s->applied_tx_us = s->min_tx_us;
+			s->pushed_cfg.poll = 0;
+		}
+	}
 	if (ms.min_tx_us && (ms.min_tx_us != s->r_min_tx ||
 			     ms.min_rx_us != s->r_min_rx)) {
 		s->r_min_tx = ms.min_tx_us;
@@ -374,6 +389,10 @@ static void state_transition(struct session *s, int newstate, int diag,
 	s->diag  = diag;
 	if (newstate == ST_DOWN)
 		s->detect_iv_us = 0;
+	if (newstate == ST_UP || newstate == ST_DOWN) {
+		s->polling = 0;
+		s->applied_tx_us = s->min_tx_us;
+	}
 	s->just_up = (newstate == ST_UP);
 	s->next_tx_us = t;
 	dp_notify_state(s);
@@ -412,6 +431,10 @@ static void fsm_rx(struct session *s, const struct bfdpkt *p, uint64_t t)
 	s->last_rx_us = t;
 	if (p->flags & F_P)
 		s->send_final = 1;
+	if ((p->flags & F_F) && s->polling) {
+		s->polling = 0;
+		s->applied_tx_us = s->min_tx_us;
+	}
 
 	if (s->admin_down)
 		return;
@@ -466,22 +489,32 @@ static void fsm_tx(struct session *s, uint64_t t)
 
 	if (s->last_rx_us) {
 		uint64_t cur = (s->state == ST_UP)
-			? (s->min_tx_us > s->r_min_rx ? s->min_tx_us
-						      : s->r_min_rx)
+			? (s->applied_tx_us > s->r_min_rx ? s->applied_tx_us
+							  : s->r_min_rx)
 			: SLOW_TX_US;
 		if (s->next_tx_us > t + cur)
 			s->next_tx_us = t + cur;
 	}
 
 	int due = (t >= s->next_tx_us) || s->send_final;
-	if (use_ktx && s->state == ST_UP && !s->send_final && !s->just_up)
-		due = 0;
+	if (use_ktx && s->state == ST_UP && !s->send_final && !s->just_up) {
+		/* Kernel echo covers TX only at the peer's pace. If the
+		 * peer paces slower than our required rate (its detect
+		 * budget for us), transmit from here at the required
+		 * pace; otherwise stay silent as before. last_rx_us is
+		 * synced from the map, so it tracks kernel echo times. */
+		uint64_t pace = s->applied_tx_us > s->r_min_rx ?
+				s->applied_tx_us : s->r_min_rx;
+		if (t - s->last_rx_us < pace)
+			due = 0;
+	}
 	if (!due)
 		return;
 
 	struct bfdpkt o = {0};
 	o.vers_diag = (1 << 5) | (s->diag & 0x1f);
-	o.flags     = (s->state << 6) | (s->send_final ? F_F : 0);
+	o.flags     = (s->state << 6) |
+		      (s->send_final ? F_F : (s->polling ? F_P : 0));
 	o.mult      = s->detect_mult;
 	o.len       = 24;
 	o.my_disc   = htonl(s->lid);
@@ -503,8 +536,8 @@ static void fsm_tx(struct session *s, uint64_t t)
 	if (t >= s->next_tx_us) {
 		uint64_t iv;
 		if (s->state == ST_UP) {
-			iv = s->min_tx_us > s->r_min_rx ? s->min_tx_us
-							: s->r_min_rx;
+			iv = s->applied_tx_us > s->r_min_rx ? s->applied_tx_us
+							    : s->r_min_rx;
 			iv = iv * 3 / 4 + (random() % (iv / 4 + 1));
 		} else {
 			iv = SLOW_TX_US;
@@ -550,11 +583,23 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	s->lid         = lid;
 	memcpy(&s->local_ip, &sm->src.s6_addr[0], 4);  /* v4 in first word */
 	memcpy(&s->peer_ip,  &sm->dst.s6_addr[0], 4);
+	uint32_t old_tx = s->min_tx_us, old_rx = s->min_rx_us;
 	s->min_tx_us   = ntohl(sm->min_tx);
 	s->min_rx_us   = ntohl(sm->min_rx);
 	s->detect_mult = sm->detect_mult;
 	s->passive     = !!(flags & SESSION_PASSIVE);
 	s->admin_down  = !!(flags & SESSION_SHUTDOWN);
+	if (!fresh && s->state == ST_UP &&
+	    (s->min_tx_us != old_tx || s->min_rx_us != old_rx)) {
+		/* RFC 5880 s6.8.3: parameter change while Up requires a
+		 * Poll sequence. An increased min_tx must not slow actual
+		 * TX until the poll terminates; a decrease applies now. */
+		s->polling = 1;
+		if (s->min_tx_us < s->applied_tx_us || !s->applied_tx_us)
+			s->applied_tx_us = s->min_tx_us;
+	} else {
+		s->applied_tx_us = s->min_tx_us;
+	}
 	if (fresh) {
 		s->state = s->admin_down ? ST_ADMINDOWN : ST_DOWN;
 		s->diag  = 0;
@@ -837,6 +882,7 @@ int main(int argc, char **argv)
 		inet_pton(AF_INET, static_peer, &s->peer_ip);
 		s->lid         = (random() & 0x7fffffff) | 1;
 		s->min_tx_us   = DEF_MIN_TX;
+		s->applied_tx_us = DEF_MIN_TX;
 		s->min_rx_us   = DEF_MIN_RX;
 		s->detect_mult = DEF_MULT;
 		s->state       = ST_DOWN;

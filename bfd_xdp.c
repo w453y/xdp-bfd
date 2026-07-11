@@ -94,7 +94,8 @@ struct tx_cfg {
 	__u8  state;
 	__u8  diag;
 	__u8  mult;
-	__u8  pad;
+	__u8  poll;          /* userspace-initiated Poll sequence active:
+	                      * echo sets P; kernel clears on peer's F */
 };
 
 struct {
@@ -291,6 +292,10 @@ int bfd_observer(struct xdp_md *ctx)
 
 	ensure_sweeper();
 
+	/* Poll termination (RFC 5880 s6.8.4): peer answered our P with F. */
+	if (cfg && cfg->poll && (bfd->flags & 0x10))
+		cfg->poll = 0;
+
 	struct session_state *st = bpf_map_lookup_elem(&bfd_sessions, &key);
 	if (!st) {
 		struct session_state init = {};
@@ -361,9 +366,12 @@ int bfd_observer(struct xdp_md *ctx)
 		udp->dest   = bpf_htons(BFD_PORT_1HOP);
 		udp->check  = 0;
 
-		/* BFD payload from config */
+		/* BFD payload from config. P while a Poll sequence is
+		 * active, F when answering the peer's P; never both. */
 		bfd->vers_diag   = (1 << 5) | (cfg->diag & 0x1f);
 		bfd->flags       = ((cfg->state & 0x3) << 6) | send_final;
+		if (!send_final && cfg->poll)
+			bfd->flags |= 0x20;
 		bfd->detect_mult = cfg->mult;
 		bfd->len         = 24;
 		bfd->my_disc     = bpf_htonl(cfg->my_disc);

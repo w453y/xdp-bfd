@@ -237,7 +237,7 @@ int bfd_observer(struct xdp_md *ctx)
 	 * with TTL 255. Anything else is off-link or spoofed. */
 	if (iph->ttl != 255) {
 		count(3);
-		return XDP_PASS;
+		return XDP_DROP;
 	}
 
 	struct bfdhdr *bfd = (void *)(udp + 1);
@@ -286,7 +286,7 @@ int bfd_observer(struct xdp_md *ctx)
 		if (ydisc != cfg->my_disc &&
 		    !(ydisc == 0 && rstate <= 1)) {
 			count(3);
-			return XDP_PASS;
+			return XDP_DROP;
 		}
 	}
 

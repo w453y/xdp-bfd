@@ -147,9 +147,13 @@ Notes:
   fix submitted as [FRRouting/frr#22621](https://github.com/FRRouting/frr/pull/22621).
 - `show bfd peers counters`: both input and output counts come from
   the XDP session map; kernel XDP_TX replies are counted per-packet.
-- Sessions are torn down when bfdd disconnects and recreated on
-  reconnect (bfdd re-adds them); surviving a control-plane restart
-  without data-plane interruption is future work, not current behavior.
+- Default (`--dp-hold 0`): sessions are torn down when bfdd
+  disconnects and recreated on reconnect (bfdd re-adds them).
+  With `--dp-hold <sec>`: sessions survive a control-plane restart
+  without data-plane interruption (orphan on disconnect, adopt by
+  addr pair on re-ADD with discriminator continuity, mark-and-sweep
+  reconciliation). Verified: two back-to-back FRR restarts, zero
+  peer-visible events. See docs/m5-hardening.
 
 ## Repo layout
 

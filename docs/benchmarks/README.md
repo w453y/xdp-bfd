@@ -22,7 +22,8 @@ transitions on the wire.
 bfdd's TX rides the userspace scheduler; RT starvation blocks it for
 up to ~900ms (original writeup), tripping the peer's 30ms budget
 repeatedly. xdp-bfd's TX is RX-clocked in softirq and cannot be
-preempted by userspace CPU starvation.
+preempted by userspace CPU starvation. At idle the two are
+equivalent (results 2-3); the difference is entirely under load.
 pcaps: bench1-bfdd-107flaps.pcap, bench1-xdpbfd-0flaps.pcap
 
 ## 2. Detection latency (xdp-bfd)
@@ -30,9 +31,15 @@ pcaps: bench1-bfdd-107flaps.pcap, bench1-xdpbfd-0flaps.pcap
 20 peer kills, detect measured from the peer's last wire packet to the
 DUT's Down transition.
 
-    n=20  min=30.2  mean=31.3  p50=31.3  p99=32.4  max=32.6 ms
+    xdp-bfd:  n=20  min=30.2  mean=31.3  p50=31.3  p99=32.4  max=32.6 ms
+    bfdd:     n=20  min=30.0  mean=30.05 p50=30.0  p99=30.08 max=30.09 ms
 
-Floor is 3x10ms = 30ms. Mean 1.3ms over floor, max spread 2.4ms.
+Floor is 3x10ms = 30ms. bfdd is marginally tighter at idle: its
+detection runs on a hrtimer at almost exactly 3x interval, while
+xdp-bfd's sweep runs on a 5ms bpf_timer tick, so detection
+quantizes to the next sweep (0-5ms granularity, ~1.3ms mean).
+This is the tradeoff: ~1.3ms of idle detection granularity for
+scheduler immunity (see result 1). Mean 1.3ms over floor, max spread 2.4ms.
 Engine DETECT TIMEOUT logs corroborate (30.0-32.5ms). The m5 detect
 changes (poll-aware budget, live remote-timer sync) did not smear it.
 pcap: bench2-detect-dist.pcap
@@ -41,9 +48,12 @@ pcap: bench2-detect-dist.pcap
 
 Inter-departure of the DUT's control packets, 60s idle window.
 
-    n=7295  min~0  p50=8.77  p99=10.01  p999=10.05  max=10.08  mean=8.77 ms
+    xdp-bfd:  n=7295  p50=8.77  p99=10.01  p999=10.05  max=10.08  mean=8.77 ms
+    bfdd:     n=7304  p50=8.79  p99=10.01  p999=10.08  max=11.74  mean=8.76 ms
 
-The entire tail fits inside the 10ms interval; max 10.08ms vs a 30ms
+At idle the two are twins (mean 8.77 vs 8.76, p99 both 10.01);
+bfdd already shows a small tail past the interval (max 11.74 vs
+10.08), both well inside the 30ms budget. The entire xdp-bfd tail fits inside the 10ms interval; max 10.08ms vs a 30ms
 budget (3x margin). Contrast the baseline finding where bfdd p99 looked
 healthy at 10.2ms while max exceeded 900ms under stress. The
 transitional-TX gate added in m5 introduced no outliers. (The ~0ms

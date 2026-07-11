@@ -26,6 +26,7 @@ struct session_state {
 	__u32 local_disc;
 	__u32 min_tx_us;
 	__u32 min_rx_us;
+	__u32 detect_iv_us;
 	__u8  remote_state;
 	__u8  remote_diag;
 	__u8  detect_mult;

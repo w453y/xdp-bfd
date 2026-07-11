@@ -47,6 +47,8 @@ struct session_state {
 	__u32 local_disc;
 	__u32 min_tx_us;
 	__u32 min_rx_us;
+	__u32 detect_iv_us;   /* effective detect basis: lags advertised
+	                       * decreases until peer paces at new rate */
 	__u8  remote_state;
 	__u8  remote_diag;
 	__u8  detect_mult;
@@ -147,6 +149,7 @@ static __always_inline void emit(struct session_key *k,
 }
 
 /* Sweep: called for each session every SWEEP_NS. */
+struct bpf_map;
 static long check_session(struct bpf_map *map, struct session_key *k,
 			  struct session_state *st, void *ctx)
 {
@@ -155,17 +158,19 @@ static long check_session(struct bpf_map *map, struct session_key *k,
 	if (!st->alive)
 		return 0;
 
-	/* Detect interval: max(peer's min_tx, our configured min_rx).
-	 * Per-session min_rx comes from the config map (pushed by the
-	 * control plane); LOCAL_MIN_RX_US is only the promiscuous-
-	 * observer fallback. */
-	__u32 local_rx = LOCAL_MIN_RX_US;
-	struct tx_cfg *cfg = bpf_map_lookup_elem(&tx_config, k);
-	if (cfg && cfg->min_rx_us)
-		local_rx = cfg->min_rx_us;
-
-	__u64 iv_us = st->min_tx_us > local_rx ?
-		      st->min_tx_us : local_rx;
+	/* Effective interval is maintained by the RX path (poll-aware:
+	 * advertised decreases apply only once traffic actually paces at
+	 * the new rate). Fallback recompute for entries that predate the
+	 * field. */
+	__u64 iv_us = st->detect_iv_us;
+	if (!iv_us) {
+		__u32 local_rx = LOCAL_MIN_RX_US;
+		struct tx_cfg *cfg = bpf_map_lookup_elem(&tx_config, k);
+		if (cfg && cfg->min_rx_us)
+			local_rx = cfg->min_rx_us;
+		iv_us = st->min_tx_us > local_rx ?
+			st->min_tx_us : local_rx;
+	}
 	__u64 detect_ns = (__u64)st->detect_mult * iv_us * 1000ull;
 
 	__s64 delta = (__s64)(now - st->last_seen_ns);
@@ -296,6 +301,27 @@ int bfd_observer(struct xdp_md *ctx)
 	}
 
 	__u64 now = bpf_ktime_get_ns();
+
+	/* Poll-aware detect basis (RFC 5880 s6.8.3): a peer that lowers
+	 * its advertised min_tx keeps transmitting at the old rate until
+	 * its Poll sequence terminates. Shrinking our detect budget on
+	 * the advertisement alone guarantees a false timeout, so:
+	 * increases apply immediately (always safe, larger budget);
+	 * decreases apply only once the observed inter-arrival gap fits
+	 * the new interval, i.e. the peer is actually pacing at it. */
+	{
+		__u32 local_rx = LOCAL_MIN_RX_US;
+		if (cfg && cfg->min_rx_us)
+			local_rx = cfg->min_rx_us;
+		__u32 cand = bpf_ntohl(bfd->min_tx);
+		if (cand < local_rx)
+			cand = local_rx;
+		if (!st->alive || !st->detect_iv_us ||
+		    cand >= st->detect_iv_us)
+			st->detect_iv_us = cand;
+		else if (now - st->last_seen_ns <= (__u64)cand * 1000ull)
+			st->detect_iv_us = cand;
+	}
 
 	st->last_seen_ns = now;
 	st->rx_pkts++;

@@ -136,7 +136,8 @@ struct map_key   { uint32_t peer_ip, local_ip; };
 struct map_cfg   { uint32_t enable, my_disc, your_disc, min_tx_us, min_rx_us;
 		   uint8_t state, diag, mult, pad; };
 struct map_state { uint64_t last_seen_ns, rx_pkts, tx_pkts;
-		   uint32_t remote_disc, local_disc, min_tx_us, min_rx_us;
+		   uint32_t remote_disc, local_disc, min_tx_us, min_rx_us,
+			    detect_iv_us;
 		   uint8_t remote_state, remote_diag, detect_mult, alive; };
 
 /* ---------- session ---------- */
@@ -154,6 +155,7 @@ struct session {
 	uint32_t r_min_tx, r_min_rx;
 	uint8_t  r_mult, r_flags;     /* r_flags: last rx flags & 0x3f */
 	int      r_state;
+	uint32_t detect_iv_us;        /* poll-aware effective detect basis */
 	int      send_final, just_up;
 	int      pushed_valid;
 	struct map_cfg pushed_cfg;
@@ -290,6 +292,8 @@ static void ktx_poll_map(struct session *s, uint64_t t)
 		return;
 	if (ms.last_seen_ns / 1000 > s->last_rx_us)
 		s->last_rx_us = ms.last_seen_ns / 1000;
+	if (ms.detect_iv_us)
+		s->detect_iv_us = ms.detect_iv_us;
 	if (ms.min_tx_us && (ms.min_tx_us != s->r_min_tx ||
 			     ms.min_rx_us != s->r_min_rx)) {
 		s->r_min_tx = ms.min_tx_us;
@@ -368,6 +372,8 @@ static void state_transition(struct session *s, int newstate, int diag,
 	       s->lid, stname[s->state], stname[newstate], why);
 	s->state = newstate;
 	s->diag  = diag;
+	if (newstate == ST_DOWN)
+		s->detect_iv_us = 0;
 	s->just_up = (newstate == ST_UP);
 	s->next_tx_us = t;
 	dp_notify_state(s);
@@ -392,6 +398,17 @@ static void fsm_rx(struct session *s, const struct bfdpkt *p, uint64_t t)
 	s->r_min_tx = ntohl(p->min_tx);
 	s->r_mult   = p->mult;
 	s->r_flags  = p->flags & 0x3f;
+
+	/* Poll-aware detect basis: decreases apply only once traffic
+	 * actually paces at the new interval (RFC 5880 s6.8.3). */
+	{
+		uint32_t cand = s->r_min_tx > s->min_rx_us ?
+				s->r_min_tx : s->min_rx_us;
+		if (!s->detect_iv_us || cand >= s->detect_iv_us ||
+		    (s->last_rx_us && t - s->last_rx_us <= cand))
+			s->detect_iv_us = cand;
+	}
+
 	s->last_rx_us = t;
 	if (p->flags & F_P)
 		s->send_final = 1;
@@ -427,7 +444,9 @@ static void fsm_detect(struct session *s, uint64_t t)
 {
 	if (s->state == ST_DOWN || s->state == ST_ADMINDOWN || !s->last_rx_us)
 		return;
-	uint64_t iv = s->r_min_tx > s->min_rx_us ? s->r_min_tx : s->min_rx_us;
+	uint64_t iv = s->detect_iv_us;
+	if (!iv)
+		iv = s->r_min_tx > s->min_rx_us ? s->r_min_tx : s->min_rx_us;
 	int64_t sd = (int64_t)(t - s->last_rx_us);
 	if (sd < 0)
 		sd = 0;

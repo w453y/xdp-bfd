@@ -35,13 +35,15 @@
 #include <bpf/bpf.h>
 #include <linux/if_link.h>
 
-#define PORT_CTRL    3784
-#define SRC_PORT     49152
+#include "bfd_shared.h"
+
+#define PORT_CTRL    BFD_PORT_1HOP
+#define SRC_PORT     BFD_SRC_PORT
 #define DEF_MIN_TX   10000
 #define DEF_MIN_RX   10000
 #define DEF_MULT     3
 #define SLOW_TX_US   1000000ull
-#define MAX_SESSIONS 64
+#define MAX_SESSIONS BFD_MAX_SESSIONS
 
 enum { ST_ADMINDOWN, ST_DOWN, ST_INIT, ST_UP };
 static const char *stname[] = { "AdminDown", "Down", "Init", "Up" };
@@ -52,8 +54,8 @@ struct bfdpkt {
 	uint32_t my_disc, your_disc, min_tx, min_rx, min_echo;
 } __attribute__((packed));
 
-#define F_P 0x20
-#define F_F 0x10
+#define F_P BFD_F_POLL
+#define F_F BFD_F_FINAL
 
 /* ---------- bfddp protocol (from FRR bfddp_packet.h, MIT) ---------- */
 enum bfddp_message_type {
@@ -131,14 +133,6 @@ struct bfddp_counters {
 	uint64_t echo_output_packets;
 } __attribute__((packed));
 
-/* ---------- BPF map mirror types (must match bfd_xdp.c) ---------- */
-struct map_key   { uint32_t peer_ip, local_ip; };
-struct map_cfg   { uint32_t enable, my_disc, your_disc, min_tx_us, min_rx_us;
-		   uint8_t state, diag, mult, poll; };
-struct map_state { uint64_t last_seen_ns, rx_pkts, tx_pkts;
-		   uint32_t remote_disc, local_disc, min_tx_us, min_rx_us,
-			    detect_iv_us;
-		   uint8_t remote_state, remote_diag, detect_mult, alive; };
 
 /* ---------- session ---------- */
 struct session {
@@ -165,7 +159,7 @@ struct session {
 	uint32_t applied_tx_us;       /* actual TX pace; lags an advertised
 	                               * min_tx increase until poll ends */
 	int      pushed_valid;
-	struct map_cfg pushed_cfg;
+	struct tx_cfg pushed_cfg;
 	uint64_t last_rx_us, next_tx_us;
 	uint64_t tx_pkts;             /* userspace-sent control packets */
 };
@@ -274,7 +268,7 @@ static void ktx_mirror(struct session *s)
 {
 	if (!use_ktx)
 		return;
-	struct map_cfg c = {
+	struct tx_cfg c = {
 		.enable    = (s->state == ST_UP),
 		.my_disc   = s->wire_disc,
 		.your_disc = s->rdisc,
@@ -287,7 +281,7 @@ static void ktx_mirror(struct session *s)
 	};
 	if (s->pushed_valid && !memcmp(&c, &s->pushed_cfg, sizeof(c)))
 		return;
-	struct map_key k = { .peer_ip = s->peer_ip, .local_ip = s->local_ip };
+	struct session_key k = { .peer_ip = s->peer_ip, .local_ip = s->local_ip };
 	bpf_map_update_elem(cfg_fd, &k, &c, 0);
 	s->pushed_cfg = c;
 	s->pushed_valid = 1;
@@ -297,19 +291,21 @@ static void ktx_clear(struct session *s)
 {
 	if (!use_ktx)
 		return;
-	struct map_key k = { .peer_ip = s->peer_ip, .local_ip = s->local_ip };
+	struct session_key k = { .peer_ip = s->peer_ip, .local_ip = s->local_ip };
 	bpf_map_delete_elem(cfg_fd, &k);
 	bpf_map_delete_elem(sess_fd, &k);
 }
 
 static void dp_notify_state(struct session *s);
+static void state_transition(struct session *s, int newstate, int diag,
+			     uint64_t t, const char *why);
 
 static void ktx_poll_map(struct session *s, uint64_t t)
 {
 	if (!use_ktx || s->state != ST_UP)
 		return;
-	struct map_key k = { .peer_ip = s->peer_ip, .local_ip = s->local_ip };
-	struct map_state ms;
+	struct session_key k = { .peer_ip = s->peer_ip, .local_ip = s->local_ip };
+	struct session_state ms;
 	if (bpf_map_lookup_elem(sess_fd, &k, &ms))
 		return;
 	if (ms.last_seen_ns / 1000 > s->last_rx_us)
@@ -320,7 +316,7 @@ static void ktx_poll_map(struct session *s, uint64_t t)
 		/* Kernel clears cfg.poll when the peer's F arrives. Adopt
 		 * that here and in pushed_cfg so the next mirror push
 		 * doesn't resurrect a finished poll. */
-		struct map_cfg mc;
+		struct tx_cfg mc;
 		if (!bpf_map_lookup_elem(cfg_fd, &k, &mc) && !mc.poll) {
 			s->polling = 0;
 			s->applied_tx_us = s->min_tx_us;
@@ -333,13 +329,8 @@ static void ktx_poll_map(struct session *s, uint64_t t)
 		s->r_min_rx = ms.min_rx_us;
 		dp_notify_state(s);
 	}
-	if (ms.remote_state == ST_DOWN) {
-		printf("[%llu] lid=%u Up -> Down (map: peer sent Down)\n",
-		       (unsigned long long)t, s->lid);
-		s->state = ST_DOWN;
-		s->diag = 3;
-		s->next_tx_us = t;
-	}
+	if (ms.remote_state == ST_DOWN)
+		state_transition(s, ST_DOWN, 3, t, "map: peer sent Down");
 }
 
 /* ---------- dplane socket: outbound ---------- */
@@ -730,9 +721,9 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h,
 	if (s) {
 		uint64_t rx = 0, ktx = 0;
 		if (use_ktx) {
-			struct map_key k = { .peer_ip = s->peer_ip,
+			struct session_key k = { .peer_ip = s->peer_ip,
 					     .local_ip = s->local_ip };
-			struct map_state ms;
+			struct session_state ms;
 			if (!bpf_map_lookup_elem(sess_fd, &k, &ms)) {
 				rx  = ms.rx_pkts;
 				ktx = ms.tx_pkts;

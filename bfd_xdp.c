@@ -9,9 +9,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 
-#define BFD_PORT_1HOP   3784
-#define BFD_MIN_LEN     24
-#define BFD_VERSION     1
+#include "bfd_shared.h"
 
 #define LOCAL_MIN_RX_US 10000  /* fallback required-min-rx: promiscuous
                                  * observer only; configured sessions use
@@ -34,39 +32,9 @@ struct bfdhdr {
 #define BFD_DIAG(h)   ((h)->vers_diag & 0x1f)
 #define BFD_STATE(h)  (((h)->flags >> 6) & 0x3)
 
-struct session_key {
-	__be32 peer_ip;
-	__be32 local_ip;
-};
-
-struct session_state {
-	__u64 last_seen_ns;
-	__u64 rx_pkts;
-	__u64 tx_pkts;        /* kernel XDP_TX replies */
-	__u32 remote_disc;
-	__u32 local_disc;
-	__u32 min_tx_us;
-	__u32 min_rx_us;
-	__u32 detect_iv_us;   /* effective detect basis: lags advertised
-	                       * decreases until peer paces at new rate */
-	__u8  remote_state;
-	__u8  remote_diag;
-	__u8  detect_mult;
-	__u8  alive;          /* our sweep's verdict: 1 = hearing peer */
-};
-
-/* Event pushed to userspace on liveness transitions. */
-struct bfd_event {
-	__u64 ts_ns;          /* when we noticed             */
-	__u64 last_seen_ns;   /* last packet before verdict  */
-	struct session_key key;
-	__u32 remote_disc;
-	__u8  event;          /* 0 = DETECT-DOWN, 1 = ALIVE  */
-};
-
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 64);
+	__uint(max_entries, BFD_MAX_SESSIONS);
 	__type(key, struct session_key);
 	__type(value, struct session_state);
 } bfd_sessions SEC(".maps");
@@ -84,23 +52,9 @@ struct {
 	__uint(max_entries, 1 << 18);
 } bfd_events SEC(".maps");
 
-/* What to say when we speak: written by userspace FSM. */
-struct tx_cfg {
-	__u32 enable;        /* 1 = kernel replies to each RX (Up only) */
-	__u32 my_disc;
-	__u32 your_disc;
-	__u32 min_tx_us;
-	__u32 min_rx_us;
-	__u8  state;
-	__u8  diag;
-	__u8  mult;
-	__u8  poll;          /* userspace-initiated Poll sequence active:
-	                      * echo sets P; kernel clears on peer's F */
-};
-
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 64);
+	__uint(max_entries, BFD_MAX_SESSIONS);
 	__type(key, struct session_key);
 	__type(value, struct tx_cfg);
 } tx_config SEC(".maps");
@@ -193,6 +147,9 @@ static int sweep_fire(void *map, __u32 *key, struct sweep *sw)
 	return 0;
 }
 
+/* bpf_timer can only be initialized and armed from BPF program context,
+ * not from userspace at load time, so the first packet through the
+ * program arms the sweep. The CAS makes exactly one CPU do it. */
 static __always_inline void ensure_sweeper(void)
 {
 	__u32 zero = 0;
@@ -293,7 +250,7 @@ int bfd_observer(struct xdp_md *ctx)
 	ensure_sweeper();
 
 	/* Poll termination (RFC 5880 s6.8.4): peer answered our P with F. */
-	if (cfg && cfg->poll && (bfd->flags & 0x10))
+	if (cfg && cfg->poll && (bfd->flags & BFD_F_FINAL))
 		cfg->poll = 0;
 
 	struct session_state *st = bpf_map_lookup_elem(&bfd_sessions, &key);
@@ -348,7 +305,7 @@ int bfd_observer(struct xdp_md *ctx)
 	 * Never echo Up at a peer that just said Down/AdminDown; let
 	 * userspace run the transition. */
 	if (cfg && cfg->enable && rstate >= 2) {
-		__u8 send_final = (bfd->flags & 0x20) ? 0x10 : 0;
+		__u8 send_final = (bfd->flags & BFD_F_POLL) ? BFD_F_FINAL : 0;
 
 		/* L2 swap */
 		__u8 tmp[6];
@@ -362,7 +319,7 @@ int bfd_observer(struct xdp_md *ctx)
 		iph->daddr = tip;
 
 		/* L4: our source port, dst 3784, no UDP csum (legal v4) */
-		udp->source = bpf_htons(49152);
+		udp->source = bpf_htons(BFD_SRC_PORT);
 		udp->dest   = bpf_htons(BFD_PORT_1HOP);
 		udp->check  = 0;
 
@@ -371,7 +328,7 @@ int bfd_observer(struct xdp_md *ctx)
 		bfd->vers_diag   = (1 << 5) | (cfg->diag & 0x1f);
 		bfd->flags       = ((cfg->state & 0x3) << 6) | send_final;
 		if (!send_final && cfg->poll)
-			bfd->flags |= 0x20;
+			bfd->flags |= BFD_F_POLL;
 		bfd->detect_mult = cfg->mult;
 		bfd->len         = 24;
 		bfd->my_disc     = bpf_htonl(cfg->my_disc);

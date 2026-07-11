@@ -71,3 +71,28 @@ map update, and on the echo path the L2/L3/L4 rewrite plus XDP_TX,
 averaged across echo and non-echo packets. ~701ns in softirq is the
 mechanistic reason for result 1: the TX turnaround no userspace
 scheduler can block.
+
+## Reconciliation with the original writeup
+
+These fresh numbers are consistent with docs/writeup.md; the apparent
+differences are method, not drift:
+
+- bfdd flaps: writeup reports 44 in 120s at L3 alone; bench 1 reports
+  107 across L3+L4 combined in one window. L4 (RT starvation) flaps
+  bfdd continuously (writeup s4), so the combined count is expectedly
+  higher. Different windows, both correct.
+- xdp-bfd flaps: writeup s6 shows 0 at L1/L2/L4 and 1 at L3 (a single
+  ~28ms softirq-latency graze, one packet in ~66000, self-healed in
+  3.8ms). bench 1 saw 0 across L3+L4 this run; the L3 graze is rare and
+  non-deterministic, not a regression.
+- detect latency: writeup cites 33-34ms under full stress; bench 2
+  measures 31.3ms mean at idle. Idle is slightly faster (no softirq
+  queuing); both sit in the 30-34ms band above the 30ms floor, set by
+  the 5ms sweep quantization.
+- pacing: writeup p50 8.75 / max ~10-13ms; bench 3 p50 8.77 / max
+  10.08ms. Same distribution.
+
+New this session and not in the writeup: the head-to-head idle detect
+comparison (bfdd 30.05ms vs xdp-bfd 31.3ms). bfdd's hrtimer detection
+is marginally tighter at idle; xdp-bfd trades that for scheduler
+immunity under load. The writeup never measured this directly.

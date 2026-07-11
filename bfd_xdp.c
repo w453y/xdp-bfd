@@ -337,6 +337,31 @@ int bfd_observer(struct xdp_md *ctx)
 		bfd->min_rx      = bpf_htonl(cfg->min_rx_us);
 		bfd->min_echo_rx = 0;
 
+		/* Echo exactly a 24-byte control packet: a longer peer
+		 * frame (auth section, trailer) must not go back out with
+		 * trailing bytes. tot_len changes, so recompute the IP
+		 * checksum; UDP csum is already 0. On adjust_tail failure
+		 * drop: the frame is half-rewritten by now, and liveness
+		 * was already refreshed above. */
+		int want = (int)(sizeof(*eth) + sizeof(*iph) +
+				 sizeof(*udp) + BFD_MIN_LEN);
+		int excess = (int)((long)data_end - (long)data) - want;
+		if (excess > 0) {
+			iph->tot_len = bpf_htons(sizeof(*iph) +
+						 sizeof(*udp) + BFD_MIN_LEN);
+			udp->len = bpf_htons(sizeof(*udp) + BFD_MIN_LEN);
+			iph->check = 0;
+			__u32 csum = 0;
+			__u16 *w = (__u16 *)iph;
+			for (int i = 0; i < 10; i++)
+				csum += w[i];
+			csum = (csum & 0xffff) + (csum >> 16);
+			csum = (csum & 0xffff) + (csum >> 16);
+			iph->check = ~csum & 0xffff;
+			if (bpf_xdp_adjust_tail(ctx, -excess))
+				return XDP_DROP;
+		}
+
 		st->tx_pkts++;
 		return XDP_TX;
 	}

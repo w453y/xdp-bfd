@@ -576,7 +576,11 @@ static void fsm_tx(struct session *s, uint64_t t)
 		if (s->state == ST_UP) {
 			iv = s->applied_tx_us > s->r_min_rx ? s->applied_tx_us
 							    : s->r_min_rx;
-			iv = iv * 3 / 4 + (random() % (iv / 4 + 1));
+			/* RFC 5880 s6.8.7: jitter the interval to 75-100%,
+			 * but only 75-90% when detect_mult is 1. */
+			uint64_t span = s->detect_mult == 1 ? iv * 3 / 20
+							    : iv / 4;
+			iv = iv * 3 / 4 + (random() % (span + 1));
 		} else {
 			iv = SLOW_TX_US;
 		}

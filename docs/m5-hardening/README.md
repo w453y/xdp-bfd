@@ -104,3 +104,42 @@ Peer-side FRR quirk recorded: our P advertising a min_rx increase
 (t=607) was F-acked but not applied (peer kept 10ms pacing ~14s until
 restart); a min_rx decrease (t=848) was applied instantly. Explains
 why m5/m5b mid-session increases never slowed the peer.
+
+## m5f: graceful restart, first attempt - discriminator bug
+(bfd-m5f-persist.pcap, m5f-window.txt, window 1783756239 - 1783756563)
+
+--dp-hold 60: orphan/adopt/reconcile machinery all functioned, but
+both bfdd restarts still flapped. Wire root cause: DUT my_disc changed
+at each adoption (0xebab8c67 -> 0x2c889e3c -> 0xb4e8fa8d). The
+wire_disc preservation guard was on the adoption flag, but FRR replays
+config as UPDATEs immediately after the ADD, and UPDATEs re-entered
+the same path and stamped wire_disc with the new lid. The RFC 5880
+your_disc validation (our own m5 hardening) then correctly rejected
+the peer's packets still addressed to the old disc: kernel echo
+stopped, 30.2ms TX gap, peer detect tripped. Fix: guard on session
+freshness, not adoption.
+
+## m5g: graceful restart verified
+(bfd-m5g-persist.pcap, m5g-window.txt, window 1783757359 - 1783757486)
+
+Two back-to-back FRR restarts on the DUT with --dp-hold 60, both sides
+at 3x10ms, then a peer kill as detect-liveness control.
+
+    single my_disc for the entire capture: 0x0e1f486f
+    t=1783757461 detect gap=32 ms   (the kill; only Down event)
+
+No DUT TX gap above 25ms except the kill aftermath (1s slow-rate
+heartbeat while the peer rebooted). Peer uptime 1:36 spanning both
+restarts: the control plane restarted twice with zero wire
+interruption and no peer-visible event. Engine log: hold -> reconcile
+armed -> adopt (old lid preserved as wire_disc, new lid for bfdd) ->
+UPDATE replay -> silence, twice. Detect fired correctly at 3x10ms
+while operating under the third lid, proving the held/adopted session
+remains a real session, not a zombie.
+
+Mechanism per Rafael Zalamena's guidance on the FRR dev list:
+drop-and-recreate remains the default (--dp-hold 0); graceful restart
+is opt-in mark-and-sweep - orphan on disconnect, adopt live sessions
+by addr pair on re-ADD, sweep sessions bfdd did not re-register 10s
+after reconnect, hard teardown at the hold deadline if bfdd never
+returns.

@@ -64,3 +64,29 @@ For each specified network device, the script calculates and records the followi
 The script constantly prints the statistics to your terminal and saves them simultaneously to the specified log file (e.g., `netstats.log`).
 
 You can check out `example.log` in this repository to see a sample of exactly what the generated logs and captured data will look like!
+
+## m5h: spoof/injection test (counter-based, no pcap window)
+
+Injector on a third host (bfd-chaos, 10.66.0.3) forging source
+10.66.0.2, broadcast-dst so the bridge floods to the DUT NIC. Delivery
+confirmed on the DUT NIC before trusting any counter (earlier attempts
+were invalid: the vmbr3 host capture does not mirror unicast-to-DUT,
+and a malformed tcpdump filter hid the injected frames). Three cases,
+200 packets each: wrong your_disc (0x11111111, ttl 255), low ttl
+(ttl 64, correct your_disc), and correct your_disc from the forged
+host (ttl 255, my_disc 0xdeadbeef).
+
+First run exposed a real bug: the GTSM and your_disc reject paths
+returned XDP_PASS, so rejected packets were counted but still handed
+up the stack to the userspace UDP socket, where fsm_rx processed them
+with no TTL or your_disc check. The correct-disc case (your_disc =
+our wire_disc) matched the live session and overwrote rdisc, churning
+the FSM against the real peer. Session flapped (uptime reset) despite
+detection never being fooled. Fix: XDP_DROP on both reject sites.
+
+Verified run: baseline uptime 1:56, rejects 0. After injecting all
+600 packets: uptime 3:00 (no reset, session held), rejects 600 (all
+dropped in XDP, one count each), malformed 0, detection counters
+climbing only with real peer traffic. Spoofed liveness refresh,
+spoofed echo, and spoofed FSM disruption are all closed; forged
+packets die in XDP before reaching userspace.

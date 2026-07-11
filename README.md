@@ -86,15 +86,33 @@ Findings along the way:
   recovery (Down→Init→Up→Poll→Final) completed in **3.8ms**. Total
   session downtime across the matrix: under 4ms.
 
+## Hardening (m5-hardening branch)
+
+Beyond the original writeup: GTSM TTL-255 enforcement, RFC 5880
+s6.8.6 your_disc demux validation (spoofed traffic can no longer
+refresh liveness or be echoed), session-map creation gated on
+control-plane config, per-session min_rx in the kernel detect path,
+kernel TX packet counting, live remote-timer sync, poll-aware detect
+budgets, self-initiated Poll sequences on parameter change, and
+transitional userspace TX when the peer paces slower than the
+required rate. Every fix carries wire evidence (pcap + analysis) in
+docs/m5-hardening, including two invalidated test runs kept for the
+record.
+
 ## Honest limitations
 
-- Single session, IPv4, single-hop, no authentication, no echo mode.
-- RX-clocked TX requires an async-clocked peer; two RX-clocked ends
-  would deadlock. The userspace slow-rate heartbeat is the recovery
-  spark.
+- IPv4 only, single-hop only, no authentication, no echo mode. Maps
+  and daemon are multi-session capable (64), but only single-session
+  operation is validated so far.
+- RX-clocked TX alone requires an async-clocked peer. The userspace
+  transitional TX gate now fills at the full required pace whenever
+  the peer's pacing lags our advertised rate (not just a slow-rate
+  heartbeat), which also covers asymmetric-interval configurations;
+  see docs/m5-hardening. Two RX-clocked ends remain untested.
 - Shares fate with softirq latency (see the one flap above).
-- Mid-session timer renegotiation (Poll sequences we initiate) is
-  minimal.
+- Mid-session timer renegotiation is implemented (self-initiated
+  RFC 5880 s6.8.3 Poll sequences, poll-aware detect budgets,
+  transitional TX), wire-verified in docs/m5-hardening.
 - All numbers from VMs (Proxmox/virtio, stress applied in-guest, wire
   truth captured host-side). Relative comparisons are load-bearing;
   absolute numbers await bare-metal validation.
@@ -121,9 +139,8 @@ Notes:
   rejected for AF_UNIX. strace-confirmed. Reported upstream as
   [FRRouting/frr#22608](https://github.com/FRRouting/frr/issues/22608);
   fix submitted as [FRRouting/frr#22621](https://github.com/FRRouting/frr/pull/22621).
-- `show bfd peers counters`: input counts come from the XDP session map;
-  the output counter only reflects userspace-sent packets (handshake /
-  slow-rate) — kernel-path XDP_TX replies are not per-packet counted yet.
+- `show bfd peers counters`: both input and output counts come from
+  the XDP session map; kernel XDP_TX replies are counted per-packet.
 - Sessions are torn down when bfdd disconnects and recreated on
   reconnect (bfdd re-adds them); surviving a control-plane restart
   without data-plane interruption is future work, not current behavior.

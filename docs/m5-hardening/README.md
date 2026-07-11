@@ -72,3 +72,35 @@ of the peer (echo rate is slaved to peer pacing), so the peer times
 us out. Engine log confirms "Up -> Down (peer sent Down)". Fix scoped:
 Poll sequence initiation on parameter change + transitional userspace
 TX at the new rate until observed peer pacing converges.
+
+## m5d: transitional TX verified, poll blocked by ordering race
+(bfd-m5d-poll-tx.pcap, m5d-window.txt, window 1783751882 - 1783752094)
+
+Revert survived (uptime 1:54; DUT pacing flips to 10.8ms at t=998.9
+while peer still slow: transitional userspace TX on the wire). No P
+packets from the DUT: the poll-termination check in ktx_poll_map read
+the map before the mirror pushed poll=1 and cleared the poll at birth.
+Consequence: peer never applied the reverted timers, paced 300ms until
+the kill, detect correctly fired at 901ms for that regime.
+
+## m5e: full pass (bfd-m5e-poll-tx.pcap, m5e-window.txt)
+
+Window 1783752595 - 1783752934, precondition wire-gated (38 pkts/6s,
+fresh capture after catching a stale gate file in the first attempt).
+Fix: poll termination only honored when the pushed config carried
+poll=1.
+
+    t=1783752622 detect gap=902 ms   (setup: peer restart, slow regime)
+    t=1783752897 detect gap=33 ms    (kill: 3x10ms, post-convergence)
+
+Zero transitions at the revert (uptime 4:04 spans it). Poll on the
+wire: t=848.066 DUT P, peer F +50us, peer pacing fast at t=848.076.
+Advertised timer changes now propagate mid-session; detect budget and
+peer pacing converge together. Fixes the m5c t=905 peer-initiated flap
+and retires the asymmetric-interval flap loop (transitional TX holds
+the peer's budget whenever it paces slower than our required rate).
+
+Peer-side FRR quirk recorded: our P advertising a min_rx increase
+(t=607) was F-acked but not applied (peer kept 10ms pacing ~14s until
+restart); a min_rx decrease (t=848) was applied instantly. Explains
+why m5/m5b mid-session increases never slowed the peer.

@@ -13,7 +13,9 @@
 #define BFD_MIN_LEN     24
 #define BFD_VERSION     1
 
-#define LOCAL_MIN_RX_US 10000        /* our configured required-min-rx */
+#define LOCAL_MIN_RX_US 10000  /* fallback required-min-rx: promiscuous
+                                 * observer only; configured sessions use
+                                 * tx_config.min_rx_us */
 #define SWEEP_NS        (5 * 1000 * 1000ull)   /* 5ms sweep */
 
 struct bfdhdr {
@@ -40,10 +42,13 @@ struct session_key {
 struct session_state {
 	__u64 last_seen_ns;
 	__u64 rx_pkts;
+	__u64 tx_pkts;        /* kernel XDP_TX replies */
 	__u32 remote_disc;
 	__u32 local_disc;
 	__u32 min_tx_us;
 	__u32 min_rx_us;
+	__u32 detect_iv_us;   /* effective detect basis: lags advertised
+	                       * decreases until peer paces at new rate */
 	__u8  remote_state;
 	__u8  remote_diag;
 	__u8  detect_mult;
@@ -66,9 +71,10 @@ struct {
 	__type(value, struct session_state);
 } bfd_sessions SEC(".maps");
 
+/* stats: 0=pkts 1=bfd 2=malformed 3=demux/ttl rejects */
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 3);
+	__uint(max_entries, 4);
 	__type(key, __u32);
 	__type(value, __u64);
 } bfd_stats SEC(".maps");
@@ -88,7 +94,8 @@ struct tx_cfg {
 	__u8  state;
 	__u8  diag;
 	__u8  mult;
-	__u8  pad;
+	__u8  poll;          /* userspace-initiated Poll sequence active:
+	                      * echo sets P; kernel clears on peer's F */
 };
 
 struct {
@@ -97,6 +104,16 @@ struct {
 	__type(key, struct session_key);
 	__type(value, struct tx_cfg);
 } tx_config SEC(".maps");
+
+/* bit 0: promiscuous observe - track sessions with no tx_config entry.
+ * Set by the standalone loader; bfd_tx leaves it 0 so only configured
+ * sessions can create map state. */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, __u32);
+} prog_flags SEC(".maps");
 
 struct sweep {
 	struct bpf_timer timer;
@@ -133,6 +150,7 @@ static __always_inline void emit(struct session_key *k,
 }
 
 /* Sweep: called for each session every SWEEP_NS. */
+struct bpf_map;
 static long check_session(struct bpf_map *map, struct session_key *k,
 			  struct session_state *st, void *ctx)
 {
@@ -141,8 +159,19 @@ static long check_session(struct bpf_map *map, struct session_key *k,
 	if (!st->alive)
 		return 0;
 
-	__u64 iv_us = st->min_tx_us > LOCAL_MIN_RX_US ?
-		      st->min_tx_us : LOCAL_MIN_RX_US;
+	/* Effective interval is maintained by the RX path (poll-aware:
+	 * advertised decreases apply only once traffic actually paces at
+	 * the new rate). Fallback recompute for entries that predate the
+	 * field. */
+	__u64 iv_us = st->detect_iv_us;
+	if (!iv_us) {
+		__u32 local_rx = LOCAL_MIN_RX_US;
+		struct tx_cfg *cfg = bpf_map_lookup_elem(&tx_config, k);
+		if (cfg && cfg->min_rx_us)
+			local_rx = cfg->min_rx_us;
+		iv_us = st->min_tx_us > local_rx ?
+			st->min_tx_us : local_rx;
+	}
 	__u64 detect_ns = (__u64)st->detect_mult * iv_us * 1000ull;
 
 	__s64 delta = (__s64)(now - st->last_seen_ns);
@@ -204,6 +233,13 @@ int bfd_observer(struct xdp_md *ctx)
 	if (udp->dest != bpf_htons(BFD_PORT_1HOP))
 		return XDP_PASS;
 
+	/* GTSM (RFC 5881 s5): single-hop control packets MUST arrive
+	 * with TTL 255. Anything else is off-link or spoofed. */
+	if (iph->ttl != 255) {
+		count(3);
+		return XDP_DROP;
+	}
+
 	struct bfdhdr *bfd = (void *)(udp + 1);
 	if ((void *)(bfd + 1) > data_end) {
 		count(2);
@@ -214,18 +250,51 @@ int bfd_observer(struct xdp_md *ctx)
 		count(2);
 		return XDP_PASS;
 	}
-	if (bfd->len > bpf_ntohs(udp->len) - sizeof(*udp)) {
+	__u16 udp_len = bpf_ntohs(udp->len);
+	if (udp_len < sizeof(*udp) + BFD_MIN_LEN ||
+	    bfd->len > udp_len - sizeof(*udp)) {
 		count(2);
 		return XDP_PASS;
 	}
 
 	count(1);
-	ensure_sweeper();
 
 	struct session_key key = {
 		.peer_ip  = iph->saddr,
 		.local_ip = iph->daddr,
 	};
+
+	/* Only track sessions the control plane configured, unless the
+	 * standalone loader asked for promiscuous observation. Stops
+	 * unsolicited packets from filling the session map. */
+	struct tx_cfg *cfg = bpf_map_lookup_elem(&tx_config, &key);
+	if (!cfg) {
+		__u32 zero = 0;
+		__u32 *fl = bpf_map_lookup_elem(&prog_flags, &zero);
+		if (!fl || !(*fl & 1))
+			return XDP_PASS;
+	}
+
+	/* Demux validation (RFC 5880 s6.8.6): your_disc must name our
+	 * session, or be 0 with the peer in Down/AdminDown (peer lost
+	 * state / restarting). A packet failing this must not refresh
+	 * liveness or be echoed - that is how spoofed traffic keeps a
+	 * dead session up. */
+	__u8 rstate = BFD_STATE(bfd);
+	if (cfg && cfg->my_disc) {
+		__u32 ydisc = bpf_ntohl(bfd->your_disc);
+		if (ydisc != cfg->my_disc &&
+		    !(ydisc == 0 && rstate <= 1)) {
+			count(3);
+			return XDP_DROP;
+		}
+	}
+
+	ensure_sweeper();
+
+	/* Poll termination (RFC 5880 s6.8.4): peer answered our P with F. */
+	if (cfg && cfg->poll && (bfd->flags & 0x10))
+		cfg->poll = 0;
 
 	struct session_state *st = bpf_map_lookup_elem(&bfd_sessions, &key);
 	if (!st) {
@@ -237,6 +306,27 @@ int bfd_observer(struct xdp_md *ctx)
 	}
 
 	__u64 now = bpf_ktime_get_ns();
+
+	/* Poll-aware detect basis (RFC 5880 s6.8.3): a peer that lowers
+	 * its advertised min_tx keeps transmitting at the old rate until
+	 * its Poll sequence terminates. Shrinking our detect budget on
+	 * the advertisement alone guarantees a false timeout, so:
+	 * increases apply immediately (always safe, larger budget);
+	 * decreases apply only once the observed inter-arrival gap fits
+	 * the new interval, i.e. the peer is actually pacing at it. */
+	{
+		__u32 local_rx = LOCAL_MIN_RX_US;
+		if (cfg && cfg->min_rx_us)
+			local_rx = cfg->min_rx_us;
+		__u32 cand = bpf_ntohl(bfd->min_tx);
+		if (cand < local_rx)
+			cand = local_rx;
+		if (!st->alive || !st->detect_iv_us ||
+		    cand >= st->detect_iv_us)
+			st->detect_iv_us = cand;
+		else if (now - st->last_seen_ns <= (__u64)cand * 1000ull)
+			st->detect_iv_us = cand;
+	}
 
 	st->last_seen_ns = now;
 	st->rx_pkts++;
@@ -254,9 +344,10 @@ int bfd_observer(struct xdp_md *ctx)
 	}
 
 	/* RX-clocked TX: rewrite this very frame into our control packet
-	 * and bounce it. Peer's clock becomes our clock; runs in softirq. */
-	struct tx_cfg *cfg = bpf_map_lookup_elem(&tx_config, &key);
-	if (cfg && cfg->enable) {
+	 * and bounce it. Peer's clock becomes our clock; runs in softirq.
+	 * Never echo Up at a peer that just said Down/AdminDown; let
+	 * userspace run the transition. */
+	if (cfg && cfg->enable && rstate >= 2) {
 		__u8 send_final = (bfd->flags & 0x20) ? 0x10 : 0;
 
 		/* L2 swap */
@@ -275,9 +366,12 @@ int bfd_observer(struct xdp_md *ctx)
 		udp->dest   = bpf_htons(BFD_PORT_1HOP);
 		udp->check  = 0;
 
-		/* BFD payload from config */
+		/* BFD payload from config. P while a Poll sequence is
+		 * active, F when answering the peer's P; never both. */
 		bfd->vers_diag   = (1 << 5) | (cfg->diag & 0x1f);
 		bfd->flags       = ((cfg->state & 0x3) << 6) | send_final;
+		if (!send_final && cfg->poll)
+			bfd->flags |= 0x20;
 		bfd->detect_mult = cfg->mult;
 		bfd->len         = 24;
 		bfd->my_disc     = bpf_htonl(cfg->my_disc);
@@ -286,6 +380,7 @@ int bfd_observer(struct xdp_md *ctx)
 		bfd->min_rx      = bpf_htonl(cfg->min_rx_us);
 		bfd->min_echo_rx = 0;
 
+		st->tx_pkts++;
 		return XDP_TX;
 	}
 

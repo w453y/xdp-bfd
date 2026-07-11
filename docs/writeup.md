@@ -102,6 +102,32 @@ The integration also produced the project's last find. bfdd's unix transport for
 
 What this is: a lab-grade, single-hop, IPv4-only implementation with no authentication, echo, or demand mode. Sessions drop and re-establish across a bfdd restart. The dataplane tears them down on control-plane disconnect and bfdd re-adds them on reconnect, which is correct but not hitless. The RX-clocked design requires an asynchronously-clocked peer. And all numbers here are from VMs: the stress was applied inside the guest and hit every backend identically, so the comparisons are load-bearing, but the absolute figures await a bare-metal reproduction, which is the first item on the roadmap. After that: multi-session hardening, IPv6, and, if operators say drop-and-recreate hurts, session continuity across control-plane restarts.
 
+### Since this writeup: the m5-hardening work
+
+Several roadmap items above are now done and wire-verified on the
+m5-hardening branch (see docs/m5-hardening and docs/benchmarks):
+
+- Session continuity across control-plane restarts: `--dp-hold`
+  keeps sessions live across a bfdd restart (orphan/adopt/reconcile
+  per Rafael Zalamena's guidance on the FRR dev list). Two
+  back-to-back FRR restarts, zero peer-visible events. Default
+  remains drop-and-recreate.
+- Self-initiated Poll sequences (RFC 5880 s6.8.3) on parameter
+  change, plus transitional TX so a mid-session timer change no
+  longer flaps against either side.
+- Validation hardening: GTSM TTL-255, your_disc demux (s6.8.6),
+  config-gated session creation, all XDP_DROP so rejects cannot
+  reach userspace. Spoof/injection tested from a third host.
+- Kernel-path XDP_TX replies now counted per-packet; live
+  remote-timer sync so FRR reports negotiated timers correctly.
+- Multi-session capable (64) in the maps and daemon, though only
+  single-session operation is benchmarked so far.
+
+Still open, and still the honest limitations: authentication,
+echo, and demand mode (RFC 5880 s6.4/6.6/6.7); IPv6 and multihop;
+the async-peer requirement of RX-clocked TX; and bare-metal
+validation of the absolute numbers.
+
 ## 8. Coda: method
 
 Every bug in this project was found by a packet capture, and not one was found by a log. The Init-loop from a stale transmit schedule after timer renegotiation; the socket buffer convincing a starved daemon that packets were arriving on time; the etf qdisc blackholing ARP; the pipeline scheduling Poll answers a second into the future; the eaten Final; the same timestamp race written twice by the same author on two sides of the kernel boundary. All of them produced healthy-looking logs and a wire that told a different story. Several of them were introduced by the project's own tooling and design decisions, including ones I was confident about.

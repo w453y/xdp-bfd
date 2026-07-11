@@ -134,9 +134,10 @@ struct bfddp_counters {
 /* ---------- BPF map mirror types (must match bfd_xdp.c) ---------- */
 struct map_key   { uint32_t peer_ip, local_ip; };
 struct map_cfg   { uint32_t enable, my_disc, your_disc, min_tx_us, min_rx_us;
-		   uint8_t state, diag, mult, pad; };
-struct map_state { uint64_t last_seen_ns, rx_pkts;
-		   uint32_t remote_disc, local_disc, min_tx_us, min_rx_us;
+		   uint8_t state, diag, mult, poll; };
+struct map_state { uint64_t last_seen_ns, rx_pkts, tx_pkts;
+		   uint32_t remote_disc, local_disc, min_tx_us, min_rx_us,
+			    detect_iv_us;
 		   uint8_t remote_state, remote_diag, detect_mult, alive; };
 
 /* ---------- session ---------- */
@@ -154,8 +155,17 @@ struct session {
 	uint32_t r_min_tx, r_min_rx;
 	uint8_t  r_mult, r_flags;     /* r_flags: last rx flags & 0x3f */
 	int      r_state;
+	uint32_t detect_iv_us;        /* poll-aware effective detect basis */
 	int      send_final, just_up;
-	int      pushed_state;
+	int      polling;             /* our Poll sequence in flight */
+	uint32_t wire_disc;           /* my_disc on the wire; survives bfdd
+	                               * restarts even when lid changes */
+	int      orphaned;            /* held across a bfdd disconnect */
+	uint64_t orphan_deadline_us;
+	uint32_t applied_tx_us;       /* actual TX pace; lags an advertised
+	                               * min_tx increase until poll ends */
+	int      pushed_valid;
+	struct map_cfg pushed_cfg;
 	uint64_t last_rx_us, next_tx_us;
 	uint64_t tx_pkts;             /* userspace-sent control packets */
 };
@@ -171,6 +181,10 @@ static struct bpf_object *bpf_obj;
 static int dp_listen = -1, dp_conn = -1;
 static uint8_t dp_buf[4096];
 static size_t dp_have;
+static uint64_t dp_hold_us;              /* --dp-hold: keep sessions
+                                          * across bfdd restarts */
+static uint64_t dp_reconcile_us;         /* sweep deadline after reconnect */
+#define DP_RECONCILE_US (10ull * 1000000)
 
 static uint64_t now_us(void)
 {
@@ -197,6 +211,16 @@ static struct session *sess_by_lid(uint32_t lid)
 		return NULL;
 	for (int i = 0; i < MAX_SESSIONS; i++)
 		if (sessions[i].used && sessions[i].lid == lid)
+			return &sessions[i];
+	return NULL;
+}
+
+static struct session *sess_by_wire(uint32_t disc)
+{
+	if (!disc)
+		return NULL;
+	for (int i = 0; i < MAX_SESSIONS; i++)
+		if (sessions[i].used && sessions[i].wire_disc == disc)
 			return &sessions[i];
 	return NULL;
 }
@@ -248,21 +272,25 @@ static int ktx_attach(const char *ifname)
 
 static void ktx_mirror(struct session *s)
 {
-	if (!use_ktx || s->state == s->pushed_state)
+	if (!use_ktx)
 		return;
-	struct map_key k = { .peer_ip = s->peer_ip, .local_ip = s->local_ip };
 	struct map_cfg c = {
 		.enable    = (s->state == ST_UP),
-		.my_disc   = s->lid,
+		.my_disc   = s->wire_disc,
 		.your_disc = s->rdisc,
 		.min_tx_us = s->min_tx_us,
 		.min_rx_us = s->min_rx_us,
 		.state     = s->state,
 		.diag      = s->diag,
 		.mult      = s->detect_mult,
+		.poll      = (s->polling && s->state == ST_UP) ? 1 : 0,
 	};
+	if (s->pushed_valid && !memcmp(&c, &s->pushed_cfg, sizeof(c)))
+		return;
+	struct map_key k = { .peer_ip = s->peer_ip, .local_ip = s->local_ip };
 	bpf_map_update_elem(cfg_fd, &k, &c, 0);
-	s->pushed_state = s->state;
+	s->pushed_cfg = c;
+	s->pushed_valid = 1;
 }
 
 static void ktx_clear(struct session *s)
@@ -274,6 +302,8 @@ static void ktx_clear(struct session *s)
 	bpf_map_delete_elem(sess_fd, &k);
 }
 
+static void dp_notify_state(struct session *s);
+
 static void ktx_poll_map(struct session *s, uint64_t t)
 {
 	if (!use_ktx || s->state != ST_UP)
@@ -284,6 +314,25 @@ static void ktx_poll_map(struct session *s, uint64_t t)
 		return;
 	if (ms.last_seen_ns / 1000 > s->last_rx_us)
 		s->last_rx_us = ms.last_seen_ns / 1000;
+	if (ms.detect_iv_us)
+		s->detect_iv_us = ms.detect_iv_us;
+	if (s->polling) {
+		/* Kernel clears cfg.poll when the peer's F arrives. Adopt
+		 * that here and in pushed_cfg so the next mirror push
+		 * doesn't resurrect a finished poll. */
+		struct map_cfg mc;
+		if (!bpf_map_lookup_elem(cfg_fd, &k, &mc) && !mc.poll) {
+			s->polling = 0;
+			s->applied_tx_us = s->min_tx_us;
+			s->pushed_cfg.poll = 0;
+		}
+	}
+	if (ms.min_tx_us && (ms.min_tx_us != s->r_min_tx ||
+			     ms.min_rx_us != s->r_min_rx)) {
+		s->r_min_tx = ms.min_tx_us;
+		s->r_min_rx = ms.min_rx_us;
+		dp_notify_state(s);
+	}
 	if (ms.remote_state == ST_DOWN) {
 		printf("[%llu] lid=%u Up -> Down (map: peer sent Down)\n",
 		       (unsigned long long)t, s->lid);
@@ -309,6 +358,35 @@ static void dp_sessions_teardown(const char *why)
 		printf("dplane: %s - tore down %d session(s)\n", why, n);
 }
 
+static void sess_teardown_one(struct session *s, const char *why)
+{
+	printf("dplane: lid=%u %s - torn down\n", s->lid, why);
+	ktx_clear(s);
+	memset(s, 0, sizeof(*s));
+}
+
+/* Connection lost: with --dp-hold, keep the wire sessions alive and
+ * mark them orphaned (graceful restart); otherwise the historical
+ * drop-and-recreate. Reconciliation happens after reconnect. */
+static void dp_sessions_orphan(const char *why)
+{
+	if (!dp_hold_us) {
+		dp_sessions_teardown(why);
+		return;
+	}
+	uint64_t t = now_us();
+	int n = 0;
+	for (int i = 0; i < MAX_SESSIONS; i++)
+		if (sessions[i].used && !sessions[i].orphaned) {
+			sessions[i].orphaned = 1;
+			sessions[i].orphan_deadline_us = t + dp_hold_us;
+			n++;
+		}
+	if (n)
+		printf("dplane: %s - holding %d session(s) up to %llus\n",
+		       why, n, (unsigned long long)(dp_hold_us / 1000000));
+}
+
 static void dp_send(const void *msg, size_t len)
 {
 	if (dp_conn < 0)
@@ -319,7 +397,7 @@ static void dp_send(const void *msg, size_t len)
 		close(dp_conn);
 		dp_conn = -1;
 		dp_have = 0;
-		dp_sessions_teardown("send failure");
+		dp_sessions_orphan("send failure");
 	}
 }
 
@@ -356,6 +434,12 @@ static void state_transition(struct session *s, int newstate, int diag,
 	       s->lid, stname[s->state], stname[newstate], why);
 	s->state = newstate;
 	s->diag  = diag;
+	if (newstate == ST_DOWN)
+		s->detect_iv_us = 0;
+	if (newstate == ST_UP || newstate == ST_DOWN) {
+		s->polling = 0;
+		s->applied_tx_us = s->min_tx_us;
+	}
 	s->just_up = (newstate == ST_UP);
 	s->next_tx_us = t;
 	dp_notify_state(s);
@@ -380,9 +464,24 @@ static void fsm_rx(struct session *s, const struct bfdpkt *p, uint64_t t)
 	s->r_min_tx = ntohl(p->min_tx);
 	s->r_mult   = p->mult;
 	s->r_flags  = p->flags & 0x3f;
+
+	/* Poll-aware detect basis: decreases apply only once traffic
+	 * actually paces at the new interval (RFC 5880 s6.8.3). */
+	{
+		uint32_t cand = s->r_min_tx > s->min_rx_us ?
+				s->r_min_tx : s->min_rx_us;
+		if (!s->detect_iv_us || cand >= s->detect_iv_us ||
+		    (s->last_rx_us && t - s->last_rx_us <= cand))
+			s->detect_iv_us = cand;
+	}
+
 	s->last_rx_us = t;
 	if (p->flags & F_P)
 		s->send_final = 1;
+	if ((p->flags & F_F) && s->polling) {
+		s->polling = 0;
+		s->applied_tx_us = s->min_tx_us;
+	}
 
 	if (s->admin_down)
 		return;
@@ -415,7 +514,9 @@ static void fsm_detect(struct session *s, uint64_t t)
 {
 	if (s->state == ST_DOWN || s->state == ST_ADMINDOWN || !s->last_rx_us)
 		return;
-	uint64_t iv = s->r_min_tx > s->min_rx_us ? s->r_min_tx : s->min_rx_us;
+	uint64_t iv = s->detect_iv_us;
+	if (!iv)
+		iv = s->r_min_tx > s->min_rx_us ? s->r_min_tx : s->min_rx_us;
 	int64_t sd = (int64_t)(t - s->last_rx_us);
 	if (sd < 0)
 		sd = 0;
@@ -435,25 +536,35 @@ static void fsm_tx(struct session *s, uint64_t t)
 
 	if (s->last_rx_us) {
 		uint64_t cur = (s->state == ST_UP)
-			? (s->min_tx_us > s->r_min_rx ? s->min_tx_us
-						      : s->r_min_rx)
+			? (s->applied_tx_us > s->r_min_rx ? s->applied_tx_us
+							  : s->r_min_rx)
 			: SLOW_TX_US;
 		if (s->next_tx_us > t + cur)
 			s->next_tx_us = t + cur;
 	}
 
 	int due = (t >= s->next_tx_us) || s->send_final;
-	if (use_ktx && s->state == ST_UP && !s->send_final && !s->just_up)
-		due = 0;
+	if (use_ktx && s->state == ST_UP && !s->send_final && !s->just_up) {
+		/* Kernel echo covers TX only at the peer's pace. If the
+		 * peer paces slower than our required rate (its detect
+		 * budget for us), transmit from here at the required
+		 * pace; otherwise stay silent as before. last_rx_us is
+		 * synced from the map, so it tracks kernel echo times. */
+		uint64_t pace = s->applied_tx_us > s->r_min_rx ?
+				s->applied_tx_us : s->r_min_rx;
+		if (t - s->last_rx_us < pace)
+			due = 0;
+	}
 	if (!due)
 		return;
 
 	struct bfdpkt o = {0};
 	o.vers_diag = (1 << 5) | (s->diag & 0x1f);
-	o.flags     = (s->state << 6) | (s->send_final ? F_F : 0);
+	o.flags     = (s->state << 6) |
+		      (s->send_final ? F_F : (s->polling ? F_P : 0));
 	o.mult      = s->detect_mult;
 	o.len       = 24;
-	o.my_disc   = htonl(s->lid);
+	o.my_disc   = htonl(s->wire_disc);
 	o.your_disc = htonl(s->rdisc);
 	o.min_tx    = htonl(s->state == ST_UP ? s->min_tx_us
 					      : (uint32_t)SLOW_TX_US);
@@ -472,8 +583,8 @@ static void fsm_tx(struct session *s, uint64_t t)
 	if (t >= s->next_tx_us) {
 		uint64_t iv;
 		if (s->state == ST_UP) {
-			iv = s->min_tx_us > s->r_min_rx ? s->min_tx_us
-							: s->r_min_rx;
+			iv = s->applied_tx_us > s->r_min_rx ? s->applied_tx_us
+							    : s->r_min_rx;
 			iv = iv * 3 / 4 + (random() % (iv / 4 + 1));
 		} else {
 			iv = SLOW_TX_US;
@@ -497,10 +608,20 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	}
 
 	struct session *s = sess_by_lid(lid);
-	int fresh = 0;
+	int fresh = 0, adopted = 0;
 	if (!s) {
 		struct session *stale = sess_by_addr_pair_local(sm);
-		if (stale) {
+		if (stale && dp_hold_us && stale->state == ST_UP) {
+			/* Graceful restart: bfdd re-registered this addr
+			 * pair under a new lid. Adopt the live session in
+			 * place; wire_disc, FSM state, kernel maps and
+			 * counters all survive. */
+			printf("dplane: ADD lid=%u adopts live session (old lid=%u)\n",
+			       lid, stale->lid);
+			s = stale;
+			s->orphaned = 0;
+			adopted = 1;
+		} else if (stale) {
 			printf("dplane: ADD lid=%u replaces stale lid=%u\n",
 			       lid, stale->lid);
 			ktx_clear(stale);
@@ -517,17 +638,33 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	}
 
 	s->lid         = lid;
+	if (fresh || !s->wire_disc)
+		s->wire_disc = lid;   /* adopted sessions keep their wire
+		                       * discriminator (RFC 5880: constant
+		                       * while Up) */
 	memcpy(&s->local_ip, &sm->src.s6_addr[0], 4);  /* v4 in first word */
 	memcpy(&s->peer_ip,  &sm->dst.s6_addr[0], 4);
+	uint32_t old_tx = s->min_tx_us, old_rx = s->min_rx_us;
 	s->min_tx_us   = ntohl(sm->min_tx);
 	s->min_rx_us   = ntohl(sm->min_rx);
 	s->detect_mult = sm->detect_mult;
 	s->passive     = !!(flags & SESSION_PASSIVE);
 	s->admin_down  = !!(flags & SESSION_SHUTDOWN);
+	if (!fresh && s->state == ST_UP &&
+	    (s->min_tx_us != old_tx || s->min_rx_us != old_rx)) {
+		/* RFC 5880 s6.8.3: parameter change while Up requires a
+		 * Poll sequence. An increased min_tx must not slow actual
+		 * TX until the poll terminates; a decrease applies now. */
+		s->polling = 1;
+		if (s->min_tx_us < s->applied_tx_us || !s->applied_tx_us)
+			s->applied_tx_us = s->min_tx_us;
+	} else {
+		s->applied_tx_us = s->min_tx_us;
+	}
 	if (fresh) {
 		s->state = s->admin_down ? ST_ADMINDOWN : ST_DOWN;
 		s->diag  = 0;
-		s->pushed_state = -1;
+		s->pushed_valid = 0;
 		s->next_tx_us = t;
 	}
 
@@ -539,6 +676,8 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	       s->min_tx_us, s->min_rx_us, s->detect_mult,
 	       s->passive ? " passive" : "",
 	       s->admin_down ? " shutdown" : "");
+	if (adopted)
+		dp_notify_state(s);
 	(void)h;
 }
 
@@ -589,18 +728,21 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h,
 	m.h.length  = htons(sizeof(m));
 	m.c.lid     = htonl(lid);
 	if (s) {
-		uint64_t rx = 0;
+		uint64_t rx = 0, ktx = 0;
 		if (use_ktx) {
 			struct map_key k = { .peer_ip = s->peer_ip,
 					     .local_ip = s->local_ip };
 			struct map_state ms;
-			if (!bpf_map_lookup_elem(sess_fd, &k, &ms))
-				rx = ms.rx_pkts;
+			if (!bpf_map_lookup_elem(sess_fd, &k, &ms)) {
+				rx  = ms.rx_pkts;
+				ktx = ms.tx_pkts;
+			}
 		}
+		uint64_t tx = s->tx_pkts + ktx;
 		m.c.control_input_bytes    = htobe64(rx * 24);
 		m.c.control_input_packets  = htobe64(rx);
-		m.c.control_output_bytes   = htobe64(s->tx_pkts * 24);
-		m.c.control_output_packets = htobe64(s->tx_pkts);
+		m.c.control_output_bytes   = htobe64(tx * 24);
+		m.c.control_output_packets = htobe64(tx);
 	}
 	dp_send(&m, sizeof(m));
 }
@@ -648,7 +790,7 @@ static void dp_read(void)
 		close(dp_conn);
 		dp_conn = -1;
 		dp_have = 0;
-		dp_sessions_teardown("bfdd disconnected");
+		dp_sessions_orphan("bfdd disconnected");
 		return;
 	}
 	if (n < 0)
@@ -689,11 +831,18 @@ static void dp_accept(void)
 		printf("dplane: replacing existing bfdd connection\n");
 		close(dp_conn);
 		dp_have = 0;
-		dp_sessions_teardown("connection replaced");
+		dp_sessions_orphan("connection replaced");
 	}
 	fcntl(c, F_SETFL, O_NONBLOCK);
 	dp_conn = c;
 	printf("dplane: bfdd connected\n");
+	for (int i = 0; i < MAX_SESSIONS; i++)
+		if (sessions[i].used && sessions[i].orphaned) {
+			dp_reconcile_us = now_us() + DP_RECONCILE_US;
+			printf("dplane: reconcile sweep armed (%llus)\n",
+			       (unsigned long long)(DP_RECONCILE_US / 1000000));
+			break;
+		}
 }
 
 static int dp_listen_init(const char *arg)
@@ -752,6 +901,8 @@ int main(int argc, char **argv)
 			dplane_path = argv[++i];
 		else if (!strcmp(argv[i], "--kernel-tx") && i + 1 < argc)
 			ktx_if = argv[++i];
+		else if (!strcmp(argv[i], "--dp-hold") && i + 1 < argc)
+			dp_hold_us = strtoull(argv[++i], NULL, 10) * 1000000ull;
 		else if (!static_local)
 			static_local = argv[i];
 		else if (!static_peer)
@@ -760,7 +911,7 @@ int main(int argc, char **argv)
 	if (!dplane_path && (!static_local || !static_peer)) {
 		fprintf(stderr,
 			"usage: %s <local-ip> <peer-ip> [--kernel-tx <if>]\n"
-			"       %s --dplane <sock-path> [--kernel-tx <if>]\n",
+			"       %s --dplane <sock-path> [--kernel-tx <if>] [--dp-hold <sec>]\n",
 			argv[0], argv[0]);
 		return 1;
 	}
@@ -802,11 +953,13 @@ int main(int argc, char **argv)
 		inet_pton(AF_INET, static_local, &s->local_ip);
 		inet_pton(AF_INET, static_peer, &s->peer_ip);
 		s->lid         = (random() & 0x7fffffff) | 1;
+		s->wire_disc   = s->lid;
 		s->min_tx_us   = DEF_MIN_TX;
+		s->applied_tx_us = DEF_MIN_TX;
 		s->min_rx_us   = DEF_MIN_RX;
 		s->detect_mult = DEF_MULT;
 		s->state       = ST_DOWN;
-		s->pushed_state = -1;
+		s->pushed_valid = 0;
 		s->next_tx_us  = now_us();
 		printf("bfd_tx: static session lid=%u %s -> %s%s\n",
 		       s->lid, static_local, static_peer,
@@ -826,17 +979,29 @@ int main(int argc, char **argv)
 
 		if (n >= 24 && ((p.vers_diag >> 5) & 7) == 1 &&
 		    p.mult && p.my_disc) {
-			struct session *rs = sess_by_lid(ntohl(p.your_disc));
+			struct session *rs = sess_by_wire(ntohl(p.your_disc));
 			if (!rs)
 				rs = sess_by_addr(from.sin_addr.s_addr);
 			if (rs)
 				fsm_rx(rs, &p, t);
 		}
 
+		if (dp_reconcile_us && t >= dp_reconcile_us) {
+			dp_reconcile_us = 0;
+			for (int i = 0; i < MAX_SESSIONS; i++)
+				if (sessions[i].used && sessions[i].orphaned)
+					sess_teardown_one(&sessions[i],
+						"not re-added by bfdd");
+		}
+
 		for (int i = 0; i < MAX_SESSIONS; i++) {
 			struct session *cs = &sessions[i];
 			if (!cs->used)
 				continue;
+			if (cs->orphaned && t >= cs->orphan_deadline_us) {
+				sess_teardown_one(cs, "hold expired");
+				continue;
+			}
 			ktx_poll_map(cs, t);
 			fsm_detect(cs, t);
 			fsm_tx(cs, t);

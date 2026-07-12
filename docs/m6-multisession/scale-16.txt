@@ -1,0 +1,28 @@
+Scale validation at 16 concurrent sessions (2 peer VMs x 8 addresses).
+
+L3 stress 120s, 16 sessions: 16 up before and after, all 16
+down-event counters 0. Per-slot TX gaps (host pcap, full window
+including the mass-kill below):
+  surviving slots 49152,49154-49160: p50 ~8.75ms p99 ~10.02ms
+  max 10.5-12.1ms
+  killed slots 49161-49167 (+49153, see note): max ~1003ms = the
+  1s slow-rate heartbeat during peer death, not a stress artifact.
+
+Mass kill: pkill -9 bfdd on the 8-session peer. All 8 detected:
+  30.5 32.7 31.3 31.4 31.9 32.8 30.8 32.6 ms silent
+No drift across the batch - the 5ms sweep does not serialize
+detectably at this N. The other 8 sessions: uptimes uninterrupted,
+down events stayed 0. Note: slot 49153 (.3, killed peer's primary)
+flapped once more during that peer's frr restart (peer-side
+settling), hence its 1002ms max.
+
+FRR operational findings (10.5.1), for reproduction:
+- bfdd peer identity is (peer addr, ifname, vrf); local-address is
+  an attribute, not part of the key. Configuring the same peer addr
+  with different local-addresses edits one node, it does not create
+  sessions. N sessions between two hosts need N distinct addresses
+  on BOTH ends.
+- Changing local-address on an existing peer node does not
+  propagate to the dataplane: bfdd keeps running the old addressing
+  (verified on the wire). Recreate the peer, or write memory +
+  restart frr so fresh ADDs carry the local address.

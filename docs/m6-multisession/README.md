@@ -64,7 +64,15 @@ This milestone makes concurrent sessions correct and proves two.
 - kill-isolation.txt          hard-kill isolation evidence
 - spoof-2sess.txt             two-session injection evidence
 
+## Scale follow-up
+
+Post-merge, rerun at 16 concurrent sessions (8 per peer VM via
+secondary addresses): 0 flaps under L3 stress, mass-kill of 8
+detected at 30.5-32.8ms with no batch drift, surviving 8 untouched.
+Evidence: bfd-m6-16sess-L3.pcap, scale-16.txt (includes FRR
+peer-identity operational findings).
+
 ## Still out of scope
 
-Validated at 2 of 64 slots. IPv6, auth, echo/demand unchanged. Slot
+Validated at 16 of 64 slots. IPv6, auth, echo/demand unchanged. Slot
 ports assume one bfd_tx instance owns 49152-49215 on the host.

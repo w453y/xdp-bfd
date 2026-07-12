@@ -127,7 +127,7 @@ with zero peer-visible events.
 
 - IPv4 only, single-hop only, no authentication, no echo mode.
 - Multi-session (64 slots, per-slot source ports 49152-49215, one
-  bfd_tx instance per host) is validated at 2 concurrent sessions:
+  bfd_tx instance per host) is validated at 16 concurrent sessions:
   independent detect, 0 flaps both under L3 stress, injection
   isolation (docs/m6-multisession). Higher session counts are
   untested.

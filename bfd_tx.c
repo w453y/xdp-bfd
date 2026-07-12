@@ -16,6 +16,7 @@
  * (MIT licensed, Copyright (C) 2020 NetDEF, Rafael F. Zalamena).
  * All bfddp fields are network byte order; 64-bit fields big-endian.
  */
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -232,10 +233,11 @@ static struct session *sess_by_addr_pair_local(
 	return NULL;
 }
 
-static struct session *sess_by_addr(uint32_t peer_ip)
+static struct session *sess_by_addr(uint32_t peer_ip, uint32_t local_ip)
 {
 	for (int i = 0; i < MAX_SESSIONS; i++)
-		if (sessions[i].used && sessions[i].peer_ip == peer_ip)
+		if (sessions[i].used && sessions[i].peer_ip == peer_ip &&
+		    sessions[i].local_ip == local_ip)
 			return &sessions[i];
 	return NULL;
 }
@@ -929,6 +931,8 @@ int main(int argc, char **argv)
 	}
 	struct timeval tv = { .tv_usec = 2000 };
 	setsockopt(rx_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	int pi = 1;
+	setsockopt(rx_sock, IPPROTO_IP, IP_PKTINFO, &pi, sizeof(pi));
 
 	tx_sock = socket(AF_INET, SOCK_DGRAM, 0);
 	int ttl = 255;
@@ -975,16 +979,28 @@ int main(int argc, char **argv)
 
 		struct bfdpkt p;
 		struct sockaddr_in from;
-		socklen_t flen = sizeof(from);
-		ssize_t n = recvfrom(rx_sock, &p, sizeof(p), 0,
-				     (void *)&from, &flen);
+		struct iovec iov = { .iov_base = &p, .iov_len = sizeof(p) };
+		char cbuf[CMSG_SPACE(sizeof(struct in_pktinfo))];
+		struct msghdr mh = {
+			.msg_name = &from, .msg_namelen = sizeof(from),
+			.msg_iov = &iov, .msg_iovlen = 1,
+			.msg_control = cbuf, .msg_controllen = sizeof(cbuf),
+		};
+		ssize_t n = recvmsg(rx_sock, &mh, 0);
 		uint64_t t = now_us();
 
 		if (n >= 24 && ((p.vers_diag >> 5) & 7) == 1 &&
 		    p.mult && p.my_disc) {
+			uint32_t dst_ip = 0;
+			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh); c;
+			     c = CMSG_NXTHDR(&mh, c))
+				if (c->cmsg_level == IPPROTO_IP &&
+				    c->cmsg_type == IP_PKTINFO)
+					dst_ip = ((struct in_pktinfo *)
+						  CMSG_DATA(c))->ipi_addr.s_addr;
 			struct session *rs = sess_by_wire(ntohl(p.your_disc));
 			if (!rs)
-				rs = sess_by_addr(from.sin_addr.s_addr);
+				rs = sess_by_addr(from.sin_addr.s_addr, dst_ip);
 			if (rs)
 				fsm_rx(rs, &p, t);
 		}

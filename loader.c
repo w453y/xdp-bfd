@@ -13,33 +13,7 @@
 #include <bpf/bpf.h>
 #include <linux/if_link.h>
 
-struct session_key {
-	__be32 peer_ip;
-	__be32 local_ip;
-};
-
-struct session_state {
-	__u64 last_seen_ns;
-	__u64 rx_pkts;
-	__u64 tx_pkts;
-	__u32 remote_disc;
-	__u32 local_disc;
-	__u32 min_tx_us;
-	__u32 min_rx_us;
-	__u32 detect_iv_us;
-	__u8  remote_state;
-	__u8  remote_diag;
-	__u8  detect_mult;
-	__u8  alive;
-};
-
-struct bfd_event {
-	__u64 ts_ns;
-	__u64 last_seen_ns;
-	struct session_key key;
-	__u32 remote_disc;
-	__u8  event;
-};
+#include "bfd_shared.h"
 
 static const char *state_str[] = { "AdminDown", "Down", "Init", "Up" };
 static volatile sig_atomic_t stop;
@@ -90,6 +64,10 @@ int main(int argc, char **argv)
 	}
 	struct bpf_program *prog =
 		bpf_object__find_program_by_name(obj, "bfd_observer");
+	if (!prog) {
+		fprintf(stderr, "bfd_observer not found in object\n");
+		return 1;
+	}
 	if (bpf_xdp_attach(ifindex, bpf_program__fd(prog),
 			   XDP_FLAGS_DRV_MODE, NULL)) {
 		fprintf(stderr, "native XDP attach failed on %s\n", argv[1]);
@@ -100,6 +78,11 @@ int main(int argc, char **argv)
 	int sess_fd  = bpf_object__find_map_fd_by_name(obj, "bfd_sessions");
 	int stats_fd = bpf_object__find_map_fd_by_name(obj, "bfd_stats");
 	int rb_fd    = bpf_object__find_map_fd_by_name(obj, "bfd_events");
+	if (sess_fd < 0 || stats_fd < 0 || rb_fd < 0) {
+		fprintf(stderr, "map lookup failed\n");
+		bpf_xdp_detach(ifindex, XDP_FLAGS_DRV_MODE, NULL);
+		return 1;
+	}
 
 	/* Standalone observer tracks everything; bfd_tx leaves this 0 so
 	 * only control-plane-configured sessions create map state. */
@@ -111,13 +94,19 @@ int main(int argc, char **argv)
 
 	struct ring_buffer *rb =
 		ring_buffer__new(rb_fd, on_event, NULL, NULL);
-	if (!rb) { fprintf(stderr, "ringbuf setup failed\n"); return 1; }
+	if (!rb) {
+		fprintf(stderr, "ringbuf setup failed\n");
+		bpf_xdp_detach(ifindex, XDP_FLAGS_DRV_MODE, NULL);
+		return 1;
+	}
 
 	evlog = fopen("events.csv", "a");
-	if (evlog) fprintf(evlog, "epoch,mono_ns,event,peer,silent_ms\n");
+	if (evlog && ftell(evlog) == 0)
+		fprintf(evlog, "epoch,mono_ns,event,peer,silent_ms\n");
 
 	FILE *log = fopen("observer.csv", "a");
-	if (log) fprintf(log, "epoch,rx_pkts,age_ms,remote_state,alive\n");
+	if (log && ftell(log) == 0)
+		fprintf(log, "epoch,rx_pkts,age_ms,remote_state,alive\n");
 
 	signal(SIGINT, on_int);
 	signal(SIGTERM, on_int);

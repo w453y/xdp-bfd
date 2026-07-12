@@ -9,9 +9,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 
-#define BFD_PORT_1HOP   3784
-#define BFD_MIN_LEN     24
-#define BFD_VERSION     1
+#include "bfd_shared.h"
 
 #define LOCAL_MIN_RX_US 10000  /* fallback required-min-rx: promiscuous
                                  * observer only; configured sessions use
@@ -34,44 +32,14 @@ struct bfdhdr {
 #define BFD_DIAG(h)   ((h)->vers_diag & 0x1f)
 #define BFD_STATE(h)  (((h)->flags >> 6) & 0x3)
 
-struct session_key {
-	__be32 peer_ip;
-	__be32 local_ip;
-};
-
-struct session_state {
-	__u64 last_seen_ns;
-	__u64 rx_pkts;
-	__u64 tx_pkts;        /* kernel XDP_TX replies */
-	__u32 remote_disc;
-	__u32 local_disc;
-	__u32 min_tx_us;
-	__u32 min_rx_us;
-	__u32 detect_iv_us;   /* effective detect basis: lags advertised
-	                       * decreases until peer paces at new rate */
-	__u8  remote_state;
-	__u8  remote_diag;
-	__u8  detect_mult;
-	__u8  alive;          /* our sweep's verdict: 1 = hearing peer */
-};
-
-/* Event pushed to userspace on liveness transitions. */
-struct bfd_event {
-	__u64 ts_ns;          /* when we noticed             */
-	__u64 last_seen_ns;   /* last packet before verdict  */
-	struct session_key key;
-	__u32 remote_disc;
-	__u8  event;          /* 0 = DETECT-DOWN, 1 = ALIVE  */
-};
-
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 64);
+	__uint(max_entries, BFD_MAX_SESSIONS);
 	__type(key, struct session_key);
 	__type(value, struct session_state);
 } bfd_sessions SEC(".maps");
 
-/* stats: 0=pkts 1=bfd 2=malformed 3=demux/ttl rejects */
+/* stats: 0=pkts 1=bfd 2=malformed 3=rejects (demux + ttl/GTSM + ip-options) */
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, 4);
@@ -84,23 +52,9 @@ struct {
 	__uint(max_entries, 1 << 18);
 } bfd_events SEC(".maps");
 
-/* What to say when we speak: written by userspace FSM. */
-struct tx_cfg {
-	__u32 enable;        /* 1 = kernel replies to each RX (Up only) */
-	__u32 my_disc;
-	__u32 your_disc;
-	__u32 min_tx_us;
-	__u32 min_rx_us;
-	__u8  state;
-	__u8  diag;
-	__u8  mult;
-	__u8  poll;          /* userspace-initiated Poll sequence active:
-	                      * echo sets P; kernel clears on peer's F */
-};
-
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 64);
+	__uint(max_entries, BFD_MAX_SESSIONS);
 	__type(key, struct session_key);
 	__type(value, struct tx_cfg);
 } tx_config SEC(".maps");
@@ -193,6 +147,9 @@ static int sweep_fire(void *map, __u32 *key, struct sweep *sw)
 	return 0;
 }
 
+/* bpf_timer can only be initialized and armed from BPF program context,
+ * not from userspace at load time, so the first packet through the
+ * program arms the sweep. The CAS makes exactly one CPU do it. */
 static __always_inline void ensure_sweeper(void)
 {
 	__u32 zero = 0;
@@ -224,8 +181,18 @@ int bfd_observer(struct xdp_md *ctx)
 	struct iphdr *iph = (void *)(eth + 1);
 	if ((void *)(iph + 1) > data_end)
 		return XDP_PASS;
-	if (iph->protocol != IPPROTO_UDP || iph->ihl != 5)
+	if (iph->protocol != IPPROTO_UDP)
 		return XDP_PASS;
+	/* IP options (ihl != 5) on a UDP packet: a single-hop BFD
+	 * control packet never carries them. Passing would skip the
+	 * GTSM/your_disc checks below (UDP header sits at a variable
+	 * offset with options) and leak the packet to the userspace
+	 * socket unvalidated - the same bypass class as an XDP_PASS
+	 * reject. Drop it. */
+	if (iph->ihl != 5) {
+		count(3);
+		return XDP_DROP;
+	}
 
 	struct udphdr *udp = (void *)(iph + 1);
 	if ((void *)(udp + 1) > data_end)
@@ -293,7 +260,7 @@ int bfd_observer(struct xdp_md *ctx)
 	ensure_sweeper();
 
 	/* Poll termination (RFC 5880 s6.8.4): peer answered our P with F. */
-	if (cfg && cfg->poll && (bfd->flags & 0x10))
+	if (cfg && cfg->poll && (bfd->flags & BFD_F_FINAL))
 		cfg->poll = 0;
 
 	struct session_state *st = bpf_map_lookup_elem(&bfd_sessions, &key);
@@ -348,7 +315,7 @@ int bfd_observer(struct xdp_md *ctx)
 	 * Never echo Up at a peer that just said Down/AdminDown; let
 	 * userspace run the transition. */
 	if (cfg && cfg->enable && rstate >= 2) {
-		__u8 send_final = (bfd->flags & 0x20) ? 0x10 : 0;
+		__u8 send_final = (bfd->flags & BFD_F_POLL) ? BFD_F_FINAL : 0;
 
 		/* L2 swap */
 		__u8 tmp[6];
@@ -362,7 +329,7 @@ int bfd_observer(struct xdp_md *ctx)
 		iph->daddr = tip;
 
 		/* L4: our source port, dst 3784, no UDP csum (legal v4) */
-		udp->source = bpf_htons(49152);
+		udp->source = bpf_htons(BFD_SRC_PORT);
 		udp->dest   = bpf_htons(BFD_PORT_1HOP);
 		udp->check  = 0;
 
@@ -371,7 +338,7 @@ int bfd_observer(struct xdp_md *ctx)
 		bfd->vers_diag   = (1 << 5) | (cfg->diag & 0x1f);
 		bfd->flags       = ((cfg->state & 0x3) << 6) | send_final;
 		if (!send_final && cfg->poll)
-			bfd->flags |= 0x20;
+			bfd->flags |= BFD_F_POLL;
 		bfd->detect_mult = cfg->mult;
 		bfd->len         = 24;
 		bfd->my_disc     = bpf_htonl(cfg->my_disc);
@@ -379,6 +346,31 @@ int bfd_observer(struct xdp_md *ctx)
 		bfd->min_tx      = bpf_htonl(cfg->min_tx_us);
 		bfd->min_rx      = bpf_htonl(cfg->min_rx_us);
 		bfd->min_echo_rx = 0;
+
+		/* Echo exactly a 24-byte control packet: a longer peer
+		 * frame (auth section, trailer) must not go back out with
+		 * trailing bytes. tot_len changes, so recompute the IP
+		 * checksum; UDP csum is already 0. On adjust_tail failure
+		 * drop: the frame is half-rewritten by now, and liveness
+		 * was already refreshed above. */
+		int want = (int)(sizeof(*eth) + sizeof(*iph) +
+				 sizeof(*udp) + BFD_MIN_LEN);
+		int excess = (int)((long)data_end - (long)data) - want;
+		if (excess > 0) {
+			iph->tot_len = bpf_htons(sizeof(*iph) +
+						 sizeof(*udp) + BFD_MIN_LEN);
+			udp->len = bpf_htons(sizeof(*udp) + BFD_MIN_LEN);
+			iph->check = 0;
+			__u32 csum = 0;
+			__u16 *w = (__u16 *)iph;
+			for (int i = 0; i < 10; i++)
+				csum += w[i];
+			csum = (csum & 0xffff) + (csum >> 16);
+			csum = (csum & 0xffff) + (csum >> 16);
+			iph->check = ~csum & 0xffff;
+			if (bpf_xdp_adjust_tail(ctx, -excess))
+				return XDP_DROP;
+		}
 
 		st->tx_pkts++;
 		return XDP_TX;

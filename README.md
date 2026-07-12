@@ -60,6 +60,11 @@ Five TX architectures, identical conditions (SCHED_FIFO prio-50 hogs,
 | SO_TXTIME + etf, pipelined x5 | 48 | 10.0 | 10.1 | 994ms |
 | **XDP RX-clocked (this project)** | **0** | **8.75** | **11.0** | **12.5ms** |
 
+bfdd flap counts differ across this document because the loads
+differ: 44 flaps/120s is the L3 timer-storm level from the ladder
+above, while "continuous" here and the 107-flap capture in
+docs/benchmarks are L4 SCHED_FIFO runs of different durations.
+
 The p50 of 8.75ms (not 10.00) is the signature: the wire distribution
 is the peer's own jittered TX echoed from softirq — the transmit clock
 has left userspace entirely.

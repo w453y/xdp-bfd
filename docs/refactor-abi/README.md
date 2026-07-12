@@ -243,18 +243,4 @@ one place in the branch where a code change postdates its regression
 evidence; the reasoning for not re-capturing is that the hot path is
 provably unaffected.
 
-## Rejected review suggestions
 
-Splitting bfd_tx.c into modules (single-purpose daemon, one
-maintainer; revisit at multi-session), extracting parse helpers in
-bfd_xdp.c (linear parse with inline bounds checks is the verifier
-idiom), get_or_create_session helper (8 lines, one call site),
-dedicated handlers replacing the dp_process switch (already
-delegates), regrouping struct session fields (churn),
-logging levels (printf lines are referenced evidence artifacts),
-sigaction over signal (glibc BSD semantics + sig_atomic_t flag;
-worst case 100ms shutdown latency), SKB-mode fallback (silent
-generic-XDP fallback would invalidate the timing numbers the project
-exists to produce), caching time(NULL) (called twice per second),
-CO-RE (program touches only UAPI headers), configurable map sizes and
-source port (multi-session features, premature).

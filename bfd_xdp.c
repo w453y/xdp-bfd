@@ -181,8 +181,18 @@ int bfd_observer(struct xdp_md *ctx)
 	struct iphdr *iph = (void *)(eth + 1);
 	if ((void *)(iph + 1) > data_end)
 		return XDP_PASS;
-	if (iph->protocol != IPPROTO_UDP || iph->ihl != 5)
+	if (iph->protocol != IPPROTO_UDP)
 		return XDP_PASS;
+	/* IP options (ihl != 5) on a UDP packet: a single-hop BFD
+	 * control packet never carries them. Passing would skip the
+	 * GTSM/your_disc checks below (UDP header sits at a variable
+	 * offset with options) and leak the packet to the userspace
+	 * socket unvalidated - the same bypass class as an XDP_PASS
+	 * reject. Drop it. */
+	if (iph->ihl != 5) {
+		count(3);
+		return XDP_DROP;
+	}
 
 	struct udphdr *udp = (void *)(iph + 1);
 	if ((void *)(udp + 1) > data_end)

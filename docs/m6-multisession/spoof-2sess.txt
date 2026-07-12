@@ -1,0 +1,4 @@
+spoof_options.py 200 optioned packets (ihl=6), forged src 10.66.0.2,
+injected from bfd-chaos while both sessions up.
+bfd_stats key 3 (rejects): 0 -> 200 exact (cpu2). Uptimes .3 11:00->17:48,
+.2 21:33->28:21, down events unchanged 1/0. Neither session perturbed.

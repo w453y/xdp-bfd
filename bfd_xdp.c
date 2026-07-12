@@ -131,10 +131,9 @@ static long check_session(struct bpf_map *map, struct session_key *k,
 	__s64 delta = (__s64)(now - st->last_seen_ns);
 	if (delta < 0)
 		return 0;   /* packet raced past our now-snapshot */
-	if ((__u64)delta > detect_ns) {
-		st->alive = 0;
+	if ((__u64)delta > detect_ns &&
+	    __sync_val_compare_and_swap(&st->alive, 1, 0) == 1)
 		emit(k, st, now, 0);
-	}
 	return 0;
 }
 
@@ -259,10 +258,6 @@ int bfd_observer(struct xdp_md *ctx)
 
 	ensure_sweeper();
 
-	/* Poll termination (RFC 5880 s6.8.4): peer answered our P with F. */
-	if (cfg && cfg->poll && (bfd->flags & BFD_F_FINAL))
-		cfg->poll = 0;
-
 	struct session_state *st = bpf_map_lookup_elem(&bfd_sessions, &key);
 	if (!st) {
 		struct session_state init = {};
@@ -305,10 +300,15 @@ int bfd_observer(struct xdp_md *ctx)
 	st->remote_diag  = BFD_DIAG(bfd);
 	st->detect_mult  = bfd->detect_mult;
 
-	if (!st->alive) {
-		st->alive = 1;
+	/* Poll termination (RFC 5880 s6.8.4): peer answered our P with
+	 * F. tx_cfg is userspace-owned, so ack via kernel-owned
+	 * final_seq instead of clearing cfg->poll in place (a racing
+	 * userspace mirror push could resurrect the finished poll). */
+	if (cfg && cfg->poll && (bfd->flags & BFD_F_FINAL))
+		st->final_seq = cfg->poll_seq;
+
+	if (__sync_val_compare_and_swap(&st->alive, 0, 1) == 0)
 		emit(&key, st, now, 1);
-	}
 
 	/* RX-clocked TX: rewrite this very frame into our control packet
 	 * and bounce it. Peer's clock becomes our clock; runs in softirq.
@@ -329,7 +329,8 @@ int bfd_observer(struct xdp_md *ctx)
 		iph->daddr = tip;
 
 		/* L4: our source port, dst 3784, no UDP csum (legal v4) */
-		udp->source = bpf_htons(BFD_SRC_PORT);
+		udp->source = cfg->src_port ? bpf_htons(cfg->src_port)
+					    : bpf_htons(BFD_SRC_PORT);
 		udp->dest   = bpf_htons(BFD_PORT_1HOP);
 		udp->check  = 0;
 
@@ -337,7 +338,8 @@ int bfd_observer(struct xdp_md *ctx)
 		 * active, F when answering the peer's P; never both. */
 		bfd->vers_diag   = (1 << 5) | (cfg->diag & 0x1f);
 		bfd->flags       = ((cfg->state & 0x3) << 6) | send_final;
-		if (!send_final && cfg->poll)
+		if (!send_final && cfg->poll &&
+	    st->final_seq != cfg->poll_seq)
 			bfd->flags |= BFD_F_POLL;
 		bfd->detect_mult = cfg->mult;
 		bfd->len         = 24;

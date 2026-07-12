@@ -1,0 +1,9 @@
+[517517418040] lid=3546900063 DETECT TIMEOUT (silent 31.2ms)
+[517517418040] lid=3546900063 Up -> Down (detect timeout)
+
+after (frr stopped on bfd-chaos 10.66.0.3, hard silence, no farewell):
+  3546900063  10.66.0.3  down   (down events 1)
+  4197623407  10.66.0.2  up     (down events 0, uptime uninterrupted)
+
+post-restart: both up. Two-session L3 stress 120s after recovery:
+counters unchanged (up 2/down 1, up 1/down 0) = 0 flaps both sessions.

@@ -16,6 +16,7 @@
  * (MIT licensed, Copyright (C) 2020 NetDEF, Rafael F. Zalamena).
  * All bfddp fields are network byte order; 64-bit fields big-endian.
  */
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -152,6 +153,7 @@ struct session {
 	uint32_t detect_iv_us;        /* poll-aware effective detect basis */
 	int      send_final, just_up;
 	int      polling;             /* our Poll sequence in flight */
+	uint32_t poll_seq;            /* id of current/last Poll sequence */
 	uint32_t wire_disc;           /* my_disc on the wire; survives bfdd
 	                               * restarts even when lid changes */
 	int      orphaned;            /* held across a bfdd disconnect */
@@ -168,6 +170,30 @@ static struct session sessions[MAX_SESSIONS];
 
 /* ---------- globals ---------- */
 static int rx_sock = -1, tx_sock = -1;
+
+/* Per-slot TX sockets: source port = SRC_PORT + slot, opened lazily,
+ * kept for process lifetime (a reused slot reuses its socket, so
+ * teardown needs no fd handling). Stored as fd+1; 0 = not opened. */
+static int slot_tx[MAX_SESSIONS];
+
+static int slot_sock(int slot)
+{
+	if (slot_tx[slot])
+		return slot_tx[slot] - 1;
+	int fd = socket(AF_INET, SOCK_DGRAM, 0);
+	int ttl = 255;
+	setsockopt(fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
+	struct sockaddr_in sa = { .sin_family = AF_INET,
+				  .sin_port = htons(SRC_PORT + slot),
+				  .sin_addr.s_addr = INADDR_ANY };
+	if (bind(fd, (void *)&sa, sizeof(sa))) {
+		perror("bind per-slot src");
+		close(fd);
+		return -1;
+	}
+	slot_tx[slot] = fd + 1;
+	return fd;
+}
 static int use_ktx = 0;
 static int cfg_fd = -1, sess_fd = -1;
 static struct bpf_object *bpf_obj;
@@ -232,10 +258,11 @@ static struct session *sess_by_addr_pair_local(
 	return NULL;
 }
 
-static struct session *sess_by_addr(uint32_t peer_ip)
+static struct session *sess_by_addr(uint32_t peer_ip, uint32_t local_ip)
 {
 	for (int i = 0; i < MAX_SESSIONS; i++)
-		if (sessions[i].used && sessions[i].peer_ip == peer_ip)
+		if (sessions[i].used && sessions[i].peer_ip == peer_ip &&
+		    sessions[i].local_ip == local_ip)
 			return &sessions[i];
 	return NULL;
 }
@@ -274,10 +301,12 @@ static void ktx_mirror(struct session *s)
 		.your_disc = s->rdisc,
 		.min_tx_us = s->min_tx_us,
 		.min_rx_us = s->min_rx_us,
+		.src_port  = (__u16)(SRC_PORT + (s - sessions)),
 		.state     = s->state,
 		.diag      = s->diag,
 		.mult      = s->detect_mult,
 		.poll      = (s->polling && s->state == ST_UP) ? 1 : 0,
+		.poll_seq  = s->poll_seq,
 	};
 	if (s->pushed_valid && !memcmp(&c, &s->pushed_cfg, sizeof(c)))
 		return;
@@ -312,16 +341,14 @@ static void ktx_poll_map(struct session *s, uint64_t t)
 		s->last_rx_us = ms.last_seen_ns / 1000;
 	if (ms.detect_iv_us)
 		s->detect_iv_us = ms.detect_iv_us;
-	if (s->polling) {
-		/* Kernel clears cfg.poll when the peer's F arrives. Adopt
-		 * that here and in pushed_cfg so the next mirror push
-		 * doesn't resurrect a finished poll. */
-		struct tx_cfg mc;
-		if (!bpf_map_lookup_elem(cfg_fd, &k, &mc) && !mc.poll) {
-			s->polling = 0;
-			s->applied_tx_us = s->min_tx_us;
-			s->pushed_cfg.poll = 0;
-		}
+	if (s->polling && ms.final_seq == s->poll_seq) {
+		/* Kernel acked the peer's F for this Poll sequence via
+		 * final_seq; end the poll and mirror poll=0 down. tx_cfg
+		 * has a single writer (us), so the old read-back dance
+		 * and the pushed_cfg fixup are gone. */
+		s->polling = 0;
+		s->applied_tx_us = s->min_tx_us;
+		ktx_mirror(s);
 	}
 	if (ms.min_tx_us && (ms.min_tx_us != s->r_min_tx ||
 			     ms.min_rx_us != s->r_min_rx)) {
@@ -566,7 +593,10 @@ static void fsm_tx(struct session *s, uint64_t t)
 		.sin_port   = htons(PORT_CTRL),
 		.sin_addr.s_addr = s->peer_ip,
 	};
-	sendto(tx_sock, &o, 24, 0, (void *)&dst, sizeof(dst));
+	int txfd = slot_sock((int)(s - sessions));
+	if (txfd < 0)
+		txfd = tx_sock;   /* unbound fallback, ephemeral src */
+	sendto(txfd, &o, 24, 0, (void *)&dst, sizeof(dst));
 	s->tx_pkts++;
 	s->send_final = 0;
 	s->just_up = 0;
@@ -650,6 +680,7 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 		/* RFC 5880 s6.8.3: parameter change while Up requires a
 		 * Poll sequence. An increased min_tx must not slow actual
 		 * TX until the poll terminates; a decrease applies now. */
+		s->poll_seq++;
 		s->polling = 1;
 		if (s->min_tx_us < s->applied_tx_us || !s->applied_tx_us)
 			s->applied_tx_us = s->min_tx_us;
@@ -929,17 +960,14 @@ int main(int argc, char **argv)
 	}
 	struct timeval tv = { .tv_usec = 2000 };
 	setsockopt(rx_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	int pi = 1;
+	setsockopt(rx_sock, IPPROTO_IP, IP_PKTINFO, &pi, sizeof(pi));
 
+	/* Unbound fallback TX socket; per-slot bound sockets carry
+	 * normal traffic (slot_sock). */
 	tx_sock = socket(AF_INET, SOCK_DGRAM, 0);
 	int ttl = 255;
 	setsockopt(tx_sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
-	struct sockaddr_in sa = { .sin_family = AF_INET,
-				  .sin_port = htons(SRC_PORT),
-				  .sin_addr.s_addr = INADDR_ANY };
-	if (bind(tx_sock, (void *)&sa, sizeof(sa))) {
-		perror("bind src");
-		return 1;
-	}
 
 	if (ktx_if) {
 		if (ktx_attach(ktx_if))
@@ -975,16 +1003,28 @@ int main(int argc, char **argv)
 
 		struct bfdpkt p;
 		struct sockaddr_in from;
-		socklen_t flen = sizeof(from);
-		ssize_t n = recvfrom(rx_sock, &p, sizeof(p), 0,
-				     (void *)&from, &flen);
+		struct iovec iov = { .iov_base = &p, .iov_len = sizeof(p) };
+		char cbuf[CMSG_SPACE(sizeof(struct in_pktinfo))];
+		struct msghdr mh = {
+			.msg_name = &from, .msg_namelen = sizeof(from),
+			.msg_iov = &iov, .msg_iovlen = 1,
+			.msg_control = cbuf, .msg_controllen = sizeof(cbuf),
+		};
+		ssize_t n = recvmsg(rx_sock, &mh, 0);
 		uint64_t t = now_us();
 
 		if (n >= 24 && ((p.vers_diag >> 5) & 7) == 1 &&
 		    p.mult && p.my_disc) {
+			uint32_t dst_ip = 0;
+			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh); c;
+			     c = CMSG_NXTHDR(&mh, c))
+				if (c->cmsg_level == IPPROTO_IP &&
+				    c->cmsg_type == IP_PKTINFO)
+					dst_ip = ((struct in_pktinfo *)
+						  CMSG_DATA(c))->ipi_addr.s_addr;
 			struct session *rs = sess_by_wire(ntohl(p.your_disc));
 			if (!rs)
-				rs = sess_by_addr(from.sin_addr.s_addr);
+				rs = sess_by_addr(from.sin_addr.s_addr, dst_ip);
 			if (rs)
 				fsm_rx(rs, &p, t);
 		}

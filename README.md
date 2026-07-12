@@ -125,9 +125,12 @@ with zero peer-visible events.
 
 ## Honest limitations
 
-- IPv4 only, single-hop only, no authentication, no echo mode. Maps
-  and daemon are multi-session capable (64), but only single-session
-  operation is validated so far.
+- IPv4 only, single-hop only, no authentication, no echo mode.
+- Multi-session (64 slots, per-slot source ports 49152-49215, one
+  bfd_tx instance per host) is validated at 2 concurrent sessions:
+  independent detect, 0 flaps both under L3 stress, injection
+  isolation (docs/m6-multisession). Higher session counts are
+  untested.
 - RX-clocked TX alone requires an async-clocked peer. The userspace
   transitional TX gate now fills at the full required pace whenever
   the peer's pacing lags our advertised rate (not just a slow-rate
@@ -185,6 +188,7 @@ Notes:
 - `docs/final/` — full-matrix run of the kernel-tx path
 - `docs/m5-hardening/` — RFC-correctness and graceful-restart wire evidence
 - `docs/benchmarks/` — head-to-head resilience/detect/pacing/fast-path numbers
+- `docs/m6-multisession/` — concurrent-session validation (pcap + gaps + isolation)
 - `docs/refactor-abi/` — shared-ABI refactor, hardening closures, regression evidence
 
 Every claim above has a pcap in this repo. Methodology: host-side
@@ -196,11 +200,9 @@ ladders (fair CPU → sched churn → timer storm → SCHED_FIFO hogs).
 
 - ~~FRR distributed-BFD dataplane integration~~ **done** — see
   "Running under FRR" above
-- Multi-session: per-session source ports, `sess_by_addr` matching on
-  both IPs, alive/poll flags to atomics (maps and daemon already sized
-  for 64 sessions; only single-session operation is validated)
 - Bare-metal benchmark reproduction
 - IPv6
+- Scale validation beyond 2 concurrent sessions
 
 Prior art: [open-oam/bfd_program](https://github.com/open-oam/bfd_program)
 (2020, abandoned proof-of-concept — XDP receiver and session validation; no released TX path). The 2018

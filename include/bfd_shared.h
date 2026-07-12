@@ -13,10 +13,9 @@
 #include <linux/types.h>
 
 #define BFD_PORT_1HOP    3784
-#define BFD_SRC_PORT     49152  /* RFC 5881 s4 range base. Fixed for all
-                                 * sessions for now; per-session ports are
-                                 * a multi-session prerequisite (SHOULD be
-                                 * unique per session on the system). */
+#define BFD_SRC_PORT     49152  /* RFC 5881 s4 range base. Per-session
+                                 * TX source port = base + session slot
+                                 * (SHOULD be unique per session). */
 #define BFD_MIN_LEN      24
 #define BFD_VERSION      1
 #define BFD_MAX_SESSIONS 64
@@ -43,7 +42,12 @@ struct session_state {
 	__u8  remote_state;
 	__u8  remote_diag;
 	__u8  detect_mult;
-	__u8  alive;          /* our sweep's verdict: 1 = hearing peer */
+	__u8  pad;
+	__u32 alive;          /* our sweep's verdict: 1 = hearing peer.
+	                       * 32-bit: BPF atomics need 32/64-bit; RX
+	                       * set and sweep clear race across CPUs. */
+	__u32 final_seq;      /* kernel ack of a Poll sequence: set to
+	                       * cfg->poll_seq on the peer's F */
 };
 
 /* Event pushed to userspace on liveness transitions. */
@@ -62,11 +66,16 @@ struct tx_cfg {
 	__u32 your_disc;
 	__u32 min_tx_us;
 	__u32 min_rx_us;
+	__u16 src_port;      /* kernel echo TX source port; 0 = BFD_SRC_PORT */
 	__u8  state;
 	__u8  diag;
 	__u8  mult;
 	__u8  poll;          /* userspace-initiated Poll sequence active:
-	                      * echo sets P; kernel clears on peer's F */
+	                      * echo sets P until final_seq == poll_seq */
+	__u8  pad[3];
+	__u32 poll_seq;      /* increments per Poll sequence; kernel acks
+	                      * the peer's F via session_state.final_seq
+	                      * (tx_cfg stays userspace-owned) */
 };
 
 #endif /* BFD_SHARED_H */

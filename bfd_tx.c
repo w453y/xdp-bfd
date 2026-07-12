@@ -169,6 +169,30 @@ static struct session sessions[MAX_SESSIONS];
 
 /* ---------- globals ---------- */
 static int rx_sock = -1, tx_sock = -1;
+
+/* Per-slot TX sockets: source port = SRC_PORT + slot, opened lazily,
+ * kept for process lifetime (a reused slot reuses its socket, so
+ * teardown needs no fd handling). Stored as fd+1; 0 = not opened. */
+static int slot_tx[MAX_SESSIONS];
+
+static int slot_sock(int slot)
+{
+	if (slot_tx[slot])
+		return slot_tx[slot] - 1;
+	int fd = socket(AF_INET, SOCK_DGRAM, 0);
+	int ttl = 255;
+	setsockopt(fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
+	struct sockaddr_in sa = { .sin_family = AF_INET,
+				  .sin_port = htons(SRC_PORT + slot),
+				  .sin_addr.s_addr = INADDR_ANY };
+	if (bind(fd, (void *)&sa, sizeof(sa))) {
+		perror("bind per-slot src");
+		close(fd);
+		return -1;
+	}
+	slot_tx[slot] = fd + 1;
+	return fd;
+}
 static int use_ktx = 0;
 static int cfg_fd = -1, sess_fd = -1;
 static struct bpf_object *bpf_obj;
@@ -276,6 +300,7 @@ static void ktx_mirror(struct session *s)
 		.your_disc = s->rdisc,
 		.min_tx_us = s->min_tx_us,
 		.min_rx_us = s->min_rx_us,
+		.src_port  = (__u16)(SRC_PORT + (s - sessions)),
 		.state     = s->state,
 		.diag      = s->diag,
 		.mult      = s->detect_mult,
@@ -568,7 +593,10 @@ static void fsm_tx(struct session *s, uint64_t t)
 		.sin_port   = htons(PORT_CTRL),
 		.sin_addr.s_addr = s->peer_ip,
 	};
-	sendto(tx_sock, &o, 24, 0, (void *)&dst, sizeof(dst));
+	int txfd = slot_sock((int)(s - sessions));
+	if (txfd < 0)
+		txfd = tx_sock;   /* unbound fallback, ephemeral src */
+	sendto(txfd, &o, 24, 0, (void *)&dst, sizeof(dst));
 	s->tx_pkts++;
 	s->send_final = 0;
 	s->just_up = 0;
@@ -934,16 +962,11 @@ int main(int argc, char **argv)
 	int pi = 1;
 	setsockopt(rx_sock, IPPROTO_IP, IP_PKTINFO, &pi, sizeof(pi));
 
+	/* Unbound fallback TX socket; per-slot bound sockets carry
+	 * normal traffic (slot_sock). */
 	tx_sock = socket(AF_INET, SOCK_DGRAM, 0);
 	int ttl = 255;
 	setsockopt(tx_sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
-	struct sockaddr_in sa = { .sin_family = AF_INET,
-				  .sin_port = htons(SRC_PORT),
-				  .sin_addr.s_addr = INADDR_ANY };
-	if (bind(tx_sock, (void *)&sa, sizeof(sa))) {
-		perror("bind src");
-		return 1;
-	}
 
 	if (ktx_if) {
 		if (ktx_attach(ktx_if))

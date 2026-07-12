@@ -329,7 +329,8 @@ int bfd_observer(struct xdp_md *ctx)
 		iph->daddr = tip;
 
 		/* L4: our source port, dst 3784, no UDP csum (legal v4) */
-		udp->source = bpf_htons(BFD_SRC_PORT);
+		udp->source = cfg->src_port ? bpf_htons(cfg->src_port)
+					    : bpf_htons(BFD_SRC_PORT);
 		udp->dest   = bpf_htons(BFD_PORT_1HOP);
 		udp->check  = 0;
 

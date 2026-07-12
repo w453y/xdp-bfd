@@ -13,10 +13,9 @@
 #include <linux/types.h>
 
 #define BFD_PORT_1HOP    3784
-#define BFD_SRC_PORT     49152  /* RFC 5881 s4 range base. Fixed for all
-                                 * sessions for now; per-session ports are
-                                 * a multi-session prerequisite (SHOULD be
-                                 * unique per session on the system). */
+#define BFD_SRC_PORT     49152  /* RFC 5881 s4 range base. Per-session
+                                 * TX source port = base + session slot
+                                 * (SHOULD be unique per session). */
 #define BFD_MIN_LEN      24
 #define BFD_VERSION      1
 #define BFD_MAX_SESSIONS 64
@@ -62,6 +61,7 @@ struct tx_cfg {
 	__u32 your_disc;
 	__u32 min_tx_us;
 	__u32 min_rx_us;
+	__u16 src_port;      /* kernel echo TX source port; 0 = BFD_SRC_PORT */
 	__u8  state;
 	__u8  diag;
 	__u8  mult;

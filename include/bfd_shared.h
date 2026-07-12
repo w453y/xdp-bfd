@@ -42,7 +42,12 @@ struct session_state {
 	__u8  remote_state;
 	__u8  remote_diag;
 	__u8  detect_mult;
-	__u8  alive;          /* our sweep's verdict: 1 = hearing peer */
+	__u8  pad;
+	__u32 alive;          /* our sweep's verdict: 1 = hearing peer.
+	                       * 32-bit: BPF atomics need 32/64-bit; RX
+	                       * set and sweep clear race across CPUs. */
+	__u32 final_seq;      /* kernel ack of a Poll sequence: set to
+	                       * cfg->poll_seq on the peer's F */
 };
 
 /* Event pushed to userspace on liveness transitions. */
@@ -66,7 +71,11 @@ struct tx_cfg {
 	__u8  diag;
 	__u8  mult;
 	__u8  poll;          /* userspace-initiated Poll sequence active:
-	                      * echo sets P; kernel clears on peer's F */
+	                      * echo sets P until final_seq == poll_seq */
+	__u8  pad[3];
+	__u32 poll_seq;      /* increments per Poll sequence; kernel acks
+	                      * the peer's F via session_state.final_seq
+	                      * (tx_cfg stays userspace-owned) */
 };
 
 #endif /* BFD_SHARED_H */

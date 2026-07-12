@@ -153,6 +153,7 @@ struct session {
 	uint32_t detect_iv_us;        /* poll-aware effective detect basis */
 	int      send_final, just_up;
 	int      polling;             /* our Poll sequence in flight */
+	uint32_t poll_seq;            /* id of current/last Poll sequence */
 	uint32_t wire_disc;           /* my_disc on the wire; survives bfdd
 	                               * restarts even when lid changes */
 	int      orphaned;            /* held across a bfdd disconnect */
@@ -305,6 +306,7 @@ static void ktx_mirror(struct session *s)
 		.diag      = s->diag,
 		.mult      = s->detect_mult,
 		.poll      = (s->polling && s->state == ST_UP) ? 1 : 0,
+		.poll_seq  = s->poll_seq,
 	};
 	if (s->pushed_valid && !memcmp(&c, &s->pushed_cfg, sizeof(c)))
 		return;
@@ -339,16 +341,14 @@ static void ktx_poll_map(struct session *s, uint64_t t)
 		s->last_rx_us = ms.last_seen_ns / 1000;
 	if (ms.detect_iv_us)
 		s->detect_iv_us = ms.detect_iv_us;
-	if (s->polling) {
-		/* Kernel clears cfg.poll when the peer's F arrives. Adopt
-		 * that here and in pushed_cfg so the next mirror push
-		 * doesn't resurrect a finished poll. */
-		struct tx_cfg mc;
-		if (!bpf_map_lookup_elem(cfg_fd, &k, &mc) && !mc.poll) {
-			s->polling = 0;
-			s->applied_tx_us = s->min_tx_us;
-			s->pushed_cfg.poll = 0;
-		}
+	if (s->polling && ms.final_seq == s->poll_seq) {
+		/* Kernel acked the peer's F for this Poll sequence via
+		 * final_seq; end the poll and mirror poll=0 down. tx_cfg
+		 * has a single writer (us), so the old read-back dance
+		 * and the pushed_cfg fixup are gone. */
+		s->polling = 0;
+		s->applied_tx_us = s->min_tx_us;
+		ktx_mirror(s);
 	}
 	if (ms.min_tx_us && (ms.min_tx_us != s->r_min_tx ||
 			     ms.min_rx_us != s->r_min_rx)) {
@@ -680,6 +680,7 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 		/* RFC 5880 s6.8.3: parameter change while Up requires a
 		 * Poll sequence. An increased min_tx must not slow actual
 		 * TX until the poll terminates; a decrease applies now. */
+		s->poll_seq++;
 		s->polling = 1;
 		if (s->min_tx_us < s->applied_tx_us || !s->applied_tx_us)
 			s->applied_tx_us = s->min_tx_us;

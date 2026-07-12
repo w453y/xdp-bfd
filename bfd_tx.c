@@ -799,9 +799,17 @@ static void dp_read(void)
 			(const void *)(dp_buf + off);
 		uint16_t mlen = ntohs(h->length);
 		if (mlen < sizeof(*h) || mlen > sizeof(dp_buf)) {
-			printf("dplane: bad frame length %u, resetting\n",
+			/* Framing lost on a byte stream: resetting the buffer
+			 * but keeping the connection would resync onto arbitrary
+			 * mid-stream bytes. Drop the connection instead and let
+			 * bfdd reconnect from a clean boundary. With --dp-hold
+			 * the sessions survive the reconnect. */
+			printf("dplane: bad frame length %u, dropping connection\n",
 			       mlen);
+			close(dp_conn);
+			dp_conn = -1;
 			dp_have = 0;
+			dp_sessions_orphan("bad frame length");
 			return;
 		}
 		if (dp_have - off < mlen)

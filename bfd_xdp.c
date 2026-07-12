@@ -39,7 +39,7 @@ struct {
 	__type(value, struct session_state);
 } bfd_sessions SEC(".maps");
 
-/* stats: 0=pkts 1=bfd 2=malformed 3=demux/ttl rejects */
+/* stats: 0=pkts 1=bfd 2=malformed 3=rejects (demux + ttl/GTSM + ip-options) */
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, 4);

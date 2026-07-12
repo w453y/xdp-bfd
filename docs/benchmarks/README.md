@@ -96,3 +96,5 @@ New this session and not in the writeup: the head-to-head idle detect
 comparison (bfdd 30.05ms vs xdp-bfd 31.3ms). bfdd's hrtimer detection
 is marginally tighter at idle; xdp-bfd trades that for scheduler
 immunity under load. The writeup never measured this directly.
+
+Mode A/B setup scripts: mode_a.sh, mode_b.sh in this directory.

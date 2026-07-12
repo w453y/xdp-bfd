@@ -10,7 +10,7 @@
  *
  * Modes:
  *   ./bfd_tx <local-ip> <peer-ip> [--kernel-tx <if>]      static session
- *   ./bfd_tx --dplane <sock-path> [--kernel-tx <if>]      bfdd-driven
+ *   ./bfd_tx --dplane <port|sock-path> [--kernel-tx <if>]      bfdd-driven
  *
  * bfddp wire structs adapted from FRR bfdd/bfddp_packet.h
  * (MIT licensed, Copyright (C) 2020 NetDEF, Rafael F. Zalamena).
@@ -914,7 +914,7 @@ int main(int argc, char **argv)
 	if (!dplane_path && (!static_local || !static_peer)) {
 		fprintf(stderr,
 			"usage: %s <local-ip> <peer-ip> [--kernel-tx <if>]\n"
-			"       %s --dplane <sock-path> [--kernel-tx <if>] [--dp-hold <sec>]\n",
+			"       %s --dplane <port|sock-path> [--kernel-tx <if>] [--dp-hold <sec>]\n",
 			argv[0], argv[0]);
 		return 1;
 	}

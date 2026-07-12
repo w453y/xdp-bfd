@@ -176,7 +176,7 @@ Notes:
 ## Repo layout
 
 - `bfd_xdp.c` — XDP program: parser, session map, sweep timer, RX-clocked TX
-- `bfd_tx.c` — userspace FSM daemon (`--txtime`, `--kernel-tx <ifname>` modes)
+- `bfd_tx.c` — userspace FSM daemon (`--dplane`, `--kernel-tx <if>`, `--dp-hold` modes)
 - `loader.c` — standalone observer/loader (M2 tooling)
 - `include/bfd_shared.h` — shared kernel/userspace map ABI and constants
 - `docs/baseline/` — FRR bfdd stress characterization (pcaps + gap data)

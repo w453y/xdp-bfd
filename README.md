@@ -27,7 +27,7 @@ the equivalent for plain Linux on commodity NICs.
 
 ## Architecture
 
-Three cooperating pieces, one interface:
+Four cooperating pieces, one interface:
 
 1. **XDP RX + parser** (`bfd_xdp.c`) — parses/validates BFD control
    packets in the driver path, tracks per-session state in a BPF hash
@@ -91,7 +91,7 @@ Findings along the way:
   recovery (Down→Init→Up→Poll→Final) completed in **3.8ms**. Total
   session downtime across the matrix: under 4ms.
 
-## Hardening (m5-hardening branch)
+## Hardening
 
 Beyond the original writeup: GTSM TTL-255 enforcement, RFC 5880
 s6.8.6 your_disc demux validation (spoofed traffic can no longer
@@ -103,6 +103,19 @@ transitional userspace TX when the peer paces slower than the
 required rate. Every fix carries wire evidence (pcap + analysis) in
 docs/m5-hardening, including two invalidated test runs kept for the
 record.
+
+A later review-and-hardening pass (docs/refactor-abi) closed the
+remaining edges and collapsed the kernel/userspace map structs into one
+shared ABI header (`include/bfd_shared.h`) so the two sides can no
+longer drift silently. On the wire it added: IP-options packets to the
+BFD port dropped in XDP (they previously bypassed the GTSM/demux checks
+via the variable header offset), oversized echo frames trimmed to 24
+BFD bytes with a recomputed IP checksum, the RFC 5880 s6.8.7 jitter cap
+at 90% for detect_mult 1, and a framing-error path that drops the bfddp
+connection instead of resyncing mid-stream (which composes with
+`--dp-hold` to reconnect without a data-plane outage). A FRR-notify gap
+on the kernel map-path Down was also fixed. Each carries an injection
+harness and evidence in docs/refactor-abi.
 
 Graceful restart: `--dp-hold <sec>` keeps wire sessions alive across
 bfdd restarts (orphan on disconnect, adopt on re-ADD with
@@ -165,9 +178,13 @@ Notes:
 - `bfd_xdp.c` — XDP program: parser, session map, sweep timer, RX-clocked TX
 - `bfd_tx.c` — userspace FSM daemon (`--txtime`, `--kernel-tx <ifname>` modes)
 - `loader.c` — standalone observer/loader (M2 tooling)
+- `include/bfd_shared.h` — shared kernel/userspace map ABI and constants
 - `docs/baseline/` — FRR bfdd stress characterization (pcaps + gap data)
 - `docs/m3-bakeoff/` — five-way TX architecture comparison evidence
 - `docs/final/` — full-matrix run of the kernel-tx path
+- `docs/m5-hardening/` — RFC-correctness and graceful-restart wire evidence
+- `docs/benchmarks/` — head-to-head resilience/detect/pacing/fast-path numbers
+- `docs/refactor-abi/` — shared-ABI refactor, hardening closures, regression evidence
 
 Every claim above has a pcap in this repo. Methodology: host-side
 tcpdump on the hypervisor bridge as ground truth, window-sliced

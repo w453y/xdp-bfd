@@ -128,10 +128,31 @@ echo, and demand mode (RFC 5880 s6.4/6.6/6.7); IPv6 and multihop;
 the async-peer requirement of RX-clocked TX; and bare-metal
 validation of the absolute numbers.
 
+### After m5: a review-and-hardening pass (docs/refactor-abi)
+
+An external code review of the three source files, taken seriously
+enough to answer each point on the wire, produced a small round of
+correctness work. The structural item was a shared ABI header: the BPF
+map value structs had lived as three hand-synced copies, which is a
+silent-corruption trap the moment one side gains a field the others
+don't, so they became one included definition. Two of the review's
+flagged edges turned out to be real: IP-options packets to the BFD port
+were reaching userspace unvalidated (the options push the UDP header to
+a variable offset, past the GTSM and discriminator checks), now dropped
+in XDP; and a bfddp framing error reset the buffer but kept reading the
+same stream, which can resync onto arbitrary mid-stream bytes, now a
+clean connection drop that the --dp-hold machinery turns into a hitless
+reconnect. Two RFC-correctness fixes rode along: the s6.8.7 jitter cap
+at 90% when detect_mult is 1, and trimming an over-length echoed frame
+to 24 BFD bytes with a recomputed checksum. Every change was checked the
+same way as everything else here, with an injection harness and a
+capture; none touched the steady-state path, so the resilience numbers
+above stand unchanged. The rejected review suggestions and the reasoning
+are in docs/refactor-abi.
+
 ## 8. Coda: method
 
 Every bug in this project was found by a packet capture, and not one was found by a log. The Init-loop from a stale transmit schedule after timer renegotiation; the socket buffer convincing a starved daemon that packets were arriving on time; the etf qdisc blackholing ARP; the pipeline scheduling Poll answers a second into the future; the eaten Final; the same timestamp race written twice by the same author on two sides of the kernel boundary. All of them produced healthy-looking logs and a wire that told a different story. Several of them were introduced by the project's own tooling and design decisions, including ones I was confident about.
 
 The method that survived is the one worth keeping: an observer outside the system under test (the hypervisor saw what the guests could not), distributions over averages (the p99-fine/max-fatal pattern is invisible any other way), and a refusal to let any claim, the folklore's, a reviewer's, or my own, stand untested when a tcpdump could settle it. The repo ships every capture behind every number for exactly that reason.
 
-The plumbing was there. The house is built. And the road it sits on got one pothole fixed on the way.

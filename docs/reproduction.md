@@ -204,9 +204,19 @@ sudo vtysh -c "show bfd peers"           # Status: up, discriminators sane
 sudo vtysh -c "show bfd peers counters"  # input climbing ~100/s at 10ms timers
 ```
 
-The input counter is read from the XDP session map; the output counter only reflects userspace-sent packets (handshake and slow rate), since kernel-path XDP_TX replies are not per-packet counted.
+Both counters are read from the XDP session map; kernel-path XDP_TX replies are counted per-packet (added in m5-hardening), so the output count tracks the echoed replies, not just userspace-sent handshake and slow-rate packets.
 
 Lifecycle checks worth running: restart FRR twice in a row (sessions must tear down on disconnect and re-establish with fresh discriminators on reconnect), then rerun L4 and confirm `show bfd peers` uptime spans the stress window untouched.
+
+Graceful restart (`--dp-hold`): start the engine with `--dp-hold 30` and
+restart FRR twice. Instead of teardown, the engine holds each session
+live and re-adopts it on reconnect (log: `holding N session(s)` then
+`adopts live session`). The wire proves it: slice the peer's transmitted
+state to the restart window and expect zero transitions. Default
+(`--dp-hold 0`) keeps the drop-and-recreate behavior above. Watch the
+systemd start-rate limit when cycling fast: `systemctl reset-failed frr`
+between restarts, or the second start is refused and the session
+genuinely drops.
 
 ## 7. Pitfalls encountered, so you skip them
 
@@ -216,4 +226,11 @@ Lifecycle checks worth running: restart FRR twice in a row (sessions must tear d
 - Daemon stdout through a pipe is block-buffered and dies unflushed on Ctrl-C; bfd_tx line-buffers for this reason. If you add logging, do the same, and trust the pcap over the log regardless.
 - Under RT starvation, a userspace daemon's RX view lies: queued socket-buffer packets drain in a burst and look like on-time arrivals. Only the peer and the wire know the truth.
 - One XDP program per interface: stop the standalone loader before running bfd_tx --kernel-tx.
+- On Ubuntu 26.04, the packaged tshark ships an AppArmor profile that
+  denies reads under /home (dmesg shows `apparmor="DENIED" ...
+  profile="tshark"`), so `tshark -r ~/some.pcap` fails even as root with
+  a misleading "permission denied". Analyze from /tmp, or put the
+  profile in complain mode: `sudo aa-complain /etc/apparmor.d/*tshark*`
+  (needs the apparmor-utils package).
 - VM caveat: relative comparisons between backends are valid (in-guest stress hits all of them identically, and the host capture is jitter-free), but treat absolute numbers as provisional until reproduced on bare metal.
+

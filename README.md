@@ -181,6 +181,7 @@ Notes:
 - `include/bfd_shared.h` — shared kernel/userspace map ABI and constants
 - `docs/baseline/` — FRR bfdd stress characterization (pcaps + gap data)
 - `docs/m3-bakeoff/` — five-way TX architecture comparison evidence
+- `docs/m4-dplane/` — FRR distributed-BFD integration L4 run (pcap + window)
 - `docs/final/` — full-matrix run of the kernel-tx path
 - `docs/m5-hardening/` — RFC-correctness and graceful-restart wire evidence
 - `docs/benchmarks/` — head-to-head resilience/detect/pacing/fast-path numbers
@@ -195,10 +196,14 @@ ladders (fair CPU → sched churn → timer storm → SCHED_FIFO hogs).
 
 - ~~FRR distributed-BFD dataplane integration~~ **done** — see
   "Running under FRR" above
-- Multi-session, IPv6
+- Multi-session: per-session source ports, `sess_by_addr` matching on
+  both IPs, alive/poll flags to atomics (maps and daemon already sized
+  for 64 sessions; only single-session operation is validated)
 - Bare-metal benchmark reproduction
+- IPv6
 
 Prior art: [open-oam/bfd_program](https://github.com/open-oam/bfd_program)
 (2020, abandoned proof-of-concept — XDP receiver and session validation; no released TX path). The 2018
 SRv6/eBPF fast-reroute literature validated the speed hypothesis
 academically.
+

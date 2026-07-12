@@ -218,6 +218,17 @@ systemd start-rate limit when cycling fast: `systemctl reset-failed frr`
 between restarts, or the second start is refused and the session
 genuinely drops.
 
+Hardening harnesses (docs/refactor-abi): three standalone injection
+scripts reproduce the review-pass verifications against a live session.
+`spoof_options.py` (run on the peer or chaos host) injects 200 optioned
+packets with valid discriminators; expect the loader's `rej` counter
+(stats idx 3) to climb by exactly 200 with no uptime reset.
+`spoof_long.py` injects one 76-byte control packet; expect the echo back
+on the wire at 66 bytes with a valid checksum. `bad_frame.py` connects
+to the dplane listener as a fake bfdd and sends an invalid-length
+header; expect "bad frame length ... dropping connection" in the engine
+log and an orderly close on the harness socket.
+
 ## 7. Pitfalls encountered, so you skip them
 
 - Heredocs with tab-indented content get mangled by interactive bash (tab completion fires mid-paste). Use `sh`, or files, for multi-line pastes.
@@ -233,4 +244,3 @@ genuinely drops.
   profile in complain mode: `sudo aa-complain /etc/apparmor.d/*tshark*`
   (needs the apparmor-utils package).
 - VM caveat: relative comparisons between backends are valid (in-guest stress hits all of them identically, and the host capture is jitter-free), but treat absolute numbers as provisional until reproduced on bare metal.
-

@@ -1,4 +1,4 @@
-# refactor-shared-abi branch
+# refactor-shared-abi (merged to main)
 
 Branch off main at 7311f8e (m5-hardening merge); merged to main after the verification below. Wire-verified on the
 standard testbed (bfd-dut / bfd-peer, FRR 10.5.1, 3x10ms session,
@@ -112,7 +112,7 @@ just port 3784, because the ihl check precedes the port check (the
 port sits at a variable offset once options are present). This is a
 deliberate tradeoff over parsing UDP at ihl*4 to narrow the drop:
 legitimate optioned UDP on a BFD link is a null set and IP options
-are effectively extinct in real traffic. The drop covers any optioned UDP arriving on the interface, not only port 3784; the alternative is a variable-offset UDP parse for no operational gain.
+are effectively extinct in real traffic.
 
 Verified (docs/refactor-abi/spoof_options.py): 200 optioned packets
 (ihl=6, TTL 255, correct discriminators) injected at a live 3x10ms
@@ -242,6 +242,4 @@ therefore still holds by construction and was not re-run. This is the
 one place in the branch where a code change postdates its regression
 evidence; the reasoning for not re-capturing is that the hot path is
 provably unaffected.
-
-
 

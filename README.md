@@ -207,3 +207,9 @@ Prior art: [open-oam/bfd_program](https://github.com/open-oam/bfd_program)
 SRv6/eBPF fast-reroute literature validated the speed hypothesis
 academically.
 
+
+## License
+
+GPL-2.0 (see LICENSE). The bfddp wire-protocol struct definitions in
+bfd_tx.c are adapted from FRR's bfdd/bfddp_packet.h, MIT licensed,
+Copyright (C) 2020 NetDEF, Rafael F. Zalamena.

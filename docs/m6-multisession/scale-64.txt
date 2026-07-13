@@ -12,7 +12,7 @@ Bugs found and fixed by this test, in order of discovery:
    buffer; exactly 20 delivered (8120B on the socket, zero TCP
    backpressure), dropped sessions marked delivered and never resent.
    Workaround: empty bfd block in frr.conf, add peers via vtysh after
-   the dplane connects. Issue report pending.
+   the dplane connects. Reported upstream: FRRouting/frr#22638.
 3. Engine: AdminDown had no exit. dp_handle_add cleared the flag but
    nothing restarted the FSM; fixed with an explicit transition.
 4. Engine: per-slot TX sockets bound INADDR_ANY, so routing sourced

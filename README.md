@@ -161,7 +161,7 @@ state/counters it reads back from us (counters come from the XDP maps).
    With more than ~20 peers, keep the bfd block out of frr.conf and
    add peers via vtysh after the dplane connects: FRR 10.5.1's dplane
    client truncates the initial session burst at 8KB (~20 sessions)
-   with no resend (docs/m6-multisession/scale-64.txt, bug 2).
+   with no resend (docs/m6-multisession/scale-64.txt, bug 2; FRRouting/frr#22638).
 
 Notes:
 - Use the TCP transport. FRR's `unixc:` dataplane client mode fails with

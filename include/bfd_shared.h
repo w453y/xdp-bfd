@@ -13,9 +13,13 @@
 #include <linux/types.h>
 
 #define BFD_PORT_1HOP    3784
-#define BFD_SRC_PORT     49152  /* RFC 5881 s4 range base. Per-session
-                                 * TX source port = base + session slot
-                                 * (SHOULD be unique per session). */
+#define BFD_SRC_PORT     65472  /* Per-session TX source port = base +
+                                 * slot; 64 slots end at 65535, the top
+                                 * of the RFC 5881 s4 range. Top-down
+                                 * because stock bfdd allocates its own
+                                 * per-session sockets bottom-up from
+                                 * 49152 even in dplane mode and those
+                                 * binds collide with ours. */
 #define BFD_MIN_LEN      24
 #define BFD_VERSION      1
 #define BFD_MAX_SESSIONS 64

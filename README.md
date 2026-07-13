@@ -126,8 +126,8 @@ with zero peer-visible events.
 ## Honest limitations
 
 - IPv4 only, single-hop only, no authentication, no echo mode.
-- Multi-session (64 slots, per-slot source ports 49152-49215, one
-  bfd_tx instance per host) is validated at 16 concurrent sessions:
+- Multi-session (64 slots, per-slot source ports 65472-65535, one
+  bfd_tx instance per host) is validated at the full 64 sessions:
   independent detect, 0 flaps both under L3 stress, injection
   isolation (docs/m6-multisession). Higher session counts are
   untested.
@@ -202,7 +202,6 @@ ladders (fair CPU → sched churn → timer storm → SCHED_FIFO hogs).
   "Running under FRR" above
 - Bare-metal benchmark reproduction
 - IPv6
-- Scale validation beyond 2 concurrent sessions
 
 Prior art: [open-oam/bfd_program](https://github.com/open-oam/bfd_program)
 (2020, abandoned proof-of-concept — XDP receiver and session validation; no released TX path). The 2018

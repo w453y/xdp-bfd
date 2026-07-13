@@ -14,7 +14,8 @@ This milestone makes concurrent sessions correct and proves two.
   established sessions demux by discriminator as before.
 
 - Per-session TX source ports (RFC 5881 s4: SHOULD be unique per
-  session). Source port = 49152 + session slot. Userspace TX moves to
+  session). Source port = 49152 + session slot (moved to
+  65472 + slot after the scale-64 run; see scale-64.txt). Userspace TX moves to
   per-slot sockets, opened lazily and kept for process lifetime, so a
   reused slot reuses its socket and teardown needs no fd handling.
   The kernel echo path reads src_port from tx_cfg instead of the
@@ -72,7 +73,18 @@ detected at 30.5-32.8ms with no batch drift, surviving 8 untouched.
 Evidence: bfd-m6-16sess-L3.pcap, scale-16.txt (includes FRR
 peer-identity operational findings).
 
+## Scale follow-up, 64 sessions
+
+Full-capacity run: see scale-64.txt. Five bugs found and fixed (slot
+port collision with bfdd's own allocator, AdminDown had no exit,
+INADDR_ANY sourcing broke peer addr-demux, reconcile tore down
+sessions on stable-lid reconnect, plus an upstream FRR dplane burst
+truncation at 8KB). 32-session mass-kill detected in 30.1-32.9ms
+with no drift; under L3 stress one correlated 19-session flap from
+a single RX-softirq stall - the design's quantified false-flap
+boundary at scale.
+
 ## Still out of scope
 
-Validated at 16 of 64 slots. IPv6, auth, echo/demand unchanged. Slot
+Validated at 64 of 64 slots. IPv6, auth, echo/demand unchanged. Slot
 ports assume one bfd_tx instance owns 49152-49215 on the host.

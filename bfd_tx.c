@@ -171,24 +171,38 @@ static struct session sessions[MAX_SESSIONS];
 /* ---------- globals ---------- */
 static int rx_sock = -1, tx_sock = -1;
 
-/* Per-slot TX sockets: source port = SRC_PORT + slot, opened lazily,
- * kept for process lifetime (a reused slot reuses its socket, so
- * teardown needs no fd handling). Stored as fd+1; 0 = not opened. */
+/* Per-slot TX sockets: source port = SRC_PORT + slot, bound to the
+ * session's local address (INADDR_ANY would let routing source every
+ * packet from the primary address, which breaks the peer's
+ * address-based demux for your_disc=0 packets). Opened lazily and
+ * kept; a reused slot with a different local address rebinds.
+ * Stored as fd+1; 0 = not opened; -1 = bind failed. */
 static int slot_tx[MAX_SESSIONS];
+static uint32_t slot_tx_ip[MAX_SESSIONS];
 
-static int slot_sock(int slot)
+static int slot_sock(int slot, uint32_t local_ip)
 {
-	if (slot_tx[slot])
+	if (slot_tx[slot] > 0 && slot_tx_ip[slot] == local_ip)
 		return slot_tx[slot] - 1;
+	if (slot_tx[slot] < 0 && slot_tx_ip[slot] == local_ip)
+		return -1;   /* bind failed earlier; caller uses fallback */
+	if (slot_tx[slot] > 0)
+		close(slot_tx[slot] - 1);   /* slot reused, new local addr */
+	slot_tx[slot] = 0;
+	slot_tx_ip[slot] = local_ip;
 	int fd = socket(AF_INET, SOCK_DGRAM, 0);
 	int ttl = 255;
 	setsockopt(fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
 	struct sockaddr_in sa = { .sin_family = AF_INET,
 				  .sin_port = htons(SRC_PORT + slot),
-				  .sin_addr.s_addr = INADDR_ANY };
+				  .sin_addr.s_addr = local_ip };
 	if (bind(fd, (void *)&sa, sizeof(sa))) {
-		perror("bind per-slot src");
+		fprintf(stderr,
+			"slot %d: bind port %d: %s - using fallback socket "
+			"(ephemeral src port) for this session\n",
+			slot, SRC_PORT + slot, strerror(errno));
 		close(fd);
+		slot_tx[slot] = -1;
 		return -1;
 	}
 	slot_tx[slot] = fd + 1;
@@ -593,7 +607,7 @@ static void fsm_tx(struct session *s, uint64_t t)
 		.sin_port   = htons(PORT_CTRL),
 		.sin_addr.s_addr = s->peer_ip,
 	};
-	int txfd = slot_sock((int)(s - sessions));
+	int txfd = slot_sock((int)(s - sessions), s->local_ip);
 	if (txfd < 0)
 		txfd = tx_sock;   /* unbound fallback, ephemeral src */
 	sendto(txfd, &o, 24, 0, (void *)&dst, sizeof(dst));
@@ -634,6 +648,11 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 
 	struct session *s = sess_by_lid(lid);
 	int fresh = 0, adopted = 0;
+	if (s)
+		s->orphaned = 0;   /* any bfdd message naming this lid proves
+		                    * it survived the reconnect; unmark, or the
+		                    * reconcile sweep tears down a live session
+		                    * (bfdd can reconnect with stable lids) */
 	if (!s) {
 		struct session *stale = sess_by_addr_pair_local(sm);
 		if (stale && dp_hold_us && stale->state == ST_UP) {
@@ -692,6 +711,15 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 		s->diag  = 0;
 		s->pushed_valid = 0;
 		s->next_tx_us = t;
+	}
+
+	if (!fresh && !s->admin_down && s->state == ST_ADMINDOWN) {
+		/* SHUTDOWN flag cleared on an existing session: leave
+		 * AdminDown and restart the FSM. Entry into AdminDown is
+		 * in fsm_tick; without this, the exit never happens. */
+		state_transition(s, ST_DOWN, 0, now_us(),
+				 "admin shutdown cleared");
+		s->next_tx_us = now_us();
 	}
 
 	char a[INET_ADDRSTRLEN], b[INET_ADDRSTRLEN];

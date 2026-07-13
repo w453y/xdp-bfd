@@ -87,4 +87,4 @@ boundary at scale.
 ## Still out of scope
 
 Validated at 64 of 64 slots. IPv6, auth, echo/demand unchanged. Slot
-ports assume one bfd_tx instance owns 49152-49215 on the host.
+ports assume one bfd_tx instance owns 65472-65535 on the host.

@@ -128,9 +128,10 @@ with zero peer-visible events.
 - IPv4 only, single-hop only, no authentication, no echo mode.
 - Multi-session (64 slots, per-slot source ports 65472-65535, one
   bfd_tx instance per host) is validated at the full 64 sessions:
-  independent detect, 0 flaps both under L3 stress, injection
-  isolation (docs/m6-multisession). Higher session counts are
-  untested.
+  independent detect at mass-kill (32 simultaneous, all 30-33ms),
+  injection isolation, and one known correlated-flap mode - a single
+  RX-softirq stall under timer stress flapped 19 sessions at once,
+  recovered in ~50ms (docs/m6-multisession).
 - RX-clocked TX alone requires an async-clocked peer. The userspace
   transitional TX gate now fills at the full required pace whenever
   the peer's pacing lags our advertised rate (not just a slow-rate

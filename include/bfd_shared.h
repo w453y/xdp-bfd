@@ -47,6 +47,12 @@ static inline void key_set_v4(struct bfd_addr *a, __be32 v4)
 	__builtin_memcpy(&a->b[12], &v4, 4);
 }
 
+/* Native v6: copy the 16-byte address verbatim. */
+static inline void key_set_v6(struct bfd_addr *a, const void *v6)
+{
+	__builtin_memcpy(a->b, v6, 16);
+}
+
 struct session_state {
 	__u64 last_seen_ns;
 	__u64 rx_pkts;

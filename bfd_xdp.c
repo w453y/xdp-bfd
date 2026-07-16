@@ -4,6 +4,7 @@
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
+#include <linux/ipv6.h>
 #include <linux/udp.h>
 #include <linux/in.h>
 #include <bpf/bpf_helpers.h>
@@ -174,37 +175,67 @@ int bfd_observer(struct xdp_md *ctx)
 	struct ethhdr *eth = data;
 	if ((void *)(eth + 1) > data_end)
 		return XDP_PASS;
-	if (eth->h_proto != bpf_htons(ETH_P_IP))
-		return XDP_PASS;
+	__u16 proto = eth->h_proto;
 
-	struct iphdr *iph = (void *)(eth + 1);
-	if ((void *)(iph + 1) > data_end)
+	struct udphdr *udp;
+	struct iphdr *iph = NULL;
+	struct session_key key = {};
+
+	if (proto == bpf_htons(ETH_P_IP)) {
+		iph = (void *)(eth + 1);
+		if ((void *)(iph + 1) > data_end)
+			return XDP_PASS;
+		if (iph->protocol != IPPROTO_UDP)
+			return XDP_PASS;
+		/* IP options (ihl != 5) on a UDP packet: a single-hop BFD
+		 * control packet never carries them. Passing would skip the
+		 * GTSM/your_disc checks below (UDP header sits at a variable
+		 * offset with options) and leak the packet to the userspace
+		 * socket unvalidated - the same bypass class as an XDP_PASS
+		 * reject. Drop it. */
+		if (iph->ihl != 5) {
+			count(3);
+			return XDP_DROP;
+		}
+		/* GTSM (RFC 5881 s5): single-hop control packets MUST arrive
+		 * with TTL 255. Anything else is off-link or spoofed. */
+		if (iph->ttl != 255) {
+			count(3);
+			return XDP_DROP;
+		}
+		udp = (void *)(iph + 1);
+		if ((void *)(udp + 1) > data_end)
+			return XDP_PASS;
+		key_set_v4(&key.peer,  iph->saddr);
+		key_set_v4(&key.local, iph->daddr);
+	} else if (proto == bpf_htons(ETH_P_IPV6)) {
+		struct ipv6hdr *ip6 = (void *)(eth + 1);
+		if ((void *)(ip6 + 1) > data_end)
+			return XDP_PASS;
+		/* Non-UDP first header: ICMPv6 (ND/MLD/RA), or UDP hidden
+		 * behind extension headers we deliberately don't walk. PASS to
+		 * the stack either way - this mirrors the v4 non-UDP PASS.
+		 * DROPping here kills v6 neighbour discovery. A UDP-behind-
+		 * extheaders packet to the BFD port is left to userspace GTSM
+		 * (IPV6_MINHOPCOUNT) and demux; single-hop BFD never sends one. */
+		if (ip6->nexthdr != IPPROTO_UDP)
+			return XDP_PASS;
+		/* GTSM: hop_limit is the v6 TTL. */
+		if (ip6->hop_limit != 255) {
+			count(3);
+			return XDP_DROP;
+		}
+		udp = (void *)(ip6 + 1);
+		if ((void *)(udp + 1) > data_end)
+			return XDP_PASS;
+		key_set_v6(&key.peer,  &ip6->saddr);
+		key_set_v6(&key.local, &ip6->daddr);
+	} else {
 		return XDP_PASS;
-	if (iph->protocol != IPPROTO_UDP)
-		return XDP_PASS;
-	/* IP options (ihl != 5) on a UDP packet: a single-hop BFD
-	 * control packet never carries them. Passing would skip the
-	 * GTSM/your_disc checks below (UDP header sits at a variable
-	 * offset with options) and leak the packet to the userspace
-	 * socket unvalidated - the same bypass class as an XDP_PASS
-	 * reject. Drop it. */
-	if (iph->ihl != 5) {
-		count(3);
-		return XDP_DROP;
 	}
 
-	struct udphdr *udp = (void *)(iph + 1);
-	if ((void *)(udp + 1) > data_end)
-		return XDP_PASS;
 	if (udp->dest != bpf_htons(BFD_PORT_1HOP))
 		return XDP_PASS;
-
-	/* GTSM (RFC 5881 s5): single-hop control packets MUST arrive
-	 * with TTL 255. Anything else is off-link or spoofed. */
-	if (iph->ttl != 255) {
-		count(3);
-		return XDP_DROP;
-	}
 
 	struct bfdhdr *bfd = (void *)(udp + 1);
 	if ((void *)(bfd + 1) > data_end) {
@@ -224,10 +255,6 @@ int bfd_observer(struct xdp_md *ctx)
 	}
 
 	count(1);
-
-	struct session_key key = {};
-	key_set_v4(&key.peer,  iph->saddr);
-	key_set_v4(&key.local, iph->daddr);
 
 	/* Only track sessions the control plane configured, unless the
 	 * standalone loader asked for promiscuous observation. Stops
@@ -313,7 +340,11 @@ int bfd_observer(struct xdp_md *ctx)
 	 * and bounce it. Peer's clock becomes our clock; runs in softirq.
 	 * Never echo Up at a peer that just said Down/AdminDown; let
 	 * userspace run the transition. */
-	if (cfg && cfg->enable && rstate >= 2) {
+	/* Kernel reply is v4-only for now: the v6 path needs a
+	 * mandatory UDP checksum recompute (no zero-csum escape in v6)
+	 * and payload_len patching in the trim case. Until then v6
+	 * sessions get RX tracking and kernel detect, TX from userspace. */
+	if (cfg && cfg->enable && rstate >= 2 && iph) {
 		__u8 send_final = (bfd->flags & BFD_F_POLL) ? BFD_F_FINAL : 0;
 
 		/* L2 swap */

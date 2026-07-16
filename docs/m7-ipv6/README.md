@@ -35,3 +35,20 @@ Verified during the run:
 - Orphaned daemons from a /opt/frr-master build were holding the
   dplane socket alongside the packaged FRR; both sets must be swept
   before mode_b.sh.
+
+## Step 2: XDP v6 parse (this commit)
+
+bfd_xdp.c parse path branches on ethertype. v6: fixed 40-byte ipv6hdr,
+non-UDP first header PASSes to the stack (ICMPv6 ND/MLD/RA must survive;
+mirrors the v4 non-UDP PASS, and extension-header-hidden UDP is not
+walked), hop_limit != 255 dropped (GTSM), key filled native via
+key_set_v6(). Shared UDP/BFD validation and the tx_config gate follow
+unchanged. Kernel XDP_TX reply stays v4-only (gated on iph != NULL): the
+v6 reply needs a mandatory UDP checksum recompute, deferred to a later
+step; v6 sessions get RX tracking and kernel detect, TX from userspace.
+
+Verified standalone (XDP attached, no engine): spoofed v6 frames from
+bfd-chaos, hop_limit 255 parsed and PASSed at the config gate, hop_limit
+64 dropped in GTSM (stats[3] +5 per 5-packet burst), hop-by-hop frames
+PASSed (ND preserved). v4 regression: session Up under FRR dplane, rx/tx
+lockstep intact through the reordered parse.

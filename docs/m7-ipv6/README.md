@@ -81,3 +81,23 @@ bfdd GTSM (hop limit 255).
 
 Note: "bad udp cksum" on locally-originated packets in host captures is
 virtio checksum offload (filled after the tap), not corruption.
+
+## Baseline: v6 userspace TX vs v4 kernel TX under the stress ladder
+
+Captured BEFORE the v6 kernel reply exists, deliberately: this is the
+number step 4 has to beat, measured with both sessions live on the same
+engine during one run of the bench-1 ladder (L3 timer storm 120s, L4
+SCHED_FIFO prio-50 60s; 300ms timers, 900ms budget).
+
+    L3: 0 flaps, both families.
+    L4: v4 (kernel RX-clocked TX)  0 flaps, TX p50=261ms max=300.7ms
+        v6 (userspace-paced TX)   19 flaps, TX p50=262ms p99=1199ms
+                                  max=1900ms
+
+The v6 p50 stays healthy between starvation events; the tail is the RT
+throttle's ~950ms/s starvation pattern exceeding the 900ms budget, one
+flap per ~3s cycle, each recovering autonomously in ~3ms. Same
+conclusion as the m3 bake-off, now measured in-band against the kernel
+path on the same box at the same instant. pcap:
+v6-L34-baseline.pcap (peer wire transitions: 39 non-Up frames from
+fd66::2, 0 from 10.66.0.2).

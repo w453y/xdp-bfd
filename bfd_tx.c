@@ -324,7 +324,9 @@ static void ktx_mirror(struct session *s)
 	};
 	if (s->pushed_valid && !memcmp(&c, &s->pushed_cfg, sizeof(c)))
 		return;
-	struct session_key k = { .peer_ip = s->peer_ip, .local_ip = s->local_ip };
+	struct session_key k = {};
+	key_set_v4(&k.peer,  s->peer_ip);
+	key_set_v4(&k.local, s->local_ip);
 	bpf_map_update_elem(cfg_fd, &k, &c, 0);
 	s->pushed_cfg = c;
 	s->pushed_valid = 1;
@@ -334,7 +336,9 @@ static void ktx_clear(struct session *s)
 {
 	if (!use_ktx)
 		return;
-	struct session_key k = { .peer_ip = s->peer_ip, .local_ip = s->local_ip };
+	struct session_key k = {};
+	key_set_v4(&k.peer,  s->peer_ip);
+	key_set_v4(&k.local, s->local_ip);
 	bpf_map_delete_elem(cfg_fd, &k);
 	bpf_map_delete_elem(sess_fd, &k);
 }
@@ -347,7 +351,9 @@ static void ktx_poll_map(struct session *s, uint64_t t)
 {
 	if (!use_ktx || s->state != ST_UP)
 		return;
-	struct session_key k = { .peer_ip = s->peer_ip, .local_ip = s->local_ip };
+	struct session_key k = {};
+	key_set_v4(&k.peer,  s->peer_ip);
+	key_set_v4(&k.local, s->local_ip);
 	struct session_state ms;
 	if (bpf_map_lookup_elem(sess_fd, &k, &ms))
 		return;
@@ -784,8 +790,9 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h,
 	if (s) {
 		uint64_t rx = 0, ktx = 0;
 		if (use_ktx) {
-			struct session_key k = { .peer_ip = s->peer_ip,
-					     .local_ip = s->local_ip };
+			struct session_key k = {};
+			key_set_v4(&k.peer,  s->peer_ip);
+			key_set_v4(&k.local, s->local_ip);
 			struct session_state ms;
 			if (!bpf_map_lookup_elem(sess_fd, &k, &ms)) {
 				rx  = ms.rx_pkts;

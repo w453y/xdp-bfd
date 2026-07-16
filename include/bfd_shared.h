@@ -28,10 +28,24 @@
 #define BFD_F_POLL  0x20
 #define BFD_F_FINAL 0x10
 
-struct session_key {
-	__be32 peer_ip;
-	__be32 local_ip;
+struct bfd_addr {
+	__u8 b[16];
 };
+
+struct session_key {
+	struct bfd_addr peer;
+	struct bfd_addr local;
+};
+
+/* v4-mapped encoder: ::ffff:a.b.c.d. Shared by BPF and userspace so
+ * both sides produce byte-identical map keys. */
+static inline void key_set_v4(struct bfd_addr *a, __be32 v4)
+{
+	__builtin_memset(a, 0, sizeof(*a));
+	a->b[10] = 0xff;
+	a->b[11] = 0xff;
+	__builtin_memcpy(&a->b[12], &v4, 4);
+}
 
 struct session_state {
 	__u64 last_seen_ns;

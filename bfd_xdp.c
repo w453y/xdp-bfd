@@ -225,10 +225,9 @@ int bfd_observer(struct xdp_md *ctx)
 
 	count(1);
 
-	struct session_key key = {
-		.peer_ip  = iph->saddr,
-		.local_ip = iph->daddr,
-	};
+	struct session_key key = {};
+	key_set_v4(&key.peer,  iph->saddr);
+	key_set_v4(&key.local, iph->daddr);
 
 	/* Only track sessions the control plane configured, unless the
 	 * standalone loader asked for promiscuous observation. Stops

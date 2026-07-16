@@ -31,7 +31,7 @@ static int on_event(void *ctx, void *data, size_t len)
 {
 	struct bfd_event *e = data;
 	char peer[INET_ADDRSTRLEN];
-	inet_ntop(AF_INET, &e->key.peer_ip, peer, sizeof(peer));
+	inet_ntop(AF_INET, &e->key.peer.b[12], peer, sizeof(peer));
 
 	double silent_ms = (e->ts_ns - e->last_seen_ns) / 1e6;
 
@@ -142,7 +142,7 @@ int main(int argc, char **argv)
 			struct session_state st;
 			if (bpf_map_lookup_elem(sess_fd, &next, &st) == 0) {
 				char peer[INET_ADDRSTRLEN];
-				inet_ntop(AF_INET, &next.peer_ip,
+				inet_ntop(AF_INET, &next.peer.b[12],
 					  peer, sizeof(peer));
 				double age = (now - st.last_seen_ns) / 1e6;
 				printf("%s state=%s alive=%u pkts=%llu age=%.1fms\n",

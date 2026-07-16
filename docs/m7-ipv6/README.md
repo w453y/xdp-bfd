@@ -101,3 +101,34 @@ conclusion as the m3 bake-off, now measured in-band against the kernel
 path on the same box at the same instant. pcap:
 v6-L34-baseline.pcap (peer wire transitions: 39 non-Up frames from
 fd66::2, 0 from 10.66.0.2).
+
+## Step 4: v6 kernel XDP_TX reply (this commit)
+
+The reply path is family-branched: L2 swap shared; L3 swap per family
+(checksum-neutral both); v4 keeps udp->check = 0 and the IP-checksum
+trim recompute; v6 gets a full UDP checksum recompute - pseudo-header
+(swapped addrs, length, nexthdr) + UDP header + the fixed 24-byte
+payload, a 34-word fold, with the RFC 768 0 -> 0xffff rule. The fold
+runs before bpf_xdp_adjust_tail (which invalidates packet pointers);
+it never reads past payload byte 24, all of which survives the trim.
+v6 trim patches ipv6hdr.payload_len (no IP checksum exists).
+
+Validated in two stages. 4a, both TX paths live concurrently: host
+tcpdump showed alternating frames - kernel echoes [udp sum ok]
+(peer's flowlabel preserved, frame rewritten in place) interleaved
+with userspace slot-socket frames (virtio offload artifact). Every
+kernel-echoed frame validates. 4b, userspace pacing exemption removed:
+all steady-state v6 TX is kernel echo, all checksums valid.
+
+## Ladder rerun vs baseline (v6-L34-ktx.pcap)
+
+Same L3+L4 ladder, 300ms timers, both sessions live:
+
+                        v6 flaps   v6 TX p99   v6 TX max   v4 flaps
+    userspace TX          19        1199ms      1900ms        0
+    kernel reply (now)     0         300ms       300.5ms      0
+
+Engine silent through both stages; wire transitions 0/0; v6 is now
+indistinguishable from v4 under RT starvation. The 19-flaps-per-minute
+cost of userspace TX at 300ms timers is exactly what the kernel reply
+eliminates.

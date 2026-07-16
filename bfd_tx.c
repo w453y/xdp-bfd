@@ -344,7 +344,7 @@ static void ktx_mirror(struct session *s)
 	if (!use_ktx)
 		return;
 	struct tx_cfg c = {
-		.enable    = (s->state == ST_UP && s->family != AF_INET6),
+		.enable    = (s->state == ST_UP),
 		.my_disc   = s->wire_disc,
 		.your_disc = s->rdisc,
 		.min_tx_us = s->min_tx_us,
@@ -616,10 +616,7 @@ static void fsm_tx(struct session *s, uint64_t t)
 	}
 
 	int due = (t >= s->next_tx_us) || s->send_final;
-	/* v6: kernel reply is not implemented yet (mandatory UDP csum),
-	 * so userspace keeps normal RFC 5880 pacing in Up. */
-	if (use_ktx && s->family != AF_INET6 &&
-	    s->state == ST_UP && !s->send_final && !s->just_up) {
+	if (use_ktx && s->state == ST_UP && !s->send_final && !s->just_up) {
 		/* Kernel echo covers TX only at the peer's pace. If the
 		 * peer paces slower than our required rate (its detect
 		 * budget for us), transmit from here at the required

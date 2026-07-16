@@ -179,6 +179,7 @@ int bfd_observer(struct xdp_md *ctx)
 
 	struct udphdr *udp;
 	struct iphdr *iph = NULL;
+	struct ipv6hdr *ip6 = NULL;
 	struct session_key key = {};
 
 	if (proto == bpf_htons(ETH_P_IP)) {
@@ -209,7 +210,7 @@ int bfd_observer(struct xdp_md *ctx)
 		key_set_v4(&key.peer,  iph->saddr);
 		key_set_v4(&key.local, iph->daddr);
 	} else if (proto == bpf_htons(ETH_P_IPV6)) {
-		struct ipv6hdr *ip6 = (void *)(eth + 1);
+		ip6 = (void *)(eth + 1);
 		if ((void *)(ip6 + 1) > data_end)
 			return XDP_PASS;
 		/* Non-UDP first header: ICMPv6 (ND/MLD/RA), or UDP hidden
@@ -340,11 +341,7 @@ int bfd_observer(struct xdp_md *ctx)
 	 * and bounce it. Peer's clock becomes our clock; runs in softirq.
 	 * Never echo Up at a peer that just said Down/AdminDown; let
 	 * userspace run the transition. */
-	/* Kernel reply is v4-only for now: the v6 path needs a
-	 * mandatory UDP checksum recompute (no zero-csum escape in v6)
-	 * and payload_len patching in the trim case. Until then v6
-	 * sessions get RX tracking and kernel detect, TX from userspace. */
-	if (cfg && cfg->enable && rstate >= 2 && iph) {
+	if (cfg && cfg->enable && rstate >= 2) {
 		__u8 send_final = (bfd->flags & BFD_F_POLL) ? BFD_F_FINAL : 0;
 
 		/* L2 swap */
@@ -354,9 +351,15 @@ int bfd_observer(struct xdp_md *ctx)
 		__builtin_memcpy(eth->h_source, tmp, 6);
 
 		/* L3 swap (checksum unaffected by swapping halves) */
-		__be32 tip = iph->saddr;
-		iph->saddr = iph->daddr;
-		iph->daddr = tip;
+		if (iph) {
+			__be32 tip = iph->saddr;
+			iph->saddr = iph->daddr;
+			iph->daddr = tip;
+		} else if (ip6) {
+			struct in6_addr t6 = ip6->saddr;
+			ip6->saddr = ip6->daddr;
+			ip6->daddr = t6;
+		}
 
 		/* L4: our source port, dst 3784, no UDP csum (legal v4) */
 		udp->source = cfg->src_port ? bpf_htons(cfg->src_port)
@@ -385,24 +388,56 @@ int bfd_observer(struct xdp_md *ctx)
 		 * checksum; UDP csum is already 0. On adjust_tail failure
 		 * drop: the frame is half-rewritten by now, and liveness
 		 * was already refreshed above. */
-		int want = (int)(sizeof(*eth) + sizeof(*iph) +
-				 sizeof(*udp) + BFD_MIN_LEN);
+		int want = (int)(sizeof(*eth) +
+		                 (iph ? sizeof(*iph) : sizeof(*ip6)) +
+		                 sizeof(*udp) + BFD_MIN_LEN);
 		int excess = (int)((long)data_end - (long)data) - want;
 		if (excess > 0) {
-			iph->tot_len = bpf_htons(sizeof(*iph) +
-						 sizeof(*udp) + BFD_MIN_LEN);
 			udp->len = bpf_htons(sizeof(*udp) + BFD_MIN_LEN);
-			iph->check = 0;
+			if (iph) {
+				iph->tot_len = bpf_htons(sizeof(*iph) +
+				                         sizeof(*udp) + BFD_MIN_LEN);
+				iph->check = 0;
+				__u32 csum = 0;
+				__u16 *w = (__u16 *)iph;
+				for (int i = 0; i < 10; i++)
+					csum += w[i];
+				csum = (csum & 0xffff) + (csum >> 16);
+				csum = (csum & 0xffff) + (csum >> 16);
+				iph->check = ~csum & 0xffff;
+			} else if (ip6) {
+				ip6->payload_len = bpf_htons(sizeof(*udp) +
+				                             BFD_MIN_LEN);
+			}
+		}
+
+		/* v6: mandatory UDP checksum over pseudo-header + UDP header
+		 * + the 24-byte payload. Swaps are csum-neutral but the
+		 * payload rewrite is not, so recompute in full. Fixed 34-word
+		 * fold, pointers bounds-proven above. Runs before adjust_tail
+		 * (which invalidates pointers); the fold never reads past
+		 * payload byte 24, which survives the trim. */
+		if (ip6) {
 			__u32 csum = 0;
-			__u16 *w = (__u16 *)iph;
-			for (int i = 0; i < 10; i++)
+			__u16 *w = (__u16 *)&ip6->saddr;
+			for (int i = 0; i < 16; i++)   /* saddr + daddr */
+				csum += w[i];
+			csum += udp->len;              /* pseudo length */
+			csum += bpf_htons(IPPROTO_UDP);
+			w = (__u16 *)udp;              /* UDP hdr, check == 0 */
+			for (int i = 0; i < 4; i++)
+				csum += w[i];
+			w = (__u16 *)bfd;              /* 24-byte payload */
+			for (int i = 0; i < 12; i++)
 				csum += w[i];
 			csum = (csum & 0xffff) + (csum >> 16);
 			csum = (csum & 0xffff) + (csum >> 16);
-			iph->check = ~csum & 0xffff;
-			if (bpf_xdp_adjust_tail(ctx, -excess))
-				return XDP_DROP;
+			__u16 c = ~csum & 0xffff;
+			udp->check = c ? c : 0xffff;   /* RFC 768: 0 -> 0xffff */
 		}
+
+		if (excess > 0 && bpf_xdp_adjust_tail(ctx, -excess))
+			return XDP_DROP;
 
 		st->tx_pkts++;
 		return XDP_TX;

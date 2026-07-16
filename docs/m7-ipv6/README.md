@@ -52,3 +52,32 @@ bfd-chaos, hop_limit 255 parsed and PASSed at the config gate, hop_limit
 64 dropped in GTSM (stats[3] +5 per 5-packet burst), hop-by-hop frames
 PASSed (ND preserved). v4 regression: session Up under FRR dplane, rx/tx
 lockstep intact through the reordered parse.
+
+## Step 3: userspace v6 path (this commit)
+
+bfd_tx.c: session struct carries 16-byte addrs (v4 stored v4-mapped) +
+family; shim accepts SESSION_IPV6 (sm_addrs() decodes both layouts);
+slot sockets family-typed (AF_INET6 binds local+65472+slot,
+IPV6_UNICAST_HOPS 255); v6 RX socket on [::]:3784 with IPV6_V6ONLY,
+IPV6_RECVPKTINFO, IPV6_MINHOPCOUNT 255, drained nonblocking in the main
+loop; demux compares full 16-byte pairs.
+
+Interim TX architecture: v4 = full RX-clocked kernel TX; v6 = kernel RX
+tracking + kernel detect, TX from userspace at normal RFC 5880 pacing
+(tx_cfg.enable never set for v6, and the ktx silence gate exempts v6).
+First cut of this gating flapped at exactly the 3x300ms detect budget:
+userspace went silent in Up while the kernel reply was disabled, wire
+showed peer-only traffic. The fix is this commit's explicit v6
+exemption in both gates.
+
+## Evidence: v6-userspace-tx.pcap
+
+v4 + v6 sessions concurrent, both Up, 90s window, four flows balanced
+(335-340 pkts each). v6 map entry keyed native (fd66::), rx_pkts
+climbing with tx_pkts pinned at 0 (kernel reply off); v4 entry
+v4-mapped with rx/tx lockstep. v6 userspace TX gaps: n=334 p50=267ms
+p99=300.4ms max=302ms. Our TX from slot port 65473, accepted by stock
+bfdd GTSM (hop limit 255).
+
+Note: "bad udp cksum" on locally-originated packets in host captures is
+virtio checksum offload (filled after the tap), not corruption.

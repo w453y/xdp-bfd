@@ -132,3 +132,32 @@ Engine silent through both stages; wire transitions 0/0; v6 is now
 indistinguishable from v4 under RT starvation. The 19-flaps-per-minute
 cost of userspace TX at 300ms timers is exactly what the kernel reply
 eliminates.
+
+## Step 5: v6 security/validation regression
+
+v6 variants of the m5 spoof harness (spoof6.py), injected from a third
+host (bfd-chaos) forging source fd66::2. Counts are stats[3] deltas:
+XDP_DROP is invisible to tcpdump (XDP consumes the frame before the
+tc/AF_PACKET hook), so bpftool stats are the only trustworthy signal.
+
+    wrong your_disc, hlim 255   -> +100  demux reject (RFC 5880 s6.8.6)
+    correct your_disc, hlim 64  -> +100  GTSM reject (hop_limit != 255)
+    correct your_disc, hlim 255 -> +0    passes; reaches session
+    oversized (40-byte payload) -> echo trimmed to 24, udp sum ok,
+                                    payload_len patched, adjust_tail ok
+
+The oversized case is the only previously-untested v6 path: a valid
+frame with 16 trailing bytes is echoed back at exactly 24 BFD bytes
+with a recomputed valid checksum (payload length 32 on the wire),
+confirming the fold-before-adjust_tail ordering against real traffic.
+
+Testbed notes:
+- The target your_disc must be read from a BFD capture (peer's Your
+  Discriminator, or the DUT's own My Discriminator in a DUT-TX
+  capture) and copied exactly. A single mistyped hex digit fails demux
+  and is indistinguishable from a correct rejection - verify the value
+  against the wire, do not hand-transcribe from log output.
+- vmbr3 forwards forged-source unicast v6 tap-to-tap, but the bridge
+  master does not see it (learned unicast isn't flooded up to the
+  master), so confirm injection via DUT-side stats, not a vmbr3
+  capture. Delivery works (the hlim-64 case counts exactly).

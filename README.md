@@ -32,7 +32,10 @@ Four cooperating pieces, one interface:
 1. **XDP RX + parser** (`bfd_xdp.c`) — parses/validates BFD control
    packets in the driver path, tracks per-session state in a BPF hash
    map (timestamps taken at actual packet arrival, immune to
-   socket-buffer queueing illusions).
+   socket-buffer queueing illusions). Dual-stack: the parse path
+   branches on ethertype, v6 sessions are keyed natively and v4
+   sessions v4-mapped (::ffff:a.b.c.d) in one shared map, so both
+   families ride the same fast path.
 2. **Kernel-side detection sweep** — one global `bpf_timer` (5ms)
    sweeps `now - last_seen` against each session's negotiated detect
    time; transitions are pushed to userspace via ringbuf. Detection of
@@ -117,6 +120,43 @@ connection instead of resyncing mid-stream (which composes with
 on the kernel map-path Down was also fixed. Each carries an injection
 harness and evidence in docs/refactor-abi.
 
+## IPv6
+
+The engine is dual-stack (docs/m7-ipv6, branch m7-abi-key). The
+session key is two 16-byte addresses; v4 is stored v4-mapped so both
+families share one hash map, one slot-socket pool, and the same XDP
+fast path with no key collisions. The v6 parse path enforces GTSM as
+hop_limit 255, PASSes non-UDP first headers so ICMPv6 (ND, MLD, RA)
+survives, and deliberately does not walk extension headers —
+extension-header-hidden UDP never reaches a session. The kernel
+XDP_TX reply is family-branched: the v6 echo recomputes the full UDP
+checksum over the swapped pseudo-header before `bpf_xdp_adjust_tail`,
+and oversized frames are trimmed to 24 BFD bytes with `payload_len`
+patched (there is no IP checksum to fix in v6).
+
+The kernel reply is what makes v6 equal to v4. Measured on one engine
+with both families live through the L3+L4 ladder at 3x300ms:
+userspace-paced v6 TX flapped 19 times under SCHED_FIFO (TX max
+1900ms — the RT throttle again) while v4 kernel TX ran clean; with
+the v6 kernel reply enabled, v6 ran the same ladder at 0 flaps, TX
+max 300.5ms, indistinguishable from v4. The v6 spoof harness
+(spoof6.py) repeats the m5 validation: wrong your_disc and hop_limit
+!= 255 are XDP_DROPped and counted, and the oversized-echo trim is
+verified against real traffic. Each of the five landing steps carries
+a v4 regression check, so the shared code never regressed the working
+v4 path.
+
+Mixed-family scale is validated: 32 v4 + 32 v6 at the 64-session cap,
+3x10ms timers, through the full L3+L4 stress ladder — 0 flaps in
+either family, wire transitions 0/0, per-slot max TX gaps in one
+band for both families (worst 14.5ms, under half the 30ms detect
+budget), beating the v4-only m6 baseline which showed correlated
+stall flaps at this N. The same mesh was validated against FRR master
+carrying the merged burst-truncation fix
+([FRRouting/frr#22645](https://github.com/FRRouting/frr/pull/22645)):
+64/64 registrations on connect and on restart, Output full events 0.
+Evidence in docs/m7-ipv6/.
+
 Graceful restart: `--dp-hold <sec>` keeps wire sessions alive across
 bfdd restarts (orphan on disconnect, adopt on re-ADD with
 discriminator continuity, mark-and-sweep reconciliation). Default 0
@@ -125,9 +165,10 @@ with zero peer-visible events.
 
 ## Honest limitations
 
-- IPv4 only, single-hop only, no authentication, no echo mode.
+- Single-hop only, no authentication, no echo mode.
 - Multi-session (64 slots, per-slot source ports 65472-65535, one
-  bfd_tx instance per host) is validated at the full 64 sessions:
+  bfd_tx instance per host) is validated at the full 64 sessions,
+  including the 32 v4 + 32 v6 mixed-family split (docs/m7-ipv6):
   independent detect at mass-kill (32 simultaneous, all 30-33ms),
   injection isolation, and one known correlated-flap mode - a single
   RX-softirq stall under timer stress flapped 19 sessions at once,
@@ -161,16 +202,47 @@ state/counters it reads back from us (counters come from the XDP maps).
    With more than ~20 peers, keep the bfd block out of frr.conf and
    add peers via vtysh after the dplane connects: FRR 10.5.1's dplane
    client truncates the initial session burst at 8KB (~20 sessions)
-   with no resend (docs/m6-multisession/scale-64.txt, bug 2; FRRouting/frr#22638).
+   with no resend (docs/m6-multisession/scale-64.txt, bug 2;
+   [FRRouting/frr#22638](https://github.com/FRRouting/frr/issues/22638)). Fixed upstream in
+   [FRRouting/frr#22645](https://github.com/FRRouting/frr/pull/22645)
+   (merged to master): the enqueue path flushes the output buffer
+   before failing, and a session whose dataplane registration fails
+   falls back to the software implementation instead of being
+   silently stranded. Packaged releases up to 10.5.1 still carry the
+   bug, so the vtysh workaround applies until a release ships the fix.
 
 Notes:
+- Reserve the dplane port from the ephemeral range
+  (`net.ipv4.ip_local_reserved_ports = 50700`): a bfdd dplane client
+  retrying against a missing listener can TCP self-connect
+  127.0.0.1:50700 and permanently steal the port from the engine;
+  SO_REUSEADDR does not recover it. Do not also reserve the slot
+  range 65472-65535 — reserved_ports blocks explicit bind() too, and
+  the engine could then not bind its own slots.
 - Use the TCP transport. FRR's `unixc:` dataplane client mode fails with
   EINVAL: `bfd_dplane_client_init()` discards the caller's `salen` and
   passes `sizeof(union)` (= 112, padded by `sockaddr_in6` alignment) to
   `connect(2)`, which exceeds `sizeof(struct sockaddr_un)` (110) and is
   rejected for AF_UNIX. strace-confirmed. Reported upstream as
   [FRRouting/frr#22608](https://github.com/FRRouting/frr/issues/22608);
-  fix submitted as [FRRouting/frr#22621](https://github.com/FRRouting/frr/pull/22621).
+  fixed upstream in
+  [FRRouting/frr#22621](https://github.com/FRRouting/frr/pull/22621)
+  (merged to master, reviewed by the dplane author). Packaged
+  releases up to 10.5.1 still carry the bug, so use TCP with them.
+- Two further upstream bfdd dataplane bugs were found while validating
+  at 64 sessions, both with engine-free reproducers and fixes in
+  review: session DELETEs are silently lost on clean shutdown because
+  the output buffer is never drained before close
+  ([FRRouting/frr#22691](https://github.com/FRRouting/frr/issues/22691),
+  fix [#22692](https://github.com/FRRouting/frr/pull/22692)); and
+  `show bfd peers counters` tears down the dataplane connection because
+  `bfd_dplane_expect()` never reclaims consumed input-buffer space and
+  misreads a full buffer as the peer closing
+  ([FRRouting/frr#22693](https://github.com/FRRouting/frr/issues/22693),
+  fix [#22694](https://github.com/FRRouting/frr/pull/22694)). Until the
+  latter is merged, avoid polling `show bfd peers counters` against a
+  dataplane at scale, or run with `--dp-hold` so the resulting
+  reconnects are wire-invisible.
 - `show bfd peers counters`: both input and output counts come from
   the XDP session map; kernel XDP_TX replies are counted per-packet.
 - Default (`--dp-hold 0`): sessions are torn down when bfdd
@@ -195,6 +267,7 @@ Notes:
 - `docs/benchmarks/` — head-to-head resilience/detect/pacing/fast-path numbers
 - `docs/m6-multisession/` — concurrent-session validation (pcap + gaps + isolation)
 - `docs/refactor-abi/` — shared-ABI refactor, hardening closures, regression evidence
+- `docs/m7-ipv6/` — dual-stack: unified key, v6 parse/reply, ladder + spoof evidence
 
 Every claim above has a pcap in this repo. Methodology: host-side
 tcpdump on the hypervisor bridge as ground truth, window-sliced
@@ -205,8 +278,9 @@ ladders (fair CPU → sched churn → timer storm → SCHED_FIFO hogs).
 
 - ~~FRR distributed-BFD dataplane integration~~ **done** — see
   "Running under FRR" above
+- ~~IPv6~~ **done** — dual-stack, validated to the 64-session
+  mixed-family cap through the stress ladder; see "IPv6" above
 - Bare-metal benchmark reproduction
-- IPv6
 
 Prior art: [open-oam/bfd_program](https://github.com/open-oam/bfd_program)
 (2020, abandoned proof-of-concept — XDP receiver and session validation; no released TX path). The 2018
@@ -219,3 +293,4 @@ academically.
 GPL-2.0 (see LICENSE). The bfddp wire-protocol struct definitions in
 bfd_tx.c are adapted from FRR's bfdd/bfddp_packet.h, MIT licensed,
 Copyright (C) 2020 NetDEF, Rafael F. Zalamena.
+

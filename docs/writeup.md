@@ -100,7 +100,7 @@ The integration also produced the project's last find. bfdd's unix transport for
 
 ## 7. Limitations and roadmap
 
-What this is: a lab-grade, single-hop, IPv4-only implementation with no authentication, echo, or demand mode. Sessions drop and re-establish across a bfdd restart. The dataplane tears them down on control-plane disconnect and bfdd re-adds them on reconnect, which is correct but not hitless. The RX-clocked design requires an asynchronously-clocked peer. And all numbers here are from VMs: the stress was applied inside the guest and hit every backend identically, so the comparisons are load-bearing, but the absolute figures await a bare-metal reproduction, which is the first item on the roadmap. After that: multi-session hardening, IPv6, and, if operators say drop-and-recreate hurts, session continuity across control-plane restarts.
+What this is: a lab-grade, single-hop, IPv4-only implementation (IPv6 has since landed — see the m7 section below) with no authentication, echo, or demand mode. Sessions drop and re-establish across a bfdd restart. The dataplane tears them down on control-plane disconnect and bfdd re-adds them on reconnect, which is correct but not hitless. The RX-clocked design requires an asynchronously-clocked peer. And all numbers here are from VMs: the stress was applied inside the guest and hit every backend identically, so the comparisons are load-bearing, but the absolute figures await a bare-metal reproduction, which is the first item on the roadmap. After that: multi-session hardening, IPv6, and, if operators say drop-and-recreate hurts, session continuity across control-plane restarts.
 
 ### Since this writeup: the m5-hardening work
 
@@ -124,9 +124,10 @@ m5-hardening branch (see docs/m5-hardening and docs/benchmarks):
   single-session operation is benchmarked so far.
 
 Still open, and still the honest limitations: authentication,
-echo, and demand mode (RFC 5880 s6.4/6.6/6.7); IPv6 and multihop;
-the async-peer requirement of RX-clocked TX; and bare-metal
-validation of the absolute numbers.
+echo, and demand mode (RFC 5880 s6.4/6.6/6.7); multihop; the
+async-peer requirement of RX-clocked TX; and bare-metal validation
+of the absolute numbers. IPv6, listed as open when this section was
+written, has since landed — see the m7 section below.
 
 ### After m5: a review-and-hardening pass (docs/refactor-abi)
 
@@ -150,9 +151,104 @@ capture; none touched the steady-state path, so the resilience numbers
 above stand unchanged. The rejected review suggestions and the reasoning
 are in docs/refactor-abi.
 
+### After the review pass: IPv6 (docs/m7-ipv6)
+
+Dual-stack landed in five steps on the m7-abi-key branch, each step
+carrying a v4 regression check so the shared code never regressed the
+working path. The structural move came first and alone: the session
+key widened from two `__be32` fields to two 16-byte addresses, with
+v4 stored v4-mapped (::ffff:a.b.c.d), so both families share one hash
+map, one slot-socket pool, and the same fast path with no possibility
+of key collision. That step contains no v6 code at all; it exists to
+prove the layout change against the live v4 session before anything
+interesting is built on it (10k-packet regression run, RX-clocked
+lockstep intact through the new key).
+
+The v6 parse path is a branch on ethertype: fixed 40-byte ipv6hdr,
+GTSM as hop_limit 255, and a deliberate refusal to walk extension
+headers — UDP hidden behind an extension chain never reaches a
+session, while non-UDP first headers are PASSed to the stack so
+ICMPv6 neighbor discovery survives an attached program. The kernel
+reply is family-branched where the protocols differ: v4 keeps
+`udp->check = 0` and the IP-checksum trim recompute; v6 has no IP
+checksum but a mandatory UDP one, so the echo recomputes it over the
+swapped pseudo-header as a 34-word fold. The ordering constraint is
+the part worth writing down: the fold must complete before
+`bpf_xdp_adjust_tail`, which invalidates every packet pointer, and
+must never read past the 24 BFD bytes that survive the trim. The
+oversized-frame case — 16 trailing bytes echoed back as a valid
+24-byte reply with a recomputed checksum and a patched `payload_len`
+— was verified against injected traffic, not just reasoned about.
+
+The measurement that justifies the kernel reply repeats the bake-off
+argument in miniature, in-band, on one box. Before the v6 reply
+existed, both families ran the L3+L4 ladder concurrently at 3x300ms:
+v4 on kernel RX-clocked TX, v6 transmitting from userspace at RFC
+pacing. v4: 0 flaps. v6: 19 flaps, TX gaps to 1900ms — the RT
+throttle's ~950ms/s starvation exceeding the 900ms detect budget
+once per cycle, each flap recovering autonomously in ~3ms. Same
+run, same instant, same engine; the only variable is which side of
+the kernel boundary the transmit clock lives on. With the kernel
+reply enabled, the rerun of the same ladder: v6 0 flaps, TX max
+300.5ms, indistinguishable from v4. The v6 spoof harness then
+repeated the m5 validation from a third host: wrong your_disc and
+hop_limit 64 both XDP_DROPped and counted (bpftool stats are the
+only trustworthy signal there — XDP_DROP consumes the frame before
+any capture hook sees it), correct credentials passed.
+
+The scale work also closed a second upstream FRR loop, in the same
+pattern as the unixc bug in section 6. The m6 64-session runs had
+exposed bfdd's dataplane client silently and permanently stranding
+sessions when the registration burst overflows its 8KB output buffer
+— delivered sessions register, the rest are lost with software BFD
+already disabled and no retry (FRRouting/frr#22638, with a
+byte-counting TCP-sink reproducer that needs no dataplane
+implementation). The fix — flush the output buffer before failing an
+enqueue, and return a session to the software implementation when
+dataplane registration fails rather than leaving it implemented by
+neither — was submitted as FRRouting/frr#22645 and is merged to
+master. Validation on the reproducer: unpatched delivers 58 of 128
+registrations at exactly the 8KB line; patched delivers 128/128. And
+end-to-end against this engine: the reconnect burst that previously
+registered 40 of 64 sessions now registers all 64.
+
+The mixed-family scale run closed the milestone: 32 v4 + 32 v6 at the
+64-session cap, 3x10ms timers, through the same L3+L4 ladder — zero
+flaps in either family, zero wire transitions, and per-slot maximum
+TX gaps sitting in a single 13-14.5ms band with the two families
+statistically indistinguishable. The v4-only m6 baseline had shown
+correlated stall flaps at this session count; the dual-stack engine
+beats its own earlier result. The confirmation run against FRR master
+carrying #22645 registered 64/64 on connect and on restart with zero
+output-buffer events — the packaged-release reconnect tear-down is
+gone.
+
+That validation session then found two more upstream bugs, both in
+the same dataplane client file, both invisible without a real
+dataplane at scale. First: clean bfdd shutdown enqueues one DELETE
+per session and exits without ever draining the output buffer — under
+10.5.1 the dataplane received none of them (which is why earlier
+restarts had looked hitless), and after #22645's flush it receives
+exactly one buffer's worth, 58 of 64, leaving an arbitrary
+hash-ordered partial teardown. A SIGKILL, which sends nothing, was
+strictly more hitless than a clean stop. Second: `show bfd peers
+counters` kills the dataplane connection in strict alternation — the
+synchronous reply path never reclaims consumed input-buffer space, a
+passing 64-session sweep parks 5120 dead bytes, the next sweep fills
+the buffer at exactly reply 39, and a zero-length read is then
+misdiagnosed as the peer closing, so bfdd RSTs a healthy connection
+and silently prints stale counters. Both were reduced to arithmetic
+(every observed count derivable from the buffer size), both got
+engine-free reproducers — byte-counting TCP responders needing no
+dataplane implementation — and both fixes are in review
+(FRRouting/frr#22691 / #22692 and #22693 / #22694), validated
+together on one build: six consecutive counters sweeps, 384/384
+replies, zero resets, and a clean restart delivering all 64 DELETEs.
+
 ## 8. Coda: method
 
 Every bug in this project was found by a packet capture, and not one was found by a log. The Init-loop from a stale transmit schedule after timer renegotiation; the socket buffer convincing a starved daemon that packets were arriving on time; the etf qdisc blackholing ARP; the pipeline scheduling Poll answers a second into the future; the eaten Final; the same timestamp race written twice by the same author on two sides of the kernel boundary. All of them produced healthy-looking logs and a wire that told a different story. Several of them were introduced by the project's own tooling and design decisions, including ones I was confident about.
 
 The method that survived is the one worth keeping: an observer outside the system under test (the hypervisor saw what the guests could not), distributions over averages (the p99-fine/max-fatal pattern is invisible any other way), and a refusal to let any claim, the folklore's, a reviewer's, or my own, stand untested when a tcpdump could settle it. The repo ships every capture behind every number for exactly that reason.
+
 

@@ -139,7 +139,8 @@ struct bfddp_counters {
 struct session {
 	int      used;
 	uint32_t lid;
-	uint32_t local_ip, peer_ip;   /* network byte order */
+	struct bfd_addr local, peer;  /* v4 stored v4-mapped */
+	int      family;              /* AF_INET / AF_INET6 */
 	uint32_t min_tx_us, min_rx_us;
 	uint8_t  detect_mult;
 	int      passive;
@@ -169,7 +170,7 @@ struct session {
 static struct session sessions[MAX_SESSIONS];
 
 /* ---------- globals ---------- */
-static int rx_sock = -1, tx_sock = -1;
+static int rx_sock = -1, tx_sock = -1, rx6_sock = -1, tx6_sock = -1;
 
 /* Per-slot TX sockets: source port = SRC_PORT + slot, bound to the
  * session's local address (INADDR_ANY would let routing source every
@@ -178,25 +179,38 @@ static int rx_sock = -1, tx_sock = -1;
  * kept; a reused slot with a different local address rebinds.
  * Stored as fd+1; 0 = not opened; -1 = bind failed. */
 static int slot_tx[MAX_SESSIONS];
-static uint32_t slot_tx_ip[MAX_SESSIONS];
+static struct bfd_addr slot_tx_ip[MAX_SESSIONS];
 
-static int slot_sock(int slot, uint32_t local_ip)
+static int slot_sock(int slot, const struct session *s)
 {
-	if (slot_tx[slot] > 0 && slot_tx_ip[slot] == local_ip)
+	if (slot_tx[slot] > 0 && !memcmp(&slot_tx_ip[slot], &s->local, 16))
 		return slot_tx[slot] - 1;
-	if (slot_tx[slot] < 0 && slot_tx_ip[slot] == local_ip)
+	if (slot_tx[slot] < 0 && !memcmp(&slot_tx_ip[slot], &s->local, 16))
 		return -1;   /* bind failed earlier; caller uses fallback */
 	if (slot_tx[slot] > 0)
 		close(slot_tx[slot] - 1);   /* slot reused, new local addr */
 	slot_tx[slot] = 0;
-	slot_tx_ip[slot] = local_ip;
-	int fd = socket(AF_INET, SOCK_DGRAM, 0);
-	int ttl = 255;
-	setsockopt(fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
-	struct sockaddr_in sa = { .sin_family = AF_INET,
-				  .sin_port = htons(SRC_PORT + slot),
-				  .sin_addr.s_addr = local_ip };
-	if (bind(fd, (void *)&sa, sizeof(sa))) {
+	slot_tx_ip[slot] = s->local;
+	int fd, rc;
+	if (s->family == AF_INET6) {
+		fd = socket(AF_INET6, SOCK_DGRAM, 0);
+		int hops = 255, on = 1;
+		setsockopt(fd, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &hops, sizeof(hops));
+		setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &on, sizeof(on));
+		struct sockaddr_in6 sa6 = { .sin6_family = AF_INET6,
+			.sin6_port = htons(SRC_PORT + slot) };
+		memcpy(&sa6.sin6_addr, s->local.b, 16);
+		rc = bind(fd, (void *)&sa6, sizeof(sa6));
+	} else {
+		fd = socket(AF_INET, SOCK_DGRAM, 0);
+		int ttl = 255;
+		setsockopt(fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
+		struct sockaddr_in sa = { .sin_family = AF_INET,
+			.sin_port = htons(SRC_PORT + slot) };
+		memcpy(&sa.sin_addr.s_addr, &s->local.b[12], 4);
+		rc = bind(fd, (void *)&sa, sizeof(sa));
+	}
+	if (rc) {
 		fprintf(stderr,
 			"slot %d: bind port %d: %s - using fallback socket "
 			"(ephemeral src port) for this session\n",
@@ -259,24 +273,44 @@ static struct session *sess_by_wire(uint32_t disc)
 	return NULL;
 }
 
+static void sm_addrs(const struct bfddp_session_msg *sm,
+		     struct bfd_addr *l, struct bfd_addr *p, int *family)
+{
+	if (ntohl(sm->flags) & SESSION_IPV6) {
+		memcpy(l->b, &sm->src, 16);
+		memcpy(p->b, &sm->dst, 16);
+		*family = AF_INET6;
+	} else {
+		uint32_t lip, pip;
+		memcpy(&lip, &sm->src.s6_addr[0], 4);
+		memcpy(&pip, &sm->dst.s6_addr[0], 4);
+		key_set_v4(l, lip);
+		key_set_v4(p, pip);
+		*family = AF_INET;
+	}
+}
+
 static struct session *sess_by_addr_pair_local(
 	const struct bfddp_session_msg *sm)
 {
-	uint32_t lip, pip;
-	memcpy(&lip, &sm->src.s6_addr[0], 4);
-	memcpy(&pip, &sm->dst.s6_addr[0], 4);
+	struct bfd_addr l, p;
+	int fam;
+	sm_addrs(sm, &l, &p, &fam);
 	for (int i = 0; i < MAX_SESSIONS; i++)
 		if (sessions[i].used &&
-		    sessions[i].local_ip == lip && sessions[i].peer_ip == pip)
+		    !memcmp(&sessions[i].local, &l, 16) &&
+		    !memcmp(&sessions[i].peer, &p, 16))
 			return &sessions[i];
 	return NULL;
 }
 
-static struct session *sess_by_addr(uint32_t peer_ip, uint32_t local_ip)
+static struct session *sess_by_addr(const struct bfd_addr *peer,
+				    const struct bfd_addr *local)
 {
 	for (int i = 0; i < MAX_SESSIONS; i++)
-		if (sessions[i].used && sessions[i].peer_ip == peer_ip &&
-		    sessions[i].local_ip == local_ip)
+		if (sessions[i].used &&
+		    !memcmp(&sessions[i].peer, peer, 16) &&
+		    !memcmp(&sessions[i].local, local, 16))
 			return &sessions[i];
 	return NULL;
 }
@@ -324,7 +358,9 @@ static void ktx_mirror(struct session *s)
 	};
 	if (s->pushed_valid && !memcmp(&c, &s->pushed_cfg, sizeof(c)))
 		return;
-	struct session_key k = { .peer_ip = s->peer_ip, .local_ip = s->local_ip };
+	struct session_key k = {};
+	k.peer  = s->peer;
+	k.local = s->local;
 	bpf_map_update_elem(cfg_fd, &k, &c, 0);
 	s->pushed_cfg = c;
 	s->pushed_valid = 1;
@@ -334,7 +370,9 @@ static void ktx_clear(struct session *s)
 {
 	if (!use_ktx)
 		return;
-	struct session_key k = { .peer_ip = s->peer_ip, .local_ip = s->local_ip };
+	struct session_key k = {};
+	k.peer  = s->peer;
+	k.local = s->local;
 	bpf_map_delete_elem(cfg_fd, &k);
 	bpf_map_delete_elem(sess_fd, &k);
 }
@@ -347,7 +385,9 @@ static void ktx_poll_map(struct session *s, uint64_t t)
 {
 	if (!use_ktx || s->state != ST_UP)
 		return;
-	struct session_key k = { .peer_ip = s->peer_ip, .local_ip = s->local_ip };
+	struct session_key k = {};
+	k.peer  = s->peer;
+	k.local = s->local;
 	struct session_state ms;
 	if (bpf_map_lookup_elem(sess_fd, &k, &ms))
 		return;
@@ -602,15 +642,20 @@ static void fsm_tx(struct session *s, uint64_t t)
 					      : (uint32_t)SLOW_TX_US);
 	o.min_rx    = htonl(s->min_rx_us);
 
-	struct sockaddr_in dst = {
-		.sin_family = AF_INET,
-		.sin_port   = htons(PORT_CTRL),
-		.sin_addr.s_addr = s->peer_ip,
-	};
-	int txfd = slot_sock((int)(s - sessions), s->local_ip);
+	int txfd = slot_sock((int)(s - sessions), s);
 	if (txfd < 0)
-		txfd = tx_sock;   /* unbound fallback, ephemeral src */
-	sendto(txfd, &o, 24, 0, (void *)&dst, sizeof(dst));
+		txfd = s->family == AF_INET6 ? tx6_sock : tx_sock;
+	if (s->family == AF_INET6) {
+		struct sockaddr_in6 dst = { .sin6_family = AF_INET6,
+			.sin6_port = htons(PORT_CTRL) };
+		memcpy(&dst.sin6_addr, s->peer.b, 16);
+		sendto(txfd, &o, 24, 0, (void *)&dst, sizeof(dst));
+	} else {
+		struct sockaddr_in dst = { .sin_family = AF_INET,
+			.sin_port = htons(PORT_CTRL) };
+		memcpy(&dst.sin_addr.s_addr, &s->peer.b[12], 4);
+		sendto(txfd, &o, 24, 0, (void *)&dst, sizeof(dst));
+	}
 	s->tx_pkts++;
 	s->send_final = 0;
 	s->just_up = 0;
@@ -639,7 +684,7 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	uint32_t flags = ntohl(sm->flags);
 	uint32_t lid   = ntohl(sm->lid);
 
-	if (flags & (SESSION_IPV6 | SESSION_MULTIHOP | SESSION_ECHO |
+	if (flags & (SESSION_MULTIHOP | SESSION_ECHO |
 		     SESSION_DEMAND)) {
 		printf("dplane: ADD lid=%u rejected (unsupported flags 0x%x)\n",
 		       lid, flags);
@@ -686,8 +731,7 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 		s->wire_disc = lid;   /* adopted sessions keep their wire
 		                       * discriminator (RFC 5880: constant
 		                       * while Up) */
-	memcpy(&s->local_ip, &sm->src.s6_addr[0], 4);  /* v4 in first word */
-	memcpy(&s->peer_ip,  &sm->dst.s6_addr[0], 4);
+	sm_addrs(sm, &s->local, &s->peer, &s->family);
 	uint32_t old_tx = s->min_tx_us, old_rx = s->min_rx_us;
 	s->min_tx_us   = ntohl(sm->min_tx);
 	s->min_rx_us   = ntohl(sm->min_rx);
@@ -722,9 +766,14 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 		s->next_tx_us = now_us();
 	}
 
-	char a[INET_ADDRSTRLEN], b[INET_ADDRSTRLEN];
-	inet_ntop(AF_INET, &s->local_ip, a, sizeof(a));
-	inet_ntop(AF_INET, &s->peer_ip, b, sizeof(b));
+	char a[INET6_ADDRSTRLEN], b[INET6_ADDRSTRLEN];
+	if (s->family == AF_INET6) {
+		inet_ntop(AF_INET6, s->local.b, a, sizeof(a));
+		inet_ntop(AF_INET6, s->peer.b, b, sizeof(b));
+	} else {
+		inet_ntop(AF_INET, &s->local.b[12], a, sizeof(a));
+		inet_ntop(AF_INET, &s->peer.b[12], b, sizeof(b));
+	}
 	printf("dplane: %s session lid=%u %s -> %s tx=%uus rx=%uus mult=%u%s%s\n",
 	       fresh ? "ADD" : "UPDATE", lid, a, b,
 	       s->min_tx_us, s->min_rx_us, s->detect_mult,
@@ -784,8 +833,9 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h,
 	if (s) {
 		uint64_t rx = 0, ktx = 0;
 		if (use_ktx) {
-			struct session_key k = { .peer_ip = s->peer_ip,
-					     .local_ip = s->local_ip };
+			struct session_key k = {};
+			k.peer  = s->peer;
+			k.local = s->local;
 			struct session_state ms;
 			if (!bpf_map_lookup_elem(sess_fd, &k, &ms)) {
 				rx  = ms.rx_pkts;
@@ -991,11 +1041,32 @@ int main(int argc, char **argv)
 	int pi = 1;
 	setsockopt(rx_sock, IPPROTO_IP, IP_PKTINFO, &pi, sizeof(pi));
 
+#ifndef IPV6_MINHOPCOUNT
+#define IPV6_MINHOPCOUNT 73
+#endif
+	rx6_sock = socket(AF_INET6, SOCK_DGRAM, 0);
+	int v6only = 1;
+	setsockopt(rx6_sock, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
+	struct sockaddr_in6 la6 = { .sin6_family = AF_INET6,
+		.sin6_port = htons(PORT_CTRL) };
+	if (bind(rx6_sock, (void *)&la6, sizeof(la6))) {
+		perror("bind 3784 v6 (is another BFD daemon running?)");
+		return 1;
+	}
+	setsockopt(rx6_sock, IPPROTO_IPV6, IPV6_RECVPKTINFO, &pi, sizeof(pi));
+	int minhop = 255;
+	setsockopt(rx6_sock, IPPROTO_IPV6, IPV6_MINHOPCOUNT, &minhop,
+		   sizeof(minhop));
+
 	/* Unbound fallback TX socket; per-slot bound sockets carry
 	 * normal traffic (slot_sock). */
 	tx_sock = socket(AF_INET, SOCK_DGRAM, 0);
 	int ttl = 255;
 	setsockopt(tx_sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
+	tx6_sock = socket(AF_INET6, SOCK_DGRAM, 0);
+	int hops6 = 255;
+	setsockopt(tx6_sock, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &hops6,
+		   sizeof(hops6));
 
 	if (ktx_if) {
 		if (ktx_attach(ktx_if))
@@ -1009,8 +1080,12 @@ int main(int argc, char **argv)
 
 	if (static_local) {
 		struct session *s = sess_alloc();
-		inet_pton(AF_INET, static_local, &s->local_ip);
-		inet_pton(AF_INET, static_peer, &s->peer_ip);
+		uint32_t sl, sp;
+		inet_pton(AF_INET, static_local, &sl);
+		inet_pton(AF_INET, static_peer, &sp);
+		key_set_v4(&s->local, sl);
+		key_set_v4(&s->peer, sp);
+		s->family = AF_INET;
 		s->lid         = (random() & 0x7fffffff) | 1;
 		s->wire_disc   = s->lid;
 		s->min_tx_us   = DEF_MIN_TX;
@@ -1052,9 +1127,49 @@ int main(int argc, char **argv)
 						  CMSG_DATA(c))->ipi_addr.s_addr;
 			struct session *rs = sess_by_wire(ntohl(p.your_disc));
 			if (!rs)
-				rs = sess_by_addr(from.sin_addr.s_addr, dst_ip);
+				{
+				struct bfd_addr fp, fl;
+				key_set_v4(&fp, from.sin_addr.s_addr);
+				key_set_v4(&fl, dst_ip);
+				rs = sess_by_addr(&fp, &fl);
+			}
 			if (rs)
 				fsm_rx(rs, &p, t);
+		}
+
+		for (;;) {
+			struct bfdpkt p6;
+			struct sockaddr_in6 from6;
+			struct iovec iov6 = { .iov_base = &p6,
+				.iov_len = sizeof(p6) };
+			char cbuf6[CMSG_SPACE(sizeof(struct in6_pktinfo))];
+			struct msghdr mh6 = {
+				.msg_name = &from6,
+				.msg_namelen = sizeof(from6),
+				.msg_iov = &iov6, .msg_iovlen = 1,
+				.msg_control = cbuf6,
+				.msg_controllen = sizeof(cbuf6),
+			};
+			ssize_t n6 = recvmsg(rx6_sock, &mh6, MSG_DONTWAIT);
+			if (n6 < 0)
+				break;
+			if (n6 < 24 || ((p6.vers_diag >> 5) & 7) != 1 ||
+			    !p6.mult || !p6.my_disc)
+				continue;
+			struct bfd_addr fp6 = {0}, fl6 = {0};
+			memcpy(fp6.b, &from6.sin6_addr, 16);
+			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh6); c;
+			     c = CMSG_NXTHDR(&mh6, c))
+				if (c->cmsg_level == IPPROTO_IPV6 &&
+				    c->cmsg_type == IPV6_PKTINFO)
+					memcpy(fl6.b,
+					       &((struct in6_pktinfo *)
+						CMSG_DATA(c))->ipi6_addr, 16);
+			struct session *rs6 = sess_by_wire(ntohl(p6.your_disc));
+			if (!rs6)
+				rs6 = sess_by_addr(&fp6, &fl6);
+			if (rs6)
+				fsm_rx(rs6, &p6, t);
 		}
 
 		if (dp_reconcile_us && t >= dp_reconcile_us) {

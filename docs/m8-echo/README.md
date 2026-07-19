@@ -3,8 +3,10 @@
 Adds the BFD echo function (RFC 5880 s6.4, UDP port 3785) to the
 engine in two roles: a reflector that returns a neighbor's echoes from
 XDP, and an originator/detector that sources its own echoes and clocks
-liveness off the return. Both roles are pure engine work; neither
-requires FRR changes to ship. A separate, optional protocol track
+liveness off the return. Both roles are pure engine work; neither requires FRR changes to ship.
+The reflector (section 3) is implemented and validated (commit
+bb32980); the originator (section 5) is pending a separate fix and
+remains planned. A separate, optional protocol track
 (section 6) proposes carrying echo over the bffdp dplane protocol so
 any dataplane, not just this engine, can be delegated echo by bfdd.
 
@@ -83,25 +85,68 @@ be reflected):
 1. Validate minimally: it is echo-shaped and TTL is 255. A TTL other
    than 255 inbound is dropped (GTSM), matching the originator's
    expectation that the neighbor is one hop away.
-2. Decrement IP TTL 255 -> 254 and apply the incremental IP header
-   checksum fixup. This is required: the originator validates the
-   return at 254 (see the draft in section 5), and a reflection left
-   at 255 is dropped by a conformant originator.
+2. Decrement IP TTL 255 -> 254 and recompute the IP header checksum.
+   This is required: the originator validates the return at 254 (see
+   the draft in section 5), and a reflection left at 255 is dropped by
+   a conformant originator. The full 10-word recompute is used
+   verbatim from the control-packet reply path (a proven-correct
+   idiom) rather than an incremental fixup, deliberately avoiding a
+   subtle miscompile hit elsewhere in the TX path.
 3. Swap Ethernet source/destination so the frame returns to the
    originating MAC.
 4. XDP_TX.
 
 IP addresses are untouched (already self-addressed to the originator),
-UDP is untouched, the BFD payload is untouched, and there is no UDP
-checksum recompute because nothing in L4 changed. The only checksum
-work is the one-word incremental IP fixup for the TTL decrement. This
-is a smaller operation than the control-packet reply path, which does
-address swaps and a UDP recompute; the reflector is the simplest TX
-path in the engine.
+UDP is untouched, and the BFD payload is untouched (no UDP checksum
+recompute, since nothing in L4 changed).
 
-The reflector runs with ip_forward = 0. The engine returns the echo
+The reflector runs with ip_forward = 0: the engine returns the echo
 without the box being a router and without traversing the kernel
 forwarding path.
+
+### Policy guard
+
+Reflecting every UDP/3785 packet with TTL 255 would be a reflection
+amplification vector and would answer echoes for sessions that never
+enabled echo. The reflector therefore reflects only a *legitimate*
+echo: one that is self-addressed (IP source == destination) and whose
+source address is a peer of an echo-active session on this box.
+
+Because a self-addressed echo carries {peer, peer} addresses, it
+cannot be matched against the normal {local, peer} session key. A
+dedicated map, echo_peers (peer address -> 1), holds the peers of
+echo-active sessions; the userspace shim inserts a peer when it
+accepts a SESSION_ECHO session and removes it on delete or echo-off.
+The reflector does one lookup on the packet's source address before
+reflecting; a miss is passed, not bounced. This is the only point
+where the reflector touches session state.
+
+### Status: implemented and validated (commit bb32980)
+
+Built as a branch in the XDP RX parser ahead of the control-port
+check, plus the echo_peers map and a dedicated reflected-echo counter
+(bfd_stats slot 4). Validated on the wire in both directions with an
+engine-free injector (docs/m8-echo/echo_inject.py, self-addressed
+UDP/3785 to the DUT's MAC, nonce in the trailing payload word), DUT
+ip_forward = 0 throughout:
+
+- Allow (source in echo_peers): 5 injected, 5 reflected, every
+  reflection TTL 254 with source MAC = DUT and the trailing nonce
+  byte-identical; slot-4 counter +5.
+- Block (source absent): 5 injected, 0 reflected; slot-4 counter flat.
+
+Since ip_forward = 0, the kernel would drop each self-addressed echo
+as a martian; that the frames return proves the XDP program, not the
+stack, reflected them. Confirmed from two independent vantages: the
+injecting host (bfd-chaos) receiving the reflections, and the Proxmox
+bridge (vmbr3) seeing the DUT's MAC source the TTL-254 frames
+(docs/m8-echo/echo-reflect-host.pcap).
+
+Observability note: a reflection is an XDP_TX, which bounces below the
+AF_PACKET hook, so tcpdump on the DUT itself sees neither the inbound
+echo nor the reflection. The slot-4 counter (bpftool map dump name
+bfd_stats) is the on-box signal; a far-end or bridge capture is the
+off-box one. tcpdump on the reflecting host is not a valid check.
 
 
 ## 4. Kernel-reflection baseline (the honest comparison basis)

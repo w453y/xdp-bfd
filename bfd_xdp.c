@@ -40,10 +40,10 @@ struct {
 	__type(value, struct session_state);
 } bfd_sessions SEC(".maps");
 
-/* stats: 0=pkts 1=bfd 2=malformed 3=rejects (demux + ttl/GTSM + ip-options) */
+/* stats: 0=pkts 1=bfd 2=malformed 3=rejects 4=echo-reflected */
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 4);
+	__uint(max_entries, 5);
 	__type(key, __u32);
 	__type(value, __u64);
 } bfd_stats SEC(".maps");
@@ -59,6 +59,17 @@ struct {
 	__type(key, struct session_key);
 	__type(value, struct tx_cfg);
 } tx_config SEC(".maps");
+
+/* echo_peers: peer address (v4-mapped) -> 1 for every session with echo
+ * active. Populated by the userspace shim on SESSION_ECHO accept, cleared
+ * on delete / echo-off. The reflector consults it so only echoes from a
+ * peer of an echo-active session are returned (not arbitrary 3785 traffic). */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, BFD_MAX_SESSIONS);
+	__type(key, struct bfd_addr);
+	__type(value, __u8);
+} echo_peers SEC(".maps");
 
 /* bit 0: promiscuous observe - track sessions with no tx_config entry.
  * Set by the standalone loader; bfd_tx leaves it 0 so only configured
@@ -233,6 +244,49 @@ int bfd_observer(struct xdp_md *ctx)
 		key_set_v6(&key.local, &ip6->daddr);
 	} else {
 		return XDP_PASS;
+	}
+
+	/* Echo reflection (RFC 5880 s6.4): a self-addressed UDP/3785
+	 * packet from a neighbor whose forwarding plane is us. Return it
+	 * to the originator from the driver: swap MAC, decrement TTL
+	 * 255->254 (the originator's GTSM requires 254 inbound), leave
+	 * IP/UDP/BFD untouched (already addressed to the originator).
+	 * No session lookup, no map, no adjust_tail. */
+	if (udp->dest == bpf_htons(BFD_ECHO_PORT)) {
+		if (!iph)                 /* v4 only for now */
+			return XDP_PASS;
+		if (iph->ttl != 255)      /* GTSM: single-hop echoes only */
+			return XDP_PASS;
+		/* A classic echo is self-addressed to the originator. */
+		if (iph->saddr != iph->daddr)
+			return XDP_PASS;
+		/* Reflect only for a peer of an echo-active session; otherwise
+		 * this is an arbitrary 3785 packet (amplification vector). */
+		struct bfd_addr esrc;
+		key_set_v4(&esrc, iph->saddr);
+		if (!bpf_map_lookup_elem(&echo_peers, &esrc))
+			return XDP_PASS;
+
+		/* L2 swap: return to the originating MAC. */
+		__u8 tmp[6];
+		__builtin_memcpy(tmp, eth->h_dest, 6);
+		__builtin_memcpy(eth->h_dest, eth->h_source, 6);
+		__builtin_memcpy(eth->h_source, tmp, 6);
+
+		/* Decrement TTL, full IP-checksum recompute (verbatim
+		 * from the control-bounce path; proven correct). */
+		iph->ttl--;
+		iph->check = 0;
+		__u32 csum = 0;
+		__u16 *w = (__u16 *)iph;
+		for (int i = 0; i < 10; i++)
+			csum += w[i];
+		csum = (csum & 0xffff) + (csum >> 16);
+		csum = (csum & 0xffff) + (csum >> 16);
+		iph->check = ~csum & 0xffff;
+
+		count(4);          /* echo-reflected */
+		return XDP_TX;
 	}
 
 	if (udp->dest != bpf_htons(BFD_PORT_1HOP))

@@ -223,7 +223,7 @@ static int slot_sock(int slot, const struct session *s)
 	return fd;
 }
 static int use_ktx = 0;
-static int cfg_fd = -1, sess_fd = -1;
+static int cfg_fd = -1, sess_fd = -1, echo_peers_fd = -1;
 static struct bpf_object *bpf_obj;
 
 static int dp_listen = -1, dp_conn = -1;
@@ -335,6 +335,7 @@ static int ktx_attach(const char *ifname)
 	}
 	cfg_fd  = bpf_object__find_map_fd_by_name(bpf_obj, "tx_config");
 	sess_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_sessions");
+	echo_peers_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_peers");
 	printf("kernel-tx: XDP attached to %s\n", ifname);
 	return 0;
 }
@@ -375,6 +376,8 @@ static void ktx_clear(struct session *s)
 	k.local = s->local;
 	bpf_map_delete_elem(cfg_fd, &k);
 	bpf_map_delete_elem(sess_fd, &k);
+	if (echo_peers_fd >= 0)
+		bpf_map_delete_elem(echo_peers_fd, &s->peer);
 }
 
 static void dp_notify_state(struct session *s);
@@ -684,8 +687,7 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	uint32_t flags = ntohl(sm->flags);
 	uint32_t lid   = ntohl(sm->lid);
 
-	if (flags & (SESSION_MULTIHOP | SESSION_ECHO |
-		     SESSION_DEMAND)) {
+	if (flags & (SESSION_MULTIHOP | SESSION_DEMAND)) {
 		printf("dplane: ADD lid=%u rejected (unsupported flags 0x%x)\n",
 		       lid, flags);
 		return;
@@ -738,6 +740,16 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	s->detect_mult = sm->detect_mult;
 	s->passive     = !!(flags & SESSION_PASSIVE);
 	s->admin_down  = !!(flags & SESSION_SHUTDOWN);
+	/* echo policy: track peers of echo-active v4 sessions so the
+	 * reflector returns only their echoes, not arbitrary 3785 traffic. */
+	if (echo_peers_fd >= 0 && s->family == AF_INET) {
+		if (flags & SESSION_ECHO) {
+			__u8 one = 1;
+			bpf_map_update_elem(echo_peers_fd, &s->peer, &one, 0);
+		} else {
+			bpf_map_delete_elem(echo_peers_fd, &s->peer);
+		}
+	}
 	if (!fresh && s->state == ST_UP &&
 	    (s->min_tx_us != old_tx || s->min_rx_us != old_rx)) {
 		/* RFC 5880 s6.8.3: parameter change while Up requires a

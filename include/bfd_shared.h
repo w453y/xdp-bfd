@@ -13,6 +13,7 @@
 #include <linux/types.h>
 
 #define BFD_PORT_1HOP    3784
+#define BFD_ECHO_PORT    3785
 #define BFD_SRC_PORT     65472  /* Per-session TX source port = base +
                                  * slot; 64 slots end at 65535, the top
                                  * of the RFC 5881 s4 range. Top-down

@@ -73,6 +73,17 @@ struct session_state {
 	                       * set and sweep clear race across CPUs. */
 	__u32 final_seq;      /* kernel ack of a Poll sequence: set to
 	                       * cfg->poll_seq on the peer's F */
+	__u8  peer_mac[6];    /* neighbour's source MAC, learned on every RX.
+	                       * Echo TX needs an L2 destination and must not
+	                       * depend on the neighbour table. */
+	__u8  mac_valid;
+	__u8  pad2;
+	__u64 echo_rx_pkts;   /* our own echoes seen returning */
+	__u64 echo_last_seen_ns;
+	__u32 echo_last_nonce;
+	__u32 pad3;
+	__u32 echo_alive;     /* advisory echo verdict, kernel-owned */
+	__u32 pad4;
 };
 
 /* Event pushed to userspace on liveness transitions. */
@@ -101,6 +112,9 @@ struct tx_cfg {
 	__u32 poll_seq;      /* increments per Poll sequence; kernel acks
 	                      * the peer's F via session_state.final_seq
 	                      * (tx_cfg stays userspace-owned) */
+	__u32 echo_iv_us;    /* echo interval; 0 = echo off. Static per
+	                      * session, so the mirror dirty-check still
+	                      * elides pushes. */
 };
 
 #endif /* BFD_SHARED_H */

@@ -37,6 +37,9 @@
 #include <linux/if_link.h>
 
 #include "bfd_shared.h"
+#include <sys/ioctl.h>
+#include <linux/if_packet.h>
+#include <linux/if_ether.h>
 
 #define PORT_CTRL    BFD_PORT_1HOP
 #define SRC_PORT     BFD_SRC_PORT
@@ -165,6 +168,18 @@ struct session {
 	struct tx_cfg pushed_cfg;
 	uint64_t last_rx_us, next_tx_us;
 	uint64_t tx_pkts;             /* userspace-sent control packets */
+	uint32_t echo_tx_us;          /* echo interval from the ADD; 0 = off */
+	uint8_t  peer_mac[6];         /* synced from the map, learned by XDP */
+	int      mac_valid;
+	uint64_t next_echo_tx_us;
+	uint32_t echo_nonce;          /* nonce of the outstanding echo */
+	uint64_t echo_sent_us;        /* 0 = none outstanding */
+	uint64_t echo_tx_pkts;
+	int      echo_disc_done;
+	uint64_t echo_rx_pkts, echo_lost;
+	uint64_t echo_rtt_last_us, echo_rtt_min_us, echo_rtt_max_us;
+	uint64_t echo_rtt_sum_us, echo_rtt_n;
+	int      echo_alive_k;        /* kernel's advisory verdict */
 };
 
 static struct session sessions[MAX_SESSIONS];
@@ -224,6 +239,10 @@ static int slot_sock(int slot, const struct session *s)
 }
 static int use_ktx = 0;
 static int cfg_fd = -1, sess_fd = -1, echo_peers_fd = -1;
+static int echo_sock = -1, echo_ifindex = 0;
+static int echo_disc_fd = -1;
+static uint8_t echo_src_mac[6];
+static uint32_t echo_nonce_ctr;
 static struct bpf_object *bpf_obj;
 
 static int dp_listen = -1, dp_conn = -1;
@@ -336,7 +355,28 @@ static int ktx_attach(const char *ifname)
 	cfg_fd  = bpf_object__find_map_fd_by_name(bpf_obj, "tx_config");
 	sess_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_sessions");
 	echo_peers_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_peers");
+	echo_disc_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_disc");
 	printf("kernel-tx: XDP attached to %s\n", ifname);
+
+	/* Echo TX needs a raw L2 socket: a self-addressed UDP packet sent
+	 * through a normal socket is routed to loopback and never reaches
+	 * the wire. */
+	echo_ifindex = ifindex;
+	struct ifreq ifr;
+	memset(&ifr, 0, sizeof(ifr));
+	strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+	int mfd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (mfd >= 0) {
+		if (!ioctl(mfd, SIOCGIFHWADDR, &ifr))
+			memcpy(echo_src_mac, ifr.ifr_hwaddr.sa_data, 6);
+		close(mfd);
+	}
+	echo_sock = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+	if (echo_sock < 0)
+		perror("echo raw socket");
+	printf("echo-tx: ifindex %d src-mac %02x:%02x:%02x:%02x:%02x:%02x sock %d\n",
+	       echo_ifindex, echo_src_mac[0], echo_src_mac[1], echo_src_mac[2],
+	       echo_src_mac[3], echo_src_mac[4], echo_src_mac[5], echo_sock);
 	return 0;
 }
 
@@ -345,6 +385,7 @@ static void ktx_mirror(struct session *s)
 	if (!use_ktx)
 		return;
 	struct tx_cfg c = {
+		.echo_iv_us = s->echo_tx_us,
 		.enable    = (s->state == ST_UP),
 		.my_disc   = s->wire_disc,
 		.your_disc = s->rdisc,
@@ -378,6 +419,8 @@ static void ktx_clear(struct session *s)
 	bpf_map_delete_elem(sess_fd, &k);
 	if (echo_peers_fd >= 0)
 		bpf_map_delete_elem(echo_peers_fd, &s->peer);
+	if (echo_disc_fd >= 0 && s->wire_disc)
+		bpf_map_delete_elem(echo_disc_fd, &s->wire_disc);
 }
 
 static void dp_notify_state(struct session *s);
@@ -398,6 +441,29 @@ static void ktx_poll_map(struct session *s, uint64_t t)
 		s->last_rx_us = ms.last_seen_ns / 1000;
 	if (ms.detect_iv_us)
 		s->detect_iv_us = ms.detect_iv_us;
+	if (ms.mac_valid) {
+		memcpy(s->peer_mac, ms.peer_mac, 6);
+		s->mac_valid = 1;
+	}
+	/* Our echo returned. The arrival stamp is the kernel's, taken in
+	 * softirq at RX, so this is wire RTT and not poll latency. */
+	if (s->echo_sent_us && ms.echo_last_nonce == s->echo_nonce &&
+	    ms.echo_last_seen_ns) {
+		uint64_t arr = ms.echo_last_seen_ns / 1000;
+		if (arr > s->echo_sent_us) {
+			uint64_t rtt = arr - s->echo_sent_us;
+			s->echo_rtt_last_us = rtt;
+			if (!s->echo_rtt_min_us || rtt < s->echo_rtt_min_us)
+				s->echo_rtt_min_us = rtt;
+			if (rtt > s->echo_rtt_max_us)
+				s->echo_rtt_max_us = rtt;
+			s->echo_rtt_sum_us += rtt;
+			s->echo_rtt_n++;
+		}
+		s->echo_rx_pkts++;
+		s->echo_sent_us = 0;   /* no longer outstanding */
+	}
+	s->echo_alive_k = ms.echo_alive;
 	if (s->polling && ms.final_seq == s->poll_seq) {
 		/* Kernel acked the peer's F for this Poll sequence via
 		 * final_seq; end the poll and mirror poll=0 down. tx_cfg
@@ -604,6 +670,131 @@ static void fsm_detect(struct session *s, uint64_t t)
 	}
 }
 
+/* ---- m8b: echo originator ---- */
+static uint16_t ip_csum(const void *data, size_t len)
+{
+	const uint16_t *w = data;
+	uint32_t sum = 0;
+	while (len > 1) { sum += *w++; len -= 2; }
+	if (len) sum += *(const uint8_t *)w;
+	while (sum >> 16) sum = (sum & 0xffff) + (sum >> 16);
+	return (uint16_t)~sum;
+}
+
+/* Self-addressed UDP/3785 to the neighbour's MAC, TTL 255. The trailing
+ * payload word carries a nonce; the return is matched on it for RTT.
+ * Detection keys off the outstanding nonce, so if this stalls there is
+ * simply no echo outstanding and no timeout can fire. */
+static void echo_tx_maybe(struct session *s, uint64_t t)
+{
+	if (echo_sock < 0 || !s->echo_tx_us || s->state != ST_UP)
+		return;
+	if (!s->mac_valid || s->family != AF_INET)
+		return;
+	if (t < s->next_echo_tx_us)
+		return;
+	s->next_echo_tx_us = t + s->echo_tx_us;
+
+	/* Previous echo never came back before this one is due. */
+	if (s->echo_sent_us) {
+		s->echo_lost++;
+		s->echo_sent_us = 0;
+	}
+
+	if (!s->echo_disc_done && echo_disc_fd >= 0 && s->wire_disc) {
+		struct session_key dk = {};
+		dk.peer  = s->peer;
+		dk.local = s->local;
+		if (!bpf_map_update_elem(echo_disc_fd, &s->wire_disc, &dk, 0))
+			s->echo_disc_done = 1;
+	}
+
+	uint8_t frame[66];
+	memset(frame, 0, sizeof(frame));
+
+	memcpy(frame + 0, s->peer_mac, 6);
+	memcpy(frame + 6, echo_src_mac, 6);
+	frame[12] = 0x08;
+	frame[13] = 0x00;
+
+	uint8_t *ip = frame + 14;
+	uint16_t tot = 20 + 8 + 24;
+	ip[0] = 0x45;
+	ip[1] = 0xc0;
+	ip[2] = tot >> 8;
+	ip[3] = tot & 0xff;
+	ip[8] = 255;
+	ip[9] = 17;
+	memcpy(ip + 12, s->local.b + 12, 4);
+	memcpy(ip + 16, s->local.b + 12, 4);
+	uint16_t ipc = ip_csum(ip, 20);
+	memcpy(ip + 10, &ipc, 2);
+
+	uint8_t *udp = frame + 34;
+	uint16_t ulen = 8 + 24;
+	udp[0] = 3785 >> 8; udp[1] = 3785 & 0xff;
+	udp[2] = 3785 >> 8; udp[3] = 3785 & 0xff;
+	udp[4] = ulen >> 8; udp[5] = ulen & 0xff;
+
+	uint8_t *b = frame + 42;
+	uint32_t v, nonce = ++echo_nonce_ctr;
+	b[0] = (1 << 5);
+	b[1] = (ST_UP & 0x3) << 6;
+	b[2] = s->detect_mult;
+	b[3] = 24;
+	v = htonl(s->wire_disc); memcpy(b + 4,  &v, 4);
+	v = 0;                   memcpy(b + 8,  &v, 4);
+	v = htonl(s->min_tx_us); memcpy(b + 12, &v, 4);
+	v = htonl(s->min_rx_us); memcpy(b + 16, &v, 4);
+	v = htonl(nonce);        memcpy(b + 20, &v, 4);
+
+	uint8_t ps[12 + 8 + 24];
+	memcpy(ps + 0, ip + 12, 4);
+	memcpy(ps + 4, ip + 16, 4);
+	ps[8]  = 0;
+	ps[9]  = 17;
+	ps[10] = ulen >> 8;
+	ps[11] = ulen & 0xff;
+	memcpy(ps + 12, udp, 8);
+	memcpy(ps + 20, b, 24);
+	uint16_t uc = ip_csum(ps, sizeof(ps));
+	if (!uc)
+		uc = 0xffff;
+	memcpy(udp + 6, &uc, 2);
+
+	struct sockaddr_ll sll;
+	memset(&sll, 0, sizeof(sll));
+	sll.sll_family  = AF_PACKET;
+	sll.sll_ifindex = echo_ifindex;
+	sll.sll_halen   = 6;
+	memcpy(sll.sll_addr, s->peer_mac, 6);
+
+	if (sendto(echo_sock, frame, sizeof(frame), 0,
+		   (struct sockaddr *)&sll, sizeof(sll)) < 0)
+		return;
+
+	s->echo_nonce   = nonce;
+	s->echo_sent_us = t;
+	s->echo_tx_pkts++;
+
+	if (s->echo_tx_pkts % 100 == 0) {
+		const uint8_t *lo = s->local.b + 12, *pe = s->peer.b + 12;
+		uint64_t avg = s->echo_rtt_n ? s->echo_rtt_sum_us / s->echo_rtt_n : 0;
+		printf("echo %u.%u.%u.%u->%u.%u.%u.%u tx=%llu rx=%llu lost=%llu "
+		       "rtt last/min/avg/max %llu/%llu/%llu/%llu us echo-alive=%d\n",
+		       lo[0], lo[1], lo[2], lo[3], pe[0], pe[1], pe[2], pe[3],
+		       (unsigned long long)s->echo_tx_pkts,
+		       (unsigned long long)s->echo_rx_pkts,
+		       (unsigned long long)s->echo_lost,
+		       (unsigned long long)s->echo_rtt_last_us,
+		       (unsigned long long)s->echo_rtt_min_us,
+		       (unsigned long long)avg,
+		       (unsigned long long)s->echo_rtt_max_us, s->echo_alive_k);
+		fflush(stdout);
+	}
+}
+
+
 static void fsm_tx(struct session *s, uint64_t t)
 {
 	if (s->admin_down && s->state != ST_ADMINDOWN)
@@ -740,6 +931,7 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	s->detect_mult = sm->detect_mult;
 	s->passive     = !!(flags & SESSION_PASSIVE);
 	s->admin_down  = !!(flags & SESSION_SHUTDOWN);
+	s->echo_tx_us  = (flags & SESSION_ECHO) ? ntohl(sm->min_echo_tx) : 0;
 	/* echo policy: track peers of echo-active v4 sessions so the
 	 * reflector returns only their echoes, not arbitrary 3785 traffic. */
 	if (echo_peers_fd >= 0 && s->family == AF_INET) {
@@ -1203,6 +1395,7 @@ int main(int argc, char **argv)
 			ktx_poll_map(cs, t);
 			fsm_detect(cs, t);
 			fsm_tx(cs, t);
+			echo_tx_maybe(cs, t);
 			ktx_mirror(cs);
 		}
 	}

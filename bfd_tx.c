@@ -180,6 +180,9 @@ struct session {
 	uint64_t echo_rtt_last_us, echo_rtt_min_us, echo_rtt_max_us;
 	uint64_t echo_rtt_sum_us, echo_rtt_n;
 	int      echo_alive_k;        /* kernel's advisory verdict */
+	uint64_t echo_last_send_us;   /* for inter-send gap tracking */
+	uint64_t echo_gap_max_us;     /* windowed, reset each report */
+	uint64_t echo_rtt_max_win_us; /* windowed, reset each report */
 };
 
 static struct session sessions[MAX_SESSIONS];
@@ -455,6 +458,8 @@ static void ktx_poll_map(struct session *s, uint64_t t)
 			s->echo_rtt_last_us = rtt;
 			if (!s->echo_rtt_min_us || rtt < s->echo_rtt_min_us)
 				s->echo_rtt_min_us = rtt;
+			if (rtt > s->echo_rtt_max_win_us)
+				s->echo_rtt_max_win_us = rtt;
 			if (rtt > s->echo_rtt_max_us)
 				s->echo_rtt_max_us = rtt;
 			s->echo_rtt_sum_us += rtt;
@@ -693,6 +698,12 @@ static void echo_tx_maybe(struct session *s, uint64_t t)
 		return;
 	if (t < s->next_echo_tx_us)
 		return;
+	if (s->echo_last_send_us) {
+		uint64_t gap = t - s->echo_last_send_us;
+		if (gap > s->echo_gap_max_us)
+			s->echo_gap_max_us = gap;
+	}
+	s->echo_last_send_us = t;
 	s->next_echo_tx_us = t + s->echo_tx_us;
 
 	/* Previous echo never came back before this one is due. */
@@ -781,7 +792,7 @@ static void echo_tx_maybe(struct session *s, uint64_t t)
 		const uint8_t *lo = s->local.b + 12, *pe = s->peer.b + 12;
 		uint64_t avg = s->echo_rtt_n ? s->echo_rtt_sum_us / s->echo_rtt_n : 0;
 		printf("echo %u.%u.%u.%u->%u.%u.%u.%u tx=%llu rx=%llu lost=%llu "
-		       "rtt last/min/avg/max %llu/%llu/%llu/%llu us echo-alive=%d\n",
+		       "rtt last/min/avg/max %llu/%llu/%llu/%llu us win-max %llu gap-max %lluus echo-alive=%d\n",
 		       lo[0], lo[1], lo[2], lo[3], pe[0], pe[1], pe[2], pe[3],
 		       (unsigned long long)s->echo_tx_pkts,
 		       (unsigned long long)s->echo_rx_pkts,
@@ -789,7 +800,12 @@ static void echo_tx_maybe(struct session *s, uint64_t t)
 		       (unsigned long long)s->echo_rtt_last_us,
 		       (unsigned long long)s->echo_rtt_min_us,
 		       (unsigned long long)avg,
-		       (unsigned long long)s->echo_rtt_max_us, s->echo_alive_k);
+		       (unsigned long long)s->echo_rtt_max_us,
+		       (unsigned long long)s->echo_rtt_max_win_us,
+		       (unsigned long long)s->echo_gap_max_us,
+		       s->echo_alive_k);
+		s->echo_gap_max_us = 0;
+		s->echo_rtt_max_win_us = 0;
 		fflush(stdout);
 	}
 }

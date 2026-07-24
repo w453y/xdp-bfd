@@ -4,9 +4,9 @@ Adds the BFD echo function (RFC 5880 s6.4, UDP port 3785) to the
 engine in two roles: a reflector that returns a neighbor's echoes from
 XDP, and an originator/detector that sources its own echoes and clocks
 liveness off the return. Both roles are pure engine work; neither requires FRR changes to ship.
-The reflector (section 3) is implemented and validated (commit
-bb32980); the originator (section 5) is pending a separate fix and
-remains planned. A separate, optional protocol track
+The reflector (section 3) and the originator/detector (section 5) are
+both implemented and validated; section 5 records what the
+implementation changed relative to the spec, and what is still open. A separate, optional protocol track
 (section 6) proposes carrying echo over the bffdp dplane protocol so
 any dataplane, not just this engine, can be delegated echo by bfdd.
 
@@ -207,6 +207,115 @@ never does), demux is by source IP / UDP source port; the nonce
 disambiguates outstanding echoes for RTT.
 
 
+### Status: implemented (commits cfb1400, d0958d9)
+
+Built in four stages, each validated on the wire before the next.
+
+Peer MAC learning. Echo TX needs an L2 destination and must not depend
+on the neighbour table, so the XDP RX path records the source MAC into
+the session map on every control packet and userspace reads it there.
+
+TX. A normal UDP socket cannot send a self-addressed packet: the
+destination is our own address, so the kernel routes it to loopback and
+it never reaches the wire. Echo TX therefore uses AF_PACKET SOCK_RAW
+with a hand-built Ethernet header. Frames carry tos 0xc0, ttl 255, UDP
+3785/3785, and a 24-byte payload whose trailing word is a monotonic
+nonce. The UDP checksum tracks the nonce, which confirms it is computed
+over the payload rather than left stale.
+
+Demux on return. The spec above proposed demuxing by source IP and UDP
+source port. That does not work: the returning echo is still
+self-addressed to our own local address, which cannot name a session,
+and several sessions may share one local address. The implementation
+demuxes on the discriminator written into the payload, through a
+my_disc to session-key map populated at first transmit.
+
+GTSM interaction. The v4 parser drops anything that is not ttl 255
+before the echo branch is reached, so returns at ttl 254 were being
+discarded at the parser. The check is now widened narrowly, admitting
+only dest 3785 with ttl 254 and source equal to destination, so it
+cannot become a general TTL bypass. Returns are consumed with XDP_DROP:
+they are ours, and the stack has no use for a martian.
+
+Measured against a kernel-forwarding neighbour, with the DUT at
+ip_forward = 0 throughout:
+
+- The loop closes 1:1. Every echo returns with ttl 254, MACs swapped,
+  payload byte-identical, nonce matching per pair.
+- 300 sent, 299 returned, 0 lost. The one-packet gap is the echo still
+  outstanding.
+- RTT last/min/avg/max 72/54/71/133 us.
+
+RTT vantage, and this matters for reading the number. It is measured
+from the sendto call to the XDP arrival timestamp, so it includes our
+own syscall and driver transmit path. The same echoes measured
+wire-to-wire on the bridge were 23 to 34 us. The roughly 30 us
+difference is our transmit stack, not path latency. These figures must
+not be compared against the section 4 kernel baseline of 31/43/102 us,
+which is a different vantage; doing so reads as a regression that does
+not exist. The engine-relative number is the correct one for detection,
+because it is what the engine actually experiences.
+
+### Detection is advisory, and why
+
+The sweep marks each echo-active session alive or not from the time
+since the last return against detect-multiplier times the echo
+interval, and reports it. It does not feed the session state machine.
+
+The reason is the transmit path. With echo sent from userspace, a local
+scheduling stall produces the same signature as a path failure: echoes
+stop leaving, returns stop arriving, the last-seen timestamp goes
+stale. A kernel timeout cannot separate those, so wiring it into the
+state machine would turn our own scheduling delay into a session
+teardown, which is exactly what this engine exists to avoid.
+
+Counting misses per outstanding echo rather than per elapsed time would
+fix that, but the send timestamp has nowhere clean to live: the session
+map is kernel-owned and a userspace read-modify-write would race the RX
+updates arriving at roughly 100/sec, and a per-send stamp in the TX
+config map would defeat its dirty-check. Detection therefore stays
+advisory until transmit moves into the kernel.
+
+Verified both ways. With the neighbour forwarding, echo-alive reads 1
+and loss stays 0. With forwarding disabled on the neighbour, returns
+stop, loss climbs 1:1 with transmits, echo-alive flips to 0, and all 64
+control sessions stay up. Echo coverage is lost, the session is not.
+
+### The case for moving TX into a TC hook
+
+XDP cannot originate packets. XDP_TX is a verdict on a frame that just
+arrived, which is why the control path is RX-clocked, and an echo has
+no inbound packet to clock off. So echo TX is either userspace, which
+is simple but exposed to scheduling, or a TC egress hook using
+bpf_clone_redirect, which is kernel-side and immune to it at the cost
+of a second program and attach point.
+
+Userspace was built first to prove detection end to end. The measured
+inter-send gap argues against leaving it there: idle gap is 13 ms
+against a 10 ms interval, already 30 per cent over budget with no load,
+and under the CPU ladder it reaches 2.6 seconds. Those samples are
+taken inside the sender itself, so they are independent of anything
+happening elsewhere in the testbed.
+
+Two counters missed that entirely, which is worth recording. The loss
+counter only increments when a previous echo is still outstanding as
+the next falls due, and during a total stall nothing ever falls due.
+The echo-alive figure is printed on transmit, and transmit is what
+stops. Instrumentation driven by the thing being measured cannot
+observe that thing failing. The windowed gap counter exists for exactly
+this reason.
+
+### Not yet quantified
+
+The cost of these changes at 64 sessions is not established. The
+testbed's run-to-run flap count at that scale varies by more than the
+effect being measured: the m7 reference build itself ranged from 0 to
+20 flaps across runs of identical code under the same ladder. No
+comparison drawn from that metric is meaningful. Reopening this needs
+either several runs per arm or a continuous metric such as the
+per-session maximum transmit gap distribution.
+
+
 ## 6. Path 1 vs Path 2: one mechanism, two policy sources
 
 The reflector and originator are the echo *mechanism*. What triggers
@@ -283,12 +392,20 @@ m8a (reflector):
   do not claim better than the section 4 numbers unless the wire shows
   it.
 
-m8b (originator/detector):
-- DUT originates echoes to a reflecting neighbor and detects on the
-  return; a peer flap or path break trips echo detection at
-  detect-mult x echo-interval.
-- Pass: RTT populates from the nonce, detection fires on induced loss,
-  and echo detection is independent of the control-packet path.
+m8b (originator/detector), as run:
+- Enable echo on one session against a kernel-forwarding neighbour.
+  Confirm on a host capture that outbound frames are self-addressed
+  with ttl 255 and a per-frame nonce, and that returns arrive at ttl
+  254 with the payload unchanged.
+- Confirm the engine accounts for them: returns counted, nonce matched,
+  RTT and loss reported per session.
+- Break the loop by disabling forwarding on the neighbour. Returns must
+  stop, loss must climb 1:1 with transmits, echo-alive must flip to 0,
+  and every control session must stay up.
+- Report echo RTT with its vantage stated. It is sendto to XDP arrival,
+  not wire-to-wire, and is not comparable to the section 4 baseline.
+- Not covered: the cost of the m8b changes at the 64-session cap. See
+  the note at the end of section 5.
 
 All loss and RTT numbers are taken from host-side captures on vmbr3,
 never from vtysh status.

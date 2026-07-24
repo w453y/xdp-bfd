@@ -84,6 +84,10 @@ struct session_state {
 	__u32 pad3;
 	__u32 echo_alive;     /* advisory echo verdict, kernel-owned */
 	__u32 pad4;
+	__u32 remote_min_echo_us; /* peer's advertised Required Min Echo RX.
+	                           * Reported up to bfdd so it can run the
+	                           * RFC 5880 s6.8.9 echo negotiation. */
+	__u32 pad5;
 };
 
 /* Event pushed to userspace on liveness transitions. */

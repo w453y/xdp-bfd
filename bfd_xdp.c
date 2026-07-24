@@ -432,6 +432,7 @@ int bfd_observer(struct xdp_md *ctx)
 	st->local_disc   = bpf_ntohl(bfd->your_disc);
 	st->min_tx_us    = bpf_ntohl(bfd->min_tx);
 	st->min_rx_us    = bpf_ntohl(bfd->min_rx);
+	st->remote_min_echo_us = bpf_ntohl(bfd->min_echo_rx);
 	st->remote_state = BFD_STATE(bfd);
 	st->remote_diag  = BFD_DIAG(bfd);
 	st->detect_mult  = bfd->detect_mult;

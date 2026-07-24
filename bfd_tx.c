@@ -152,6 +152,7 @@ struct session {
 	int      state, diag;
 	uint32_t rdisc;
 	uint32_t r_min_tx, r_min_rx;
+	uint32_t r_min_echo;          /* peer's Required Min Echo RX */
 	uint8_t  r_mult, r_flags;     /* r_flags: last rx flags & 0x3f */
 	int      r_state;
 	uint32_t detect_iv_us;        /* poll-aware effective detect basis */
@@ -479,9 +480,11 @@ static void ktx_poll_map(struct session *s, uint64_t t)
 		ktx_mirror(s);
 	}
 	if (ms.min_tx_us && (ms.min_tx_us != s->r_min_tx ||
-			     ms.min_rx_us != s->r_min_rx)) {
+			     ms.min_rx_us != s->r_min_rx ||
+			     ms.remote_min_echo_us != s->r_min_echo)) {
 		s->r_min_tx = ms.min_tx_us;
 		s->r_min_rx = ms.min_rx_us;
+		s->r_min_echo = ms.remote_min_echo_us;
 		dp_notify_state(s);
 	}
 	if (ms.remote_state == ST_DOWN)
@@ -563,7 +566,7 @@ static void dp_notify_state(struct session *s)
 	m.sc.remote_flags = htonl(s->r_flags);
 	m.sc.desired_tx   = htonl(s->r_min_tx);
 	m.sc.required_rx  = htonl(s->r_min_rx);
-	m.sc.required_echo_rx = 0;
+	m.sc.required_echo_rx = htonl(s->r_min_echo);
 	m.sc.state  = s->state;
 	m.sc.diagnostics = s->diag;
 	m.sc.detection_multiplier = s->r_mult;
@@ -608,6 +611,7 @@ static void fsm_rx(struct session *s, const struct bfdpkt *p, uint64_t t)
 	s->r_state  = ps;
 	s->r_min_rx = ntohl(p->min_rx);
 	s->r_min_tx = ntohl(p->min_tx);
+	s->r_min_echo = ntohl(p->min_echo);
 	s->r_mult   = p->mult;
 	s->r_flags  = p->flags & 0x3f;
 

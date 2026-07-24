@@ -281,29 +281,51 @@ and loss stays 0. With forwarding disabled on the neighbour, returns
 stop, loss climbs 1:1 with transmits, echo-alive flips to 0, and all 64
 control sessions stay up. Echo coverage is lost, the session is not.
 
-### The case for moving TX into a TC hook
+### Echo TX stays in userspace: decision and rationale
 
 XDP cannot originate packets. XDP_TX is a verdict on a frame that just
 arrived, which is why the control path is RX-clocked, and an echo has
-no inbound packet to clock off. So echo TX is either userspace, which
-is simple but exposed to scheduling, or a TC egress hook using
-bpf_clone_redirect, which is kernel-side and immune to it at the cost
-of a second program and attach point.
+no inbound packet to clock off. XDP's redirect helpers forward the same
+packet rather than produce a copy, and while XDP has timers, a timer
+callback has no packet context and cannot transmit.
 
-Userspace was built first to prove detection end to end. The measured
-inter-send gap argues against leaving it there: idle gap is 13 ms
+The kernel-side alternative is bpf_clone_redirect, which exists only
+for sched_cls, sched_act and lwt_xmit. But TC has nothing to clone at
+the echo cadence: control packets are XDP_TX'd, which bypasses TC in
+both directions, and returning echoes are consumed with XDP_DROP. A TC
+echo hook would therefore require moving the control bounce itself out
+of XDP and into TC, putting skb allocation into the hot path and
+rewriting the RX-clocked mechanism that is this engine's central
+result.
+
+That trade is not worth making. It spends the engine's main advantage
+on a secondary feature whose detection is advisory in any case, and
+control-plane liveness is already detected in the kernel and already
+survives userspace stalls.
+
+The division of labour is therefore deliberate. The reflector is the
+production capability: kernel-side, stall-immune, and able to return a
+neighbour's echoes with ip_forward = 0, which the host stack cannot do
+at all. The originator is a diagnostic, measuring round-trip time and
+verifying the forwarding path, and it is best-effort by construction.
+Advisory detection is permanent by design, not a placeholder.
+
+The measured transmit gap is the honest limit of the userspace path and
+is recorded here rather than hidden: idle inter-send gap is 13 ms
 against a 10 ms interval, already 30 per cent over budget with no load,
-and under the CPU ladder it reaches 2.6 seconds. Those samples are
-taken inside the sender itself, so they are independent of anything
-happening elsewhere in the testbed.
+and under the CPU ladder it reaches 2.6 seconds. Anyone reading echo
+RTT or echo liveness should treat both as best-effort under load.
 
-Two counters missed that entirely, which is worth recording. The loss
-counter only increments when a previous echo is still outstanding as
-the next falls due, and during a total stall nothing ever falls due.
-The echo-alive figure is printed on transmit, and transmit is what
-stops. Instrumentation driven by the thing being measured cannot
-observe that thing failing. The windowed gap counter exists for exactly
-this reason.
+Two counters missed those stalls entirely, which is worth recording.
+The loss counter only increments when a previous echo is still
+outstanding as the next falls due, and during a total stall nothing
+ever falls due. The echo-alive figure is printed on transmit, and
+transmit is what stops. Instrumentation driven by the thing being
+measured cannot observe that thing failing; the windowed gap counter
+exists for exactly this reason.
+
+If authoritative echo detection is ever required, the path is AF_XDP
+with a dedicated thread, or hardware offload. It is not TC.
 
 ### Not yet quantified
 

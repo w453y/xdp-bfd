@@ -355,67 +355,120 @@ exists for exactly this reason.
 If authoritative echo detection is ever required, the path is AF_XDP
 with a dedicated thread, or hardware offload. It is not TC.
 
-### Not yet quantified
+### Cost at 64 sessions
 
-The cost of these changes at 64 sessions is not established. The
-testbed's run-to-run flap count at that scale varies by more than the
-effect being measured: the m7 reference build itself ranged from 0 to
-20 flaps across runs of identical code under the same ladder. No
-comparison drawn from that metric is meaningful. Reopening this needs
-either several runs per arm or a continuous metric such as the
-per-session maximum transmit gap distribution.
+Measured with the per-session maximum transmit gap, not flap counts:
+at this scale the flap count varies by more than the effect being
+measured (the m7 reference build alone ranged from 0 to 20 flaps
+across runs of identical code), so it cannot answer the question.
 
+Method: echo disabled on both ends, so the comparison isolates the
+always-on additions rather than the feature; 64 sessions at 10ms; the
+standard sequential ladder; a 210-second capture on the bridge; then
+the maximum inter-packet gap per session, filtered to active sessions.
 
-## 6. Path 1 vs Path 2: one mechanism, two policy sources
+| arm | median | p90 | max | over 30ms |
+| --- | --- | --- | --- | --- |
+| main, run 1 | 22.3 ms | 32.3 ms | 717.1 ms | 16 |
+| dev         | 23.2 ms | 28.8 ms | 33.7 ms  | 6  |
+| main, run 2 | 27.1 ms | 31.3 ms | 34.0 ms  | 14 |
 
-The reflector and originator are the echo *mechanism*. What triggers
-them for a given session is *policy*, and there are two sources. The
-design keeps the mechanism single and lets either source drive it,
-behind one internal trigger in the BPF session map:
+The reference build's own median spans 22.3 to 27.1 ms across two runs
+of identical code. The dev build sits inside that spread. So the result
+is a bound rather than a null: the always-on additions — the per-RX
+source-MAC copy, the widened TTL condition, one more field in the
+transmit config — cost less than this testbed can resolve, and the
+resolution is roughly 5 ms of median spread at this scale. That is not
+the same as zero, and the tail figures should not be read as dev being
+faster; adding work to the receive path cannot improve tail latency,
+and those differences are the neighbour's pacing showing through the
+RX clock.
 
-    struct echo_cfg { __u8 enabled; __u32 tx_interval_us;
-                      __u32 rx_interval_us; /* ... */ };
+Worth stating plainly: on the reference build, 64 sessions at a 10ms
+configured interval produce a 22-27 ms median gap with 14 to 16
+sessions past the 30 ms detect budget. That is the neighbour's
+transmit ceiling arriving through the RX clock, not an engine fault,
+and it means this testbed cannot demonstrate 64 sessions at 10ms
+cleanly on any build.
 
-- Path 1 (engine-local, ships without upstream): the engine reads
-  SESSION_ECHO and the echo intervals from the ADD it already
-  receives, and populates echo_cfg itself. No FRR change. This is the
-  m8 default.
+Evidence: `m8b-gap-main-run1.pcap.gz`, `m8b-gap-dev.pcap.gz`,
+`m8b-gap-main-run2.pcap.gz` (filtered to engine-sourced control
+packets, which is exactly what the analysis reads), and the derived
+per-session table in `m8b-gap-tables.txt`. To regenerate a row:
 
-- Path 2 (vendor-neutral protocol extension): a new bffdp message,
-  e.g. DP_ECHO_SESSION carrying { lid, echo_enabled, echo_tx_interval,
-  echo_rx_interval }, plus a bfdd patch to send it (and delegate echo)
-  when the session is offloaded (bs->bdc set) instead of using bfdd's
-  local echo socket. The engine's Path 2 handler parses that message
-  and populates the same echo_cfg.
+    gunzip -c m8b-gap-dev.pcap.gz > /tmp/dev.pcap
+    tcpdump -r /tmp/dev.pcap -n -tt 2>/dev/null \
+    | awk '{split($3,x,"."); s=x[1]"."x[2]"."x[3]"."x[4];
+            if(p[s]){d=$1-p[s]; if(d>m[s])m[s]=d} c[s]++; p[s]=$1}
+       END{n=0; for(k in c) if(c[k]>5000){v[n++]=m[k]*1000}
+           for(i=0;i<n;i++) for(j=i+1;j<n;j++)
+               if(v[j]<v[i]){t=v[i];v[i]=v[j];v[j]=t}
+           printf "sessions %d median %.1f p90 %.1f max %.1f\n",
+                  n, v[int(n/2)], v[int(n*0.9)], v[n-1]}'
 
-Path 2 is defined entirely at the protocol layer (bffdp_packet.h). The
-engine's echo_cfg is a private implementation detail no other
-dataplane ever sees. The correctness test for Path 2's independence:
-could a different vendor implement their echo dataplane from
-bffdp_packet.h and a short spec alone, without ever reading this
-repo? If yes, it is properly vendor-neutral. The design rule that
-enforces this: the DP_ECHO_SESSION message must carry everything a
-dataplane with an empty session table needs to act, and must assume
-nothing the engine happens to already track from the ADD.
+## 6. Where echo policy comes from
 
-Selection is a flag: --echo-mode auto uses Path 1 (engine decides from
-session flags); --echo-mode dplane acts only on explicit delegation
-(Path 2); auto is the fallback when talking to a bfdd without the
-extension. Because both writers target echo_cfg, adding Path 2 later
-touches only a new message handler, not the reflector, originator,
-detection, or counters.
+The reflector and originator are the echo *mechanism*. What enables
+them for a given session is *policy*, and the engine takes it from the
+`DP_ADD_SESSION` message it already receives: the `SESSION_ECHO` flag
+says whether echo is on, `min_echo_tx` gives the transmit interval, and
+`min_echo_rx` gives the value to advertise as Required Min Echo RX.
+Nothing new was needed on the wire.
 
+That was not the original plan. The design started from the assumption
+that delegating echo would need a new bffdp message carrying the echo
+configuration, to be proposed to the protocol's author before any code
+was written. Reading the code showed otherwise: `struct bfddp_session`
+already carries both echo intervals, `SESSION_ECHO` is already a
+session flag, and `DP_ADD_SESSION` is already documented as "add or
+update". The extension was unnecessary.
 
-## 7. Upstream track (parallel, not a blocker)
+What was actually missing turned out to be narrower, and is described
+in section 7.
 
-Path 2 is a design question for the bffdp author before it is code:
-distributed-BFD echo currently bypasses the dplane entirely, which
-defeats the offload for echo-enabled sessions. The proposal to raise
-on the mailing list is (a) a protocol extension (the DP_ECHO_SESSION
-message, specified with no reference to this engine) and (b) a bfdd
-patch to delegate echo to the dataplane when offloaded, with this
-engine as the reference implementation demonstrating it end to end.
-This runs in parallel with shipping Path 1 and does not gate it.
+## 7. Upstream: two halves of one broken negotiation
+
+RFC 5880 Section 6.8.9 requires that echo packets are not sent faster
+than the interval the neighbour advertises it can receive them at, so
+the effective interval is the larger of the two. For a session handled
+by the daemon, bfdd performs that negotiation. For a session offloaded
+to a data plane, nothing did — and the two ends of the problem sat on
+opposite sides of the socket.
+
+**The daemon half.** `bs_echo_timer_handler()`, which performs the
+negotiation, is reachable only from the control-packet receive path
+(which bfdd does not run for offloaded sessions) and from
+`bfd_set_echo()`, where it is guarded on the session not being
+offloaded. So `echo_xmt_TO` stayed zero and the data plane received the
+locally configured interval regardless of what the neighbour asked for.
+Reported as FRRouting/frr#22804, fix in FRRouting/frr#22805: a helper
+that performs the negotiation and pushes the result down, called both
+when the neighbour's timers arrive and when echo is enabled on an
+already-established session.
+
+**The engine half.** That fix needs an input, and the engine was not
+providing one: it hardcoded `required_echo_rx` to zero in every state
+change it sent up, so the daemon's copy of the neighbour's advertised
+interval was always zero and the negotiation had nothing to work with.
+The engine now parses the neighbour's `min_echo` from control packets,
+stores it in the session map, and reports it.
+
+The engine also had the mirror of the same bug in the other direction:
+it advertised its own Required Min Echo RX as zero, which RFC 5880
+Section 4.1 defines as "cannot receive echo packets". No conforming
+neighbour would ever have echoed at it — which is why every reflector
+test before this used a hand-built frame. The advertisement is now the
+value from the ADD, gated on the same flag that gates reflection, so
+what is advertised always matches what the reflector will actually
+answer. Advertising a non-zero value on a session the reflector does
+not serve would invite echoes that are then dropped, and the
+neighbour's echo detection would tear the session down.
+
+With both halves in place the chain closes: neighbour advertises,
+engine reports, daemon negotiates, engine transmits at the negotiated
+interval. Verified end to end — with the neighbour advertising 200ms
+against a locally configured 50ms, the observed cadence is 200ms; it
+was 50ms before, in violation of the RFC.
 
 Not in scope for m8: SBFD echo (seamless BFD, simpler state machine,
 same packet format) is a possible later extension.

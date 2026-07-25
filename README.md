@@ -165,8 +165,8 @@ with zero peer-visible events.
 
 ## Echo mode
 
-On the dev branch (docs/m8-echo), pending merge to main. BFD echo
-(RFC 5880 s6.4, UDP 3785) in two roles sharing one mechanism.
+BFD echo (RFC 5880 s6.4, UDP 3785) in two roles sharing one
+mechanism (docs/m8-echo).
 
 The reflector is the production capability and lives entirely in XDP:
 a self-addressed echo arriving at TTL 255 from a peer with echo
@@ -198,8 +198,7 @@ resolve (~5ms of median transmit-gap spread); see docs/m8-echo.
 
 ## Honest limitations
 
-- Single-hop only, no authentication. Echo mode is implemented on
-  the dev branch (see "Echo mode" above), not yet on main.
+- Single-hop only, no authentication.
 - Multi-session (64 slots, per-slot source ports 65472-65535, one
   bfd_tx instance per host) is validated at the full 64 sessions,
   including the 32 v4 + 32 v6 mixed-family split (docs/m7-ipv6):
@@ -321,7 +320,7 @@ ladders (fair CPU → sched churn → timer storm → SCHED_FIFO hogs).
   "Running under FRR" above
 - ~~IPv6~~ **done** — dual-stack, validated to the 64-session
   mixed-family cap through the stress ladder; see "IPv6" above
-- ~~Echo mode~~ **done (dev branch)** — XDP reflector and
+- ~~Echo mode~~ **done** — XDP reflector and
   originator/detector; see "Echo mode" above
 - Bare-metal benchmark reproduction
 

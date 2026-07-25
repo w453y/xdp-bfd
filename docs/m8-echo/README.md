@@ -149,6 +149,34 @@ bfd_stats) is the on-box signal; a far-end or bridge capture is the
 off-box one. tcpdump on the reflecting host is not a valid check.
 
 
+
+### Exercised by a stock FRR peer
+
+The tests above use a hand-built frame from `echo_inject.py`, because
+until the engine advertised a non-zero Required Min Echo RX no
+conforming implementation would send it an echo at all: RFC 5880
+Section 4.1 reads zero as "cannot receive echo packets". With the
+advertisement in place, a stock FRR neighbour with `echo-mode`
+configured originates echoes on its own and the reflector answers them.
+
+Measured on the bridge, with the engine host at `ip_forward = 0`
+throughout (evidence: `m8a-real-peer.pcap`):
+
+- 433 echoes from the neighbour, 433 reflected. No loss.
+- Turnaround 12 us minimum, 30 us average. One outlier at 2715 us.
+
+Vantage, since it is not the same as the section 4 figure: this is
+measured at the bridge and spans bridge to host, XDP processing, and
+host back to bridge. The kernel-reflection baseline in section 4 is a
+full round trip measured at the originator. Both describe reflection
+cost, from different places, and should not be read as a head-to-head.
+
+The point of the test is what the host is not doing. With forwarding
+disabled the stack discards a self-addressed echo as a martian, so
+none of these 433 packets would have been returned without the XDP
+reflector.
+
+
 ## 4. Kernel-reflection baseline (the honest comparison basis)
 
 Measured with the reflecting node (chaos) using kernel forwarding

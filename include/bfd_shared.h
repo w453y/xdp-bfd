@@ -13,6 +13,7 @@
 #include <linux/types.h>
 
 #define BFD_PORT_1HOP    3784
+#define BFD_PORT_MHOP    4784   /* RFC 5883 multihop */
 #define BFD_ECHO_PORT    3785
 #define BFD_SRC_PORT     65472  /* Per-session TX source port = base +
                                  * slot; 64 slots end at 65535, the top
@@ -124,6 +125,11 @@ struct tx_cfg {
 	                       * s4.1); set only when the session has echo
 	                       * enabled, so it tracks whether the reflector
 	                       * will actually answer. */
+	__u32 min_ttl;       /* lowest acceptable TTL / hop_limit for this
+	                      * session. bfdd sends 255 for single-hop and
+	                      * the configured minimum-ttl for multihop, so
+	                      * one comparison covers both. 0 means unset
+	                      * and is treated as 255. */
 };
 
 #endif /* BFD_SHARED_H */

@@ -200,6 +200,19 @@ static __always_inline void ensure_sweeper(void)
 	bpf_timer_start(&sw->timer, SWEEP_NS, 0);
 }
 
+/* Ones-complement incremental checksum update for a single 16-bit
+ * word (RFC 1624). Endian-agnostic: the fold is symmetric, so the
+ * words may be passed in network order. */
+static __always_inline void csum_replace2(__u16 *check, __u16 old,
+					  __u16 new)
+{
+	__u32 csum = (~(*check) & 0xffff) + (~old & 0xffff) + new;
+
+	csum = (csum & 0xffff) + (csum >> 16);
+	csum = (csum & 0xffff) + (csum >> 16);
+	*check = (__u16)~csum;
+}
+
 SEC("xdp")
 int bfd_observer(struct xdp_md *ctx)
 {
@@ -246,8 +259,18 @@ int bfd_observer(struct xdp_md *ctx)
 		if (iph->ttl != 255 &&
 		    !(udp->dest == bpf_htons(BFD_ECHO_PORT) &&
 		      iph->ttl == 254 && iph->saddr == iph->daddr)) {
-			count(3);
-			return XDP_DROP;
+			/* Not single-hop and not our own echo returning. If no
+			 * multihop session exists on this box the packet is
+			 * off-link or spoofed, so drop it here as before - that
+			 * keeps the cheap early filter for the common case. With
+			 * multihop configured the verdict needs the session's own
+			 * minimum, which is only known after the config lookup. */
+			__u32 mz = 0;
+			__u32 *mf = bpf_map_lookup_elem(&prog_flags, &mz);
+			if (!mf || !(*mf & 2)) {
+				count(3);
+				return XDP_DROP;
+			}
 		}
 		key_set_v4(&key.peer,  iph->saddr);
 		key_set_v4(&key.local, iph->daddr);
@@ -265,8 +288,12 @@ int bfd_observer(struct xdp_md *ctx)
 			return XDP_PASS;
 		/* GTSM: hop_limit is the v6 TTL. */
 		if (ip6->hop_limit != 255) {
-			count(3);
-			return XDP_DROP;
+			__u32 mz = 0;
+			__u32 *mf = bpf_map_lookup_elem(&prog_flags, &mz);
+			if (!mf || !(*mf & 2)) {
+				count(3);
+				return XDP_DROP;
+			}
 		}
 		udp = (void *)(ip6 + 1);
 		if ((void *)(udp + 1) > data_end)
@@ -342,7 +369,10 @@ int bfd_observer(struct xdp_md *ctx)
 		return XDP_TX;
 	}
 
-	if (udp->dest != bpf_htons(BFD_PORT_1HOP))
+	/* Single-hop (3784) and multihop (4784, RFC 5883) both land here.
+	 * The reply below goes back to whichever port it arrived on. */
+	if (udp->dest != bpf_htons(BFD_PORT_1HOP) &&
+	    udp->dest != bpf_htons(BFD_PORT_MHOP))
 		return XDP_PASS;
 
 	struct bfdhdr *bfd = (void *)(udp + 1);
@@ -373,6 +403,25 @@ int bfd_observer(struct xdp_md *ctx)
 		__u32 *fl = bpf_map_lookup_elem(&prog_flags, &zero);
 		if (!fl || !(*fl & 1))
 			return XDP_PASS;
+	}
+
+	/* Deferred GTSM. A control packet that did not arrive at 255 is
+	 * acceptable only if it names a configured session whose minimum
+	 * admits it. An unconfigured pair must still drop: the
+	 * promiscuous PASS above exists for observation, not to relax
+	 * GTSM. Single-hop sessions carry min_ttl 255, so nothing below
+	 * 255 reaches them and their behaviour is unchanged. */
+	{
+		__u8 pttl = iph ? iph->ttl : (ip6 ? ip6->hop_limit : 0);
+	
+		if (pttl != 255) {
+			__u32 mt = (cfg && cfg->min_ttl) ? cfg->min_ttl : 255;
+	
+			if (!cfg || pttl < mt) {
+				count(3);
+				return XDP_DROP;
+			}
+		}
 	}
 
 	/* Demux validation (RFC 5880 s6.8.6): your_disc must name our
@@ -471,10 +520,31 @@ int bfd_observer(struct xdp_md *ctx)
 			ip6->daddr = t6;
 		}
 
-		/* L4: our source port, dst 3784, no UDP csum (legal v4) */
+		/* Multihop: this frame arrived below 255 and is being reused as
+		 * our reply, so it would leave already decremented and lose more
+		 * on the return path - the peer would then measure it against
+		 * its own minimum and reject us while we accept it, giving a
+		 * session that comes up one way only. RFC 5883 wants multihop
+		 * sent at 255 so the receiver can count hops, which is what the
+		 * userspace path already does. Single-hop frames arrive at 255
+		 * and skip this entirely. */
+		if (iph && iph->ttl != 255) {
+			__u16 ow = *(__u16 *)&iph->ttl;
+		
+			iph->ttl = 255;
+			csum_replace2(&iph->check, ow, *(__u16 *)&iph->ttl);
+		} else if (ip6 && ip6->hop_limit != 255) {
+			ip6->hop_limit = 255;   /* no checksum in v6 */
+		}
+
+		__be16 in_dport = udp->dest;
+
+		/* L4: our source port, and back to the port this frame
+		 * arrived on so multihop replies reach 4784. No UDP
+		 * checksum (legal in v4). */
 		udp->source = cfg->src_port ? bpf_htons(cfg->src_port)
 					    : bpf_htons(BFD_SRC_PORT);
-		udp->dest   = bpf_htons(BFD_PORT_1HOP);
+		udp->dest   = in_dport;
 		udp->check  = 0;
 
 		/* BFD payload from config. P while a Poll sequence is

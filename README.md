@@ -196,9 +196,40 @@ the engine side reporting and advertising the values that make the
 negotiation work. Cost at 64 sessions is below what the testbed can
 resolve (~5ms of median transmit-gap spread); see docs/m8-echo.
 
+## Multihop
+
+RFC 5883 multihop sessions are supported on both families
+(docs/m9-multihop). The engine takes the minimum acceptable TTL from
+the session's dataplane registration — bfdd sends the configured
+minimum-ttl for a multihop session and 255 for a single-hop one — so
+one comparison covers both modes and single-hop behaviour is unchanged.
+
+The GTSM check that protects single-hop sits in the parser, ahead of
+any session lookup, which is what makes it cheap. Since the minimum is
+per-session, the parser keeps that fast path and consults one bit:
+with no multihop session configured it drops anything below TTL 255
+immediately, exactly as before; otherwise the verdict defers until
+after the config lookup, where it drops unless the session exists and
+admits the TTL. Enabling multihop does not relax GTSM for any
+single-hop session — a packet at TTL 200 aimed at one is still dropped
+and counted.
+
+Multihop uses UDP 4784. The parser accepts both ports, the kernel
+XDP_TX reply goes back to whichever port the frame arrived on, and the
+reply's TTL is restored to 255 as RFC 5883 requires, since the frame is
+reused as the reply and would otherwise leave already decremented. For
+IPv6 the multihop socket deliberately omits IPV6_MINHOPCOUNT, which
+protects the single-hop socket but would have the kernel discard every
+multihop packet before userspace saw it.
+
+Validated on both families against a stock FRR peer: above-minimum
+accepted, below-minimum dropped, single-hop still strict at 255, and
+the reply's TTL restored. Evidence in docs/m9-multihop.
+
 ## Honest limitations
 
-- Single-hop only, no authentication.
+- No authentication or demand mode. Multihop (RFC 5883) is
+  supported; see "Multihop" above.
 - Multi-session (64 slots, per-slot source ports 65472-65535, one
   bfd_tx instance per host) is validated at the full 64 sessions,
   including the 32 v4 + 32 v6 mixed-family split (docs/m7-ipv6):
@@ -308,6 +339,7 @@ Notes:
 - `docs/refactor-abi/` — shared-ABI refactor, hardening closures, regression evidence
 - `docs/m7-ipv6/` — dual-stack: unified key, v6 parse/reply, ladder + spoof evidence
 - `docs/m8-echo/` — echo mode: reflector, originator/detector, upstream negotiation fix
+- `docs/m9-multihop/` — multihop: per-session minimum TTL, port 4784, TTL restore
 
 Every claim above has a pcap in this repo. Methodology: host-side
 tcpdump on the hypervisor bridge as ground truth, window-sliced
@@ -322,6 +354,8 @@ ladders (fair CPU → sched churn → timer storm → SCHED_FIFO hogs).
   mixed-family cap through the stress ladder; see "IPv6" above
 - ~~Echo mode~~ **done** — XDP reflector and
   originator/detector; see "Echo mode" above
+- ~~Multihop (RFC 5883)~~ **done** — per-session minimum TTL on both
+  families; see "Multihop" above
 - Bare-metal benchmark reproduction
 
 Prior art: [open-oam/bfd_program](https://github.com/open-oam/bfd_program)

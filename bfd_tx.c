@@ -170,6 +170,7 @@ struct session {
 	uint64_t last_rx_us, next_tx_us;
 	uint64_t tx_pkts;             /* userspace-sent control packets */
 	uint32_t echo_tx_us;          /* echo interval from the ADD; 0 = off */
+	uint32_t min_echo_rx_us;      /* advertised Required Min Echo RX */
 	uint8_t  peer_mac[6];         /* synced from the map, learned by XDP */
 	int      mac_valid;
 	uint64_t next_echo_tx_us;
@@ -390,6 +391,7 @@ static void ktx_mirror(struct session *s)
 		return;
 	struct tx_cfg c = {
 		.echo_iv_us = s->echo_tx_us,
+		.min_echo_rx_us = s->min_echo_rx_us,
 		.enable    = (s->state == ST_UP),
 		.my_disc   = s->wire_disc,
 		.your_disc = s->rdisc,
@@ -855,6 +857,7 @@ static void fsm_tx(struct session *s, uint64_t t)
 	o.min_tx    = htonl(s->state == ST_UP ? s->min_tx_us
 					      : (uint32_t)SLOW_TX_US);
 	o.min_rx    = htonl(s->min_rx_us);
+	o.min_echo  = htonl(s->min_echo_rx_us);
 
 	int txfd = slot_sock((int)(s - sessions), s);
 	if (txfd < 0)
@@ -952,6 +955,8 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	s->passive     = !!(flags & SESSION_PASSIVE);
 	s->admin_down  = !!(flags & SESSION_SHUTDOWN);
 	s->echo_tx_us  = (flags & SESSION_ECHO) ? ntohl(sm->min_echo_tx) : 0;
+	s->min_echo_rx_us = (flags & SESSION_ECHO)
+				    ? ntohl(sm->min_echo_rx) : 0;
 	/* echo policy: track peers of echo-active v4 sessions so the
 	 * reflector returns only their echoes, not arbitrary 3785 traffic. */
 	if (echo_peers_fd >= 0 && s->family == AF_INET) {

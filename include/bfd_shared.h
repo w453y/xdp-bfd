@@ -119,6 +119,11 @@ struct tx_cfg {
 	__u32 echo_iv_us;    /* echo interval; 0 = echo off. Static per
 	                      * session, so the mirror dirty-check still
 	                      * elides pushes. */
+	__u32 min_echo_rx_us; /* what we advertise as Required Min Echo RX.
+	                       * 0 means we cannot receive echo (RFC 5880
+	                       * s4.1); set only when the session has echo
+	                       * enabled, so it tracks whether the reflector
+	                       * will actually answer. */
 };
 
 #endif /* BFD_SHARED_H */

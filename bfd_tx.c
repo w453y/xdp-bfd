@@ -194,6 +194,7 @@ static struct session sessions[MAX_SESSIONS];
 /* ---------- globals ---------- */
 static int rx_sock = -1, tx_sock = -1, rx6_sock = -1, tx6_sock = -1;
 static int rxm_sock = -1;   /* v4 multihop RX, port 4784 */
+static int rxm6_sock = -1;  /* v6 multihop RX, port 4784 */
 
 /* Per-slot TX sockets: source port = SRC_PORT + slot, bound to the
  * session's local address (INADDR_ANY would let routing source every
@@ -1338,6 +1339,22 @@ int main(int argc, char **argv)
 	setsockopt(rx6_sock, IPPROTO_IPV6, IPV6_MINHOPCOUNT, &minhop,
 		   sizeof(minhop));
 
+	/* v6 multihop, port 4784. Deliberately NO IPV6_MINHOPCOUNT:
+	 * multihop packets arrive below 255 by definition, so the
+	 * kernel filter that protects the single-hop socket would
+	 * drop them all. The per-session minimum is enforced in XDP
+	 * against cfg->min_ttl instead, so nothing is given up. */
+	rxm6_sock = socket(AF_INET6, SOCK_DGRAM, 0);
+	setsockopt(rxm6_sock, IPPROTO_IPV6, IPV6_V6ONLY, &v6only,
+		   sizeof(v6only));
+	struct sockaddr_in6 lam6 = { .sin6_family = AF_INET6,
+				     .sin6_port = htons(BFD_PORT_MHOP) };
+	if (bind(rxm6_sock, (void *)&lam6, sizeof(lam6)))
+		perror("bind 4784 v6 (v6 multihop disabled)");
+	else
+		setsockopt(rxm6_sock, IPPROTO_IPV6, IPV6_RECVPKTINFO, &pi,
+			   sizeof(pi));
+
 	/* Unbound fallback TX socket; per-slot bound sockets carry
 	 * normal traffic (slot_sock). */
 	tx_sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -1491,6 +1508,45 @@ int main(int argc, char **argv)
 				rs6 = sess_by_addr(&fp6, &fl6);
 			if (rs6)
 				fsm_rx(rs6, &p6, t);
+		}
+
+		/* v6 multihop control packets, port 4784. */
+		while (rxm6_sock >= 0) {
+			struct bfdpkt pm6;
+			struct sockaddr_in6 fromm6;
+			struct iovec iovm6 = { .iov_base = &pm6,
+					       .iov_len = sizeof(pm6) };
+			char cbufm6[CMSG_SPACE(sizeof(struct in6_pktinfo))];
+			struct msghdr mhm6 = {
+				.msg_name = &fromm6,
+				.msg_namelen = sizeof(fromm6),
+				.msg_iov = &iovm6, .msg_iovlen = 1,
+				.msg_control = cbufm6,
+				.msg_controllen = sizeof(cbufm6),
+			};
+			ssize_t nm6 = recvmsg(rxm6_sock, &mhm6, MSG_DONTWAIT);
+		
+			if (nm6 < 0)
+				break;
+			if (nm6 < 24 || ((pm6.vers_diag >> 5) & 7) != 1 ||
+			    !pm6.mult || !pm6.my_disc)
+				continue;
+		
+			struct bfd_addr mp6 = {0}, ml6 = {0};
+			memcpy(mp6.b, &fromm6.sin6_addr, 16);
+			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mhm6); c;
+			     c = CMSG_NXTHDR(&mhm6, c))
+				if (c->cmsg_level == IPPROTO_IPV6 &&
+				    c->cmsg_type == IPV6_PKTINFO)
+					memcpy(ml6.b,
+					       &((struct in6_pktinfo *)
+						CMSG_DATA(c))->ipi6_addr, 16);
+		
+			struct session *ms6 = sess_by_wire(ntohl(pm6.your_disc));
+			if (!ms6)
+				ms6 = sess_by_addr(&mp6, &ml6);
+			if (ms6)
+				fsm_rx(ms6, &pm6, t);
 		}
 
 		if (dp_reconcile_us && t >= dp_reconcile_us) {

@@ -171,6 +171,8 @@ struct session {
 	uint64_t tx_pkts;             /* userspace-sent control packets */
 	uint32_t echo_tx_us;          /* echo interval from the ADD; 0 = off */
 	uint32_t min_echo_rx_us;      /* advertised Required Min Echo RX */
+	uint8_t  min_ttl;             /* from the ADD; 255 = single-hop */
+	int      is_mhop;             /* RFC 5883: control port 4784 */
 	uint8_t  peer_mac[6];         /* synced from the map, learned by XDP */
 	int      mac_valid;
 	uint64_t next_echo_tx_us;
@@ -191,6 +193,7 @@ static struct session sessions[MAX_SESSIONS];
 
 /* ---------- globals ---------- */
 static int rx_sock = -1, tx_sock = -1, rx6_sock = -1, tx6_sock = -1;
+static int rxm_sock = -1;   /* v4 multihop RX, port 4784 */
 
 /* Per-slot TX sockets: source port = SRC_PORT + slot, bound to the
  * session's local address (INADDR_ANY would let routing source every
@@ -246,6 +249,7 @@ static int use_ktx = 0;
 static int cfg_fd = -1, sess_fd = -1, echo_peers_fd = -1;
 static int echo_sock = -1, echo_ifindex = 0;
 static int echo_disc_fd = -1;
+static int flags_fd = -1;
 static uint8_t echo_src_mac[6];
 static uint32_t echo_nonce_ctr;
 static struct bpf_object *bpf_obj;
@@ -361,6 +365,7 @@ static int ktx_attach(const char *ifname)
 	sess_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_sessions");
 	echo_peers_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_peers");
 	echo_disc_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_disc");
+	flags_fd = bpf_object__find_map_fd_by_name(bpf_obj, "prog_flags");
 	printf("kernel-tx: XDP attached to %s\n", ifname);
 
 	/* Echo TX needs a raw L2 socket: a self-addressed UDP packet sent
@@ -385,6 +390,30 @@ static int ktx_attach(const char *ifname)
 	return 0;
 }
 
+/* prog_flags bit 1 tells the XDP parser that at least one multihop
+ * session exists, so it must defer the TTL verdict instead of dropping
+ * everything below 255 outright. Clearing it again restores the cheap
+ * early filter for single-hop-only deployments. */
+static void ktx_update_mhop_flag(void)
+{
+	if (flags_fd < 0)
+		return;
+
+	int mhop = 0;
+	for (int i = 0; i < MAX_SESSIONS; i++)
+		if (sessions[i].used && sessions[i].min_ttl &&
+		    sessions[i].min_ttl < 255) {
+			mhop = 1;
+			break;
+		}
+
+	__u32 zero = 0, fl = 0;
+	bpf_map_lookup_elem(flags_fd, &zero, &fl);
+	__u32 want = mhop ? (fl | 2u) : (fl & ~2u);
+	if (want != fl)
+		bpf_map_update_elem(flags_fd, &zero, &want, 0);
+}
+
 static void ktx_mirror(struct session *s)
 {
 	if (!use_ktx)
@@ -392,6 +421,7 @@ static void ktx_mirror(struct session *s)
 	struct tx_cfg c = {
 		.echo_iv_us = s->echo_tx_us,
 		.min_echo_rx_us = s->min_echo_rx_us,
+		.min_ttl   = s->min_ttl,
 		.enable    = (s->state == ST_UP),
 		.my_disc   = s->wire_disc,
 		.your_disc = s->rdisc,
@@ -427,6 +457,8 @@ static void ktx_clear(struct session *s)
 		bpf_map_delete_elem(echo_peers_fd, &s->peer);
 	if (echo_disc_fd >= 0 && s->wire_disc)
 		bpf_map_delete_elem(echo_disc_fd, &s->wire_disc);
+	s->min_ttl = 0;
+	ktx_update_mhop_flag();
 }
 
 static void dp_notify_state(struct session *s);
@@ -864,12 +896,12 @@ static void fsm_tx(struct session *s, uint64_t t)
 		txfd = s->family == AF_INET6 ? tx6_sock : tx_sock;
 	if (s->family == AF_INET6) {
 		struct sockaddr_in6 dst = { .sin6_family = AF_INET6,
-			.sin6_port = htons(PORT_CTRL) };
+			.sin6_port = htons(s->is_mhop ? BFD_PORT_MHOP : PORT_CTRL) };
 		memcpy(&dst.sin6_addr, s->peer.b, 16);
 		sendto(txfd, &o, 24, 0, (void *)&dst, sizeof(dst));
 	} else {
 		struct sockaddr_in dst = { .sin_family = AF_INET,
-			.sin_port = htons(PORT_CTRL) };
+			.sin_port = htons(s->is_mhop ? BFD_PORT_MHOP : PORT_CTRL) };
 		memcpy(&dst.sin_addr.s_addr, &s->peer.b[12], 4);
 		sendto(txfd, &o, 24, 0, (void *)&dst, sizeof(dst));
 	}
@@ -901,7 +933,10 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	uint32_t flags = ntohl(sm->flags);
 	uint32_t lid   = ntohl(sm->lid);
 
-	if (flags & (SESSION_MULTIHOP | SESSION_DEMAND)) {
+	/* Multihop is supported: bfdd sends the negotiated minimum TTL in
+	 * the ADD and the XDP parser enforces it per session. Demand mode
+	 * is not implemented, so it is still refused. */
+	if (flags & SESSION_DEMAND) {
 		printf("dplane: ADD lid=%u rejected (unsupported flags 0x%x)\n",
 		       lid, flags);
 		return;
@@ -957,6 +992,9 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	s->echo_tx_us  = (flags & SESSION_ECHO) ? ntohl(sm->min_echo_tx) : 0;
 	s->min_echo_rx_us = (flags & SESSION_ECHO)
 				    ? ntohl(sm->min_echo_rx) : 0;
+	s->min_ttl     = sm->ttl ? sm->ttl : 255;
+	s->is_mhop     = !!(flags & SESSION_MULTIHOP);
+	ktx_update_mhop_flag();
 	/* echo policy: track peers of echo-active v4 sessions so the
 	 * reflector returns only their echoes, not arbitrary 3785 traffic. */
 	if (echo_peers_fd >= 0 && s->family == AF_INET) {
@@ -1270,6 +1308,19 @@ int main(int argc, char **argv)
 	int pi = 1;
 	setsockopt(rx_sock, IPPROTO_IP, IP_PKTINFO, &pi, sizeof(pi));
 
+	/* RFC 5883 multihop control packets arrive on 4784. Bound
+	 * separately so single-hop demux is untouched; the XDP path
+	 * handles both ports once a session is Up, but establishment
+	 * still comes through userspace. */
+	rxm_sock = socket(AF_INET, SOCK_DGRAM, 0);
+	struct sockaddr_in lam = { .sin_family = AF_INET,
+				   .sin_port = htons(BFD_PORT_MHOP),
+				   .sin_addr.s_addr = INADDR_ANY };
+	if (bind(rxm_sock, (void *)&lam, sizeof(lam)))
+		perror("bind 4784 (multihop disabled)");
+	else
+		setsockopt(rxm_sock, IPPROTO_IP, IP_PKTINFO, &pi, sizeof(pi));
+
 #ifndef IPV6_MINHOPCOUNT
 #define IPV6_MINHOPCOUNT 73
 #endif
@@ -1364,6 +1415,47 @@ int main(int argc, char **argv)
 			}
 			if (rs)
 				fsm_rx(rs, &p, t);
+		}
+
+		/* RFC 5883 multihop control packets, port 4784. Same demux as
+		 * single-hop: your_disc first, address pair as fallback. */
+		while (rxm_sock >= 0) {
+			struct bfdpkt pm;
+			struct sockaddr_in fromm;
+			struct iovec iovm = { .iov_base = &pm,
+					      .iov_len = sizeof(pm) };
+			char cbufm[CMSG_SPACE(sizeof(struct in_pktinfo))];
+			struct msghdr mhm = {
+				.msg_name = &fromm, .msg_namelen = sizeof(fromm),
+				.msg_iov = &iovm, .msg_iovlen = 1,
+				.msg_control = cbufm,
+				.msg_controllen = sizeof(cbufm),
+			};
+			ssize_t nm = recvmsg(rxm_sock, &mhm, MSG_DONTWAIT);
+		
+			if (nm < 0)
+				break;
+			if (nm < 24 || ((pm.vers_diag >> 5) & 7) != 1 ||
+			    !pm.mult || !pm.my_disc)
+				continue;
+		
+			uint32_t mdst = 0;
+			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mhm); c;
+			     c = CMSG_NXTHDR(&mhm, c))
+				if (c->cmsg_level == IPPROTO_IP &&
+				    c->cmsg_type == IP_PKTINFO)
+					mdst = ((struct in_pktinfo *)
+						CMSG_DATA(c))->ipi_addr.s_addr;
+		
+			struct session *ms = sess_by_wire(ntohl(pm.your_disc));
+			if (!ms) {
+				struct bfd_addr mp, ml;
+				key_set_v4(&mp, fromm.sin_addr.s_addr);
+				key_set_v4(&ml, mdst);
+				ms = sess_by_addr(&mp, &ml);
+			}
+			if (ms)
+				fsm_rx(ms, &pm, now_us());
 		}
 
 		for (;;) {

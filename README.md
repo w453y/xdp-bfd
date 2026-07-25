@@ -163,9 +163,42 @@ discriminator continuity, mark-and-sweep reconciliation). Default 0
 preserves drop-and-recreate. Verified: two back-to-back FRR restarts
 with zero peer-visible events.
 
+## Echo mode
+
+BFD echo (RFC 5880 s6.4, UDP 3785) in two roles sharing one
+mechanism (docs/m8-echo).
+
+The reflector is the production capability and lives entirely in XDP:
+a self-addressed echo arriving at TTL 255 from a peer with echo
+enabled is MAC-swapped, TTL-decremented, checksum-recomputed and
+XDP_TX'd, with no session lookup and the payload untouched. A policy
+guard keyed on echo-active peers prevents it becoming an amplification
+vector. The point is what the host is not doing: with ip_forward=0 the
+stack discards a self-addressed echo as a martian, so none of these
+frames would be returned without the reflector. Measured against a
+stock FRR neighbour originating its own echoes, 433 of 433 reflected,
+12us minimum and 30us average turnaround at the bridge.
+
+The originator is a diagnostic. XDP cannot originate packets — XDP_TX
+is a verdict on a frame that just arrived, which is why the control
+path is RX-clocked — so echo transmission runs from userspace and is
+therefore exposed to scheduling. Returns are recognised in XDP and
+demuxed on the discriminator carried in the payload (the source
+address is our own and cannot name a session). Round-trip time and
+loss are tracked per session, and echo liveness is reported but
+deliberately never merged into the session verdict: with userspace
+transmission a local stall is indistinguishable from a path fault, so
+treating it as one would turn a scheduling delay into a teardown.
+
+Implementing this surfaced an upstream bug in the echo-interval
+negotiation for offloaded sessions, fixed in FRRouting/frr#22805 with
+the engine side reporting and advertising the values that make the
+negotiation work. Cost at 64 sessions is below what the testbed can
+resolve (~5ms of median transmit-gap spread); see docs/m8-echo.
+
 ## Honest limitations
 
-- Single-hop only, no authentication, no echo mode.
+- Single-hop only, no authentication.
 - Multi-session (64 slots, per-slot source ports 65472-65535, one
   bfd_tx instance per host) is validated at the full 64 sessions,
   including the 32 v4 + 32 v6 mixed-family split (docs/m7-ipv6):
@@ -242,7 +275,13 @@ Notes:
   fix [#22694](https://github.com/FRRouting/frr/pull/22694)). Until the
   latter is merged, avoid polling `show bfd peers counters` against a
   dataplane at scale, or run with `--dp-hold` so the resulting
-  reconnects are wire-invisible.
+  reconnects are wire-invisible. A third was found while implementing
+  echo: for a session offloaded to a dataplane, bfdd never performs the
+  RFC 5880 s6.8.9 echo-interval negotiation, so the dataplane transmits
+  echo at the locally configured interval regardless of what the peer
+  advertised it can receive
+  ([FRRouting/frr#22804](https://github.com/FRRouting/frr/issues/22804),
+  fix [#22805](https://github.com/FRRouting/frr/pull/22805)).
 - `show bfd peers counters`: both input and output counts come from
   the XDP session map; kernel XDP_TX replies are counted per-packet.
 - Default (`--dp-hold 0`): sessions are torn down when bfdd
@@ -268,6 +307,7 @@ Notes:
 - `docs/m6-multisession/` — concurrent-session validation (pcap + gaps + isolation)
 - `docs/refactor-abi/` — shared-ABI refactor, hardening closures, regression evidence
 - `docs/m7-ipv6/` — dual-stack: unified key, v6 parse/reply, ladder + spoof evidence
+- `docs/m8-echo/` — echo mode: reflector, originator/detector, upstream negotiation fix
 
 Every claim above has a pcap in this repo. Methodology: host-side
 tcpdump on the hypervisor bridge as ground truth, window-sliced
@@ -280,6 +320,8 @@ ladders (fair CPU → sched churn → timer storm → SCHED_FIFO hogs).
   "Running under FRR" above
 - ~~IPv6~~ **done** — dual-stack, validated to the 64-session
   mixed-family cap through the stress ladder; see "IPv6" above
+- ~~Echo mode~~ **done** — XDP reflector and
+  originator/detector; see "Echo mode" above
 - Bare-metal benchmark reproduction
 
 Prior art: [open-oam/bfd_program](https://github.com/open-oam/bfd_program)

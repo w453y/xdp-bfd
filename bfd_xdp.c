@@ -40,10 +40,10 @@ struct {
 	__type(value, struct session_state);
 } bfd_sessions SEC(".maps");
 
-/* stats: 0=pkts 1=bfd 2=malformed 3=rejects (demux + ttl/GTSM + ip-options) */
+/* stats: 0=pkts 1=bfd 2=malformed 3=rejects 4=echo-reflected */
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 4);
+	__uint(max_entries, 6);
 	__type(key, __u32);
 	__type(value, __u64);
 } bfd_stats SEC(".maps");
@@ -59,6 +59,28 @@ struct {
 	__type(key, struct session_key);
 	__type(value, struct tx_cfg);
 } tx_config SEC(".maps");
+
+/* echo_peers: peer address (v4-mapped) -> 1 for every session with echo
+ * active. Populated by the userspace shim on SESSION_ECHO accept, cleared
+ * on delete / echo-off. The reflector consults it so only echoes from a
+ * peer of an echo-active session are returned (not arbitrary 3785 traffic). */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, BFD_MAX_SESSIONS);
+	__type(key, struct bfd_addr);
+	__type(value, __u8);
+} echo_peers SEC(".maps");
+
+/* echo_disc: our my_disc -> session key, for demuxing our own echoes
+ * on return. The returning frame is self-addressed to our local
+ * address and never carries Your Disc, so the discriminator we wrote
+ * into the payload is the only thing that names the session. */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, BFD_MAX_SESSIONS);
+	__type(key, __u32);
+	__type(value, struct session_key);
+} echo_disc SEC(".maps");
 
 /* bit 0: promiscuous observe - track sessions with no tx_config entry.
  * Set by the standalone loader; bfd_tx leaves it 0 so only configured
@@ -110,6 +132,20 @@ static long check_session(struct bpf_map *map, struct session_key *k,
 			  struct session_state *st, void *ctx)
 {
 	__u64 now = *(__u64 *)ctx;
+
+	/* Echo liveness. Advisory only: reported, never merged into the
+	 * session verdict. With userspace echo TX a local stall looks
+	 * exactly like a path fault, so this must not tear a session
+	 * down. Revisit when TX moves into the TC hook. */
+	{
+		struct tx_cfg *ec = bpf_map_lookup_elem(&tx_config, k);
+		if (ec && ec->echo_iv_us && st->echo_last_seen_ns) {
+			__u64 eb = (__u64)st->detect_mult *
+				   ec->echo_iv_us * 1000ull;
+			__s64 ed = (__s64)(now - st->echo_last_seen_ns);
+			st->echo_alive = (ed >= 0 && (__u64)ed <= eb);
+		}
+	}
 
 	if (!st->alive)
 		return 0;
@@ -198,15 +234,21 @@ int bfd_observer(struct xdp_md *ctx)
 			count(3);
 			return XDP_DROP;
 		}
-		/* GTSM (RFC 5881 s5): single-hop control packets MUST arrive
-		 * with TTL 255. Anything else is off-link or spoofed. */
-		if (iph->ttl != 255) {
-			count(3);
-			return XDP_DROP;
-		}
 		udp = (void *)(iph + 1);
 		if ((void *)(udp + 1) > data_end)
 			return XDP_PASS;
+		/* GTSM (RFC 5881 s5): single-hop control packets MUST arrive
+		 * with TTL 255. Anything else is off-link or spoofed. The one
+		 * exception is our own echo coming back: the neighbour's
+		 * forwarding plane decremented it to 254, and the frame is
+		 * still self-addressed to us on the echo port. Kept narrow so
+		 * it cannot become a general TTL bypass. */
+		if (iph->ttl != 255 &&
+		    !(udp->dest == bpf_htons(BFD_ECHO_PORT) &&
+		      iph->ttl == 254 && iph->saddr == iph->daddr)) {
+			count(3);
+			return XDP_DROP;
+		}
 		key_set_v4(&key.peer,  iph->saddr);
 		key_set_v4(&key.local, iph->daddr);
 	} else if (proto == bpf_htons(ETH_P_IPV6)) {
@@ -233,6 +275,71 @@ int bfd_observer(struct xdp_md *ctx)
 		key_set_v6(&key.local, &ip6->daddr);
 	} else {
 		return XDP_PASS;
+	}
+
+	/* Echo reflection (RFC 5880 s6.4): a self-addressed UDP/3785
+	 * packet from a neighbor whose forwarding plane is us. Return it
+	 * to the originator from the driver: swap MAC, decrement TTL
+	 * 255->254 (the originator's GTSM requires 254 inbound), leave
+	 * IP/UDP/BFD untouched (already addressed to the originator).
+	 * No session lookup, no map, no adjust_tail. */
+	if (udp->dest == bpf_htons(BFD_ECHO_PORT)) {
+		if (!iph)                 /* v4 only for now */
+			return XDP_PASS;
+		/* Our own echo coming back: still self-addressed, TTL knocked
+		 * down to 254 by the neighbour's forwarding plane. Consume it
+		 * here; it is ours, and the stack has no use for a martian. */
+		if (iph->ttl == 254 && iph->saddr == iph->daddr) {
+			struct bfdhdr *eb = (void *)(udp + 1);
+			if ((void *)(eb + 1) > data_end)
+				return XDP_PASS;
+			__u32 ed = bpf_ntohl(eb->my_disc);
+			struct session_key *ek =
+				bpf_map_lookup_elem(&echo_disc, &ed);
+			if (!ek)
+				return XDP_PASS;
+			struct session_state *es =
+				bpf_map_lookup_elem(&bfd_sessions, ek);
+			if (!es)
+				return XDP_PASS;
+			es->echo_last_seen_ns = bpf_ktime_get_ns();
+			es->echo_last_nonce   = bpf_ntohl(eb->min_echo_rx);
+			es->echo_rx_pkts++;
+			count(5);
+			return XDP_DROP;
+		}
+		if (iph->ttl != 255)      /* GTSM: single-hop echoes only */
+			return XDP_PASS;
+		/* A classic echo is self-addressed to the originator. */
+		if (iph->saddr != iph->daddr)
+			return XDP_PASS;
+		/* Reflect only for a peer of an echo-active session; otherwise
+		 * this is an arbitrary 3785 packet (amplification vector). */
+		struct bfd_addr esrc;
+		key_set_v4(&esrc, iph->saddr);
+		if (!bpf_map_lookup_elem(&echo_peers, &esrc))
+			return XDP_PASS;
+
+		/* L2 swap: return to the originating MAC. */
+		__u8 tmp[6];
+		__builtin_memcpy(tmp, eth->h_dest, 6);
+		__builtin_memcpy(eth->h_dest, eth->h_source, 6);
+		__builtin_memcpy(eth->h_source, tmp, 6);
+
+		/* Decrement TTL, full IP-checksum recompute (verbatim
+		 * from the control-bounce path; proven correct). */
+		iph->ttl--;
+		iph->check = 0;
+		__u32 csum = 0;
+		__u16 *w = (__u16 *)iph;
+		for (int i = 0; i < 10; i++)
+			csum += w[i];
+		csum = (csum & 0xffff) + (csum >> 16);
+		csum = (csum & 0xffff) + (csum >> 16);
+		iph->check = ~csum & 0xffff;
+
+		count(4);          /* echo-reflected */
+		return XDP_TX;
 	}
 
 	if (udp->dest != bpf_htons(BFD_PORT_1HOP))
@@ -319,10 +426,13 @@ int bfd_observer(struct xdp_md *ctx)
 
 	st->last_seen_ns = now;
 	st->rx_pkts++;
+	__builtin_memcpy(st->peer_mac, eth->h_source, 6);
+	st->mac_valid = 1;
 	st->remote_disc  = bpf_ntohl(bfd->my_disc);
 	st->local_disc   = bpf_ntohl(bfd->your_disc);
 	st->min_tx_us    = bpf_ntohl(bfd->min_tx);
 	st->min_rx_us    = bpf_ntohl(bfd->min_rx);
+	st->remote_min_echo_us = bpf_ntohl(bfd->min_echo_rx);
 	st->remote_state = BFD_STATE(bfd);
 	st->remote_diag  = BFD_DIAG(bfd);
 	st->detect_mult  = bfd->detect_mult;
@@ -380,7 +490,7 @@ int bfd_observer(struct xdp_md *ctx)
 		bfd->your_disc   = bpf_htonl(cfg->your_disc);
 		bfd->min_tx      = bpf_htonl(cfg->min_tx_us);
 		bfd->min_rx      = bpf_htonl(cfg->min_rx_us);
-		bfd->min_echo_rx = 0;
+		bfd->min_echo_rx = bpf_htonl(cfg->min_echo_rx_us);
 
 		/* Echo exactly a 24-byte control packet: a longer peer
 		 * frame (auth section, trailer) must not go back out with

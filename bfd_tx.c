@@ -996,9 +996,10 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	s->min_ttl     = sm->ttl ? sm->ttl : 255;
 	s->is_mhop     = !!(flags & SESSION_MULTIHOP);
 	ktx_update_mhop_flag();
-	/* echo policy: track peers of echo-active v4 sessions so the
-	 * reflector returns only their echoes, not arbitrary 3785 traffic. */
-	if (echo_peers_fd >= 0 && s->family == AF_INET) {
+	/* echo policy: track peers of echo-active sessions so the reflector
+	 * returns only their echoes, not arbitrary 3785 traffic. The map is
+	 * keyed on the shared 16-byte address, so both families share it. */
+	if (echo_peers_fd >= 0) {
 		if (flags & SESSION_ECHO) {
 			__u8 one = 1;
 			bpf_map_update_elem(echo_peers_fd, &s->peer, &one, 0);

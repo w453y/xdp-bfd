@@ -28,6 +28,7 @@ IFACE = "ens19"
 COUNT = 20
 SETTLE = 0.6
 
+MAC = None
 STAT = {0: "seen", 1: "accepted", 2: "malformed", 3: "rejected",
         4: "reflected", 5: "echo-returns"}
 
@@ -35,6 +36,16 @@ STAT = {0: "seen", 1: "accepted", 2: "malformed", 3: "rejected",
 def sh(cmd):
     return subprocess.run(cmd, shell=True, capture_output=True,
                           text=True).stdout
+
+
+def local_mac(iface):
+    with open("/sys/class/net/%s/address" % iface) as f:
+        return f.read().strip()
+
+
+def echo_peer_addrs():
+    """Peers of echo-active sessions, as the reflector sees them."""
+    return [addr_of(e["key"]["b"]) for e in bpf_map("echo_peers")]
 
 
 def bpf_map(name):
@@ -120,7 +131,8 @@ def build_cases(got):
                   "rejected", COUNT))
         c.append(("echo-unknown-peer", "echo from a peer we do not serve",
                   dict(family=4, src="10.66.0.250", dst="10.66.0.250",
-                       ttl=255, dport=3785, ydisc=0, state=1, l2dst=True),
+                       ttl=255, dport=3785, ydisc=0, state=1,
+                       l2dst=MAC),
                   "reflected", 0))
 
     if "v6" in got:
@@ -151,10 +163,20 @@ def build_cases(got):
                        ttl=s["min_ttl"] - 10, dport=4784, ydisc=0, state=1),
                   "rejected", COUNT))
 
+    for addr, fam in echo_peer_addrs():
+        c.append(("echo-reflect-v%d" % fam,
+                  "echo from a peer of an echo-active session is returned",
+                  dict(family=fam, src=addr, dst=addr, ttl=255,
+                       dport=3785, ydisc=0, state=1, l2dst=MAC),
+                  "reflected", COUNT))
+        break
+
     return c
 
 
 def orchestrate(args):
+    global MAC
+    MAC = local_mac(IFACE)
     sess = sessions()
     if not sess:
         sys.exit("no configured sessions; start the engine first")
@@ -225,6 +247,7 @@ def send(spec):
             0, 0, 0, 0,
         ])
 
+    eth = Ether(dst=spec["l2dst"]) if spec.get("l2dst") else Ether()
     payload = bfd(spec["ydisc"], spec["state"])
     l4 = UDP(sport=49152, dport=spec["dport"]) / Raw(payload)
 
@@ -238,7 +261,7 @@ def send(spec):
     else:
         ip = IPv6(src=spec["src"], dst=spec["dst"], hlim=spec["ttl"])
 
-    sendp(Ether() / ip / l4, iface=spec["iface"], count=spec["count"],
+    sendp(eth / ip / l4, iface=spec["iface"], count=spec["count"],
           inter=0.005, verbose=0)
     return 0
 

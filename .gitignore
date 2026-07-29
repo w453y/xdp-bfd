@@ -1,3 +1,4 @@
-*.o
 bfd_loader
 bfd_tx
+*.o
+__pycache__/

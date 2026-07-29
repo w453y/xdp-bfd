@@ -60,7 +60,7 @@ struct {
 	__type(value, struct tx_cfg);
 } tx_config SEC(".maps");
 
-/* echo_peers: peer address (v4-mapped) -> 1 for every session with echo
+/* echo_peers: peer address (v4 stored v4-mapped) -> 1 for every session
  * active. Populated by the userspace shim on SESSION_ECHO accept, cleared
  * on delete / echo-off. The reflector consults it so only echoes from a
  * peer of an echo-active session are returned (not arbitrary 3785 traffic). */
@@ -213,6 +213,52 @@ static __always_inline void csum_replace2(__u16 *check, __u16 old,
 	*check = (__u16)~csum;
 }
 
+/* Reflect a v6 echo.
+ *
+ * Simpler than the v4 path: v6 has no IP checksum, and the mandatory UDP
+ * checksum covers the pseudo-header and the payload, neither of which a
+ * self-addressed reflection changes. Only the MAC and the hop limit are
+ * touched, so nothing needs recomputing.
+ *
+ * The m8b originator is v4 only, so there is no v6 equivalent of the
+ * hop_limit-254 return demux: a v6 echo arriving here is always a
+ * neighbour's, never our own coming back.
+ */
+static __always_inline int echo_reflect_v6(struct ethhdr *eth,
+					   struct ipv6hdr *ip6)
+{
+	const __u32 *sa = (const __u32 *)&ip6->saddr;
+	const __u32 *da = (const __u32 *)&ip6->daddr;
+	struct bfd_addr esrc;
+	__u8 tmp[6];
+
+	/* GTSM: single-hop echoes only. */
+	if (ip6->hop_limit != 255)
+		return XDP_PASS;
+
+	/* A classic echo is self-addressed to the originator. */
+	if (sa[0] != da[0] || sa[1] != da[1] ||
+	    sa[2] != da[2] || sa[3] != da[3])
+		return XDP_PASS;
+
+	/* Reflect only for a peer of an echo-active session; otherwise this
+	 * is an arbitrary 3785 packet and returning it is an amplification
+	 * vector. */
+	key_set_v6(&esrc, &ip6->saddr);
+	if (!bpf_map_lookup_elem(&echo_peers, &esrc))
+		return XDP_PASS;
+
+	/* L2 swap: return to the originating MAC. */
+	__builtin_memcpy(tmp, eth->h_dest, 6);
+	__builtin_memcpy(eth->h_dest, eth->h_source, 6);
+	__builtin_memcpy(eth->h_source, tmp, 6);
+
+	ip6->hop_limit--;
+
+	count(4);          /* echo-reflected */
+	return XDP_TX;
+}
+
 SEC("xdp")
 int bfd_observer(struct xdp_md *ctx)
 {
@@ -311,7 +357,9 @@ int bfd_observer(struct xdp_md *ctx)
 	 * IP/UDP/BFD untouched (already addressed to the originator).
 	 * No session lookup, no map, no adjust_tail. */
 	if (udp->dest == bpf_htons(BFD_ECHO_PORT)) {
-		if (!iph)                 /* v4 only for now */
+		if (ip6)
+			return echo_reflect_v6(eth, ip6);
+		if (!iph)
 			return XDP_PASS;
 		/* Our own echo coming back: still self-addressed, TTL knocked
 		 * down to 254 by the neighbour's forwarding plane. Consume it

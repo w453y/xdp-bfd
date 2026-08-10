@@ -2,7 +2,7 @@
 /*
  * bfd_shared.h - kernel/userspace shared wire ABI.
  *
- * Included by bfd_xdp.c (BPF), bfd_tx.c and loader.c. The struct
+ * Included by src/xdp/ (BPF), src/engine/ and src/loader/. The struct
  * layouts here ARE the BPF map value formats: any change must be made
  * here and nowhere else, or the userspace mirrors silently misread the
  * maps.

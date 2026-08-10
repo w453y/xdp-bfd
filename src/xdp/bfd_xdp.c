@@ -13,7 +13,7 @@
 #include "bfd_shared.h"
 
 /* Split out of this file; maps.h must come first (see src/xdp). */
-#include "wire.h"
+#include "tunables.h"
 #include "maps.h"
 #include "stats.h"
 #include "parse.h"

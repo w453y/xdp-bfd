@@ -4,7 +4,7 @@
 #define BFD_XDP_VALIDATE_H
 
 #include "bfd_shared.h"
-#include "wire.h"
+#include "tunables.h"
 #include "stats.h"
 
 /* Control-packet validation (RFC 5880 s6.8.6 and the overread guard).

@@ -10,7 +10,7 @@
 #define BFD_XDP_TX_H
 
 #include "bfd_shared.h"
-#include "wire.h"
+#include "tunables.h"
 #include "csum.h"
 
 static __always_inline int rx_clocked_tx(struct xdp_md *ctx,

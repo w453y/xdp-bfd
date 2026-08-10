@@ -325,8 +325,7 @@ Notes:
 
 ## Repo layout
 
-- `bfd_xdp.c` — XDP program: parser, session map, sweep timer, RX-clocked TX
-- `src/xdp/` — XDP helpers split by concern: maps, stats, sweep timer, checksums, v6 echo reflector
+- `src/xdp/` — XDP program and its helpers: `bfd_xdp.c` the observer itself, plus `parse.h`, `validate.h`, `maps.h`, `stats.h`, `sweep.h`, `csum.h`, `echo.h`, `tx.h`, `tunables.h`
 - `src/engine/` — userspace FSM daemon (`--dplane`, `--kernel-tx <if>`, `--dp-hold` modes): `main.c` argv and the RX loop, `session.c` the session table, `dplane.c` the bfddp socket, `ktx.c` the kernel-TX mirror, `fsm.c` the RFC 5880 state machine, `echo_tx.c` the echo originator
 - `src/loader/` — standalone observer/loader (M2 tooling)
 - `include/bfd_shared.h` — shared kernel/userspace map ABI and constants

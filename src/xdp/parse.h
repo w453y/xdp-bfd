@@ -4,7 +4,7 @@
 #define BFD_XDP_PARSE_H
 
 #include "bfd_shared.h"
-#include "wire.h"
+#include "tunables.h"
 #include "maps.h"
 #include "stats.h"
 

@@ -16,7 +16,7 @@
 static __always_inline int rx_clocked_tx(struct xdp_md *ctx,
                 struct ethhdr *eth, struct iphdr *iph,
                 struct ipv6hdr *ip6, struct udphdr *udp,
-                struct bfdhdr *bfd, struct tx_cfg *cfg,
+                struct bfd_ctrl_pkt *bfd, struct tx_cfg *cfg,
                 struct session_state *st, void *data, void *data_end)
 {
         	__u8 send_final = (bfd->flags & BFD_F_POLL) ? BFD_F_FINAL : 0;

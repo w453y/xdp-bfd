@@ -21,7 +21,7 @@ static __always_inline int echo_reflect_v4(struct ethhdr *eth,
         	 * down to 254 by the neighbour's forwarding plane. Consume it
         	 * here; it is ours, and the stack has no use for a martian. */
         	if (iph->ttl == 254 && iph->saddr == iph->daddr) {
-        		struct bfdhdr *eb = (void *)(udp + 1);
+        		struct bfd_ctrl_pkt *eb = (void *)(udp + 1);
         		if ((void *)(eb + 1) > data_end)
         			return XDP_PASS;
         		__u32 ed = bpf_ntohl(eb->my_disc);

@@ -196,7 +196,7 @@ int main(int argc, char **argv)
 		dp_accept();
 		dp_read();
 
-		struct bfdpkt p;
+		struct bfd_ctrl_pkt p;
 		struct sockaddr_in from;
 		struct iovec iov = { .iov_base = &p, .iov_len = sizeof(p) };
 		char cbuf[CMSG_SPACE(sizeof(struct in_pktinfo))];
@@ -209,7 +209,7 @@ int main(int argc, char **argv)
 		uint64_t t = now_us();
 
 		if (n >= 24 && ((p.vers_diag >> 5) & 7) == 1 &&
-		    p.mult && p.my_disc) {
+		    p.detect_mult && p.my_disc) {
 			uint32_t dst_ip = 0;
 			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh); c;
 			     c = CMSG_NXTHDR(&mh, c))
@@ -232,7 +232,7 @@ int main(int argc, char **argv)
 		/* RFC 5883 multihop control packets, port 4784. Same demux as
 		 * single-hop: your_disc first, address pair as fallback. */
 		while (rxm_sock >= 0) {
-			struct bfdpkt pm;
+			struct bfd_ctrl_pkt pm;
 			struct sockaddr_in fromm;
 			struct iovec iovm = { .iov_base = &pm,
 					      .iov_len = sizeof(pm) };
@@ -248,7 +248,7 @@ int main(int argc, char **argv)
 			if (nm < 0)
 				break;
 			if (nm < 24 || ((pm.vers_diag >> 5) & 7) != 1 ||
-			    !pm.mult || !pm.my_disc)
+			    !pm.detect_mult || !pm.my_disc)
 				continue;
 		
 			uint32_t mdst = 0;
@@ -271,7 +271,7 @@ int main(int argc, char **argv)
 		}
 
 		for (;;) {
-			struct bfdpkt p6;
+			struct bfd_ctrl_pkt p6;
 			struct sockaddr_in6 from6;
 			struct iovec iov6 = { .iov_base = &p6,
 				.iov_len = sizeof(p6) };
@@ -287,7 +287,7 @@ int main(int argc, char **argv)
 			if (n6 < 0)
 				break;
 			if (n6 < 24 || ((p6.vers_diag >> 5) & 7) != 1 ||
-			    !p6.mult || !p6.my_disc)
+			    !p6.detect_mult || !p6.my_disc)
 				continue;
 			struct bfd_addr fp6 = {0}, fl6 = {0};
 			memcpy(fp6.b, &from6.sin6_addr, 16);
@@ -307,7 +307,7 @@ int main(int argc, char **argv)
 
 		/* v6 multihop control packets, port 4784. */
 		while (rxm6_sock >= 0) {
-			struct bfdpkt pm6;
+			struct bfd_ctrl_pkt pm6;
 			struct sockaddr_in6 fromm6;
 			struct iovec iovm6 = { .iov_base = &pm6,
 					       .iov_len = sizeof(pm6) };
@@ -324,7 +324,7 @@ int main(int argc, char **argv)
 			if (nm6 < 0)
 				break;
 			if (nm6 < 24 || ((pm6.vers_diag >> 5) & 7) != 1 ||
-			    !pm6.mult || !pm6.my_disc)
+			    !pm6.detect_mult || !pm6.my_disc)
 				continue;
 		
 			struct bfd_addr mp6 = {0}, ml6 = {0};

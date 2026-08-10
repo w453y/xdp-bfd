@@ -64,7 +64,7 @@ int bfd_observer(struct xdp_md *ctx)
 	    udp->dest != bpf_htons(BFD_PORT_MHOP))
 		return XDP_PASS;
 
-	struct bfdhdr *bfd = (void *)(udp + 1);
+	struct bfd_ctrl_pkt *bfd = (void *)(udp + 1);
 	if ((void *)(bfd + 1) > data_end) {
 		count(2);
 		return XDP_PASS;

@@ -105,7 +105,7 @@ void state_transition(struct session *s, int newstate, int diag,
 	dp_notify_state(s);
 }
 
-void fsm_rx(struct session *s, const struct bfdpkt *p, uint64_t t)
+void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 {
 	int ps = (p->flags >> 6) & 3;
 
@@ -122,8 +122,8 @@ void fsm_rx(struct session *s, const struct bfdpkt *p, uint64_t t)
 	s->r_state  = ps;
 	s->r_min_rx = ntohl(p->min_rx);
 	s->r_min_tx = ntohl(p->min_tx);
-	s->r_min_echo = ntohl(p->min_echo);
-	s->r_mult   = p->mult;
+	s->r_min_echo = ntohl(p->min_echo_rx);
+	s->r_mult   = p->detect_mult;
 	s->r_flags  = p->flags & 0x3f;
 
 	/* Poll-aware detect basis: decreases apply only once traffic
@@ -219,18 +219,18 @@ void fsm_tx(struct session *s, uint64_t t)
 	if (!due)
 		return;
 
-	struct bfdpkt o = {0};
+	struct bfd_ctrl_pkt o = {0};
 	o.vers_diag = (1 << 5) | (s->diag & 0x1f);
 	o.flags     = (s->state << 6) |
 		      (s->send_final ? F_F : (s->polling ? F_P : 0));
-	o.mult      = s->detect_mult;
+	o.detect_mult = s->detect_mult;
 	o.len       = 24;
 	o.my_disc   = htonl(s->wire_disc);
 	o.your_disc = htonl(s->rdisc);
 	o.min_tx    = htonl(s->state == ST_UP ? s->min_tx_us
 					      : (uint32_t)SLOW_TX_US);
 	o.min_rx    = htonl(s->min_rx_us);
-	o.min_echo  = htonl(s->min_echo_rx_us);
+	o.min_echo_rx = htonl(s->min_echo_rx_us);
 
 	int txfd = slot_sock((int)(s - sessions), s);
 	if (txfd < 0)

@@ -15,7 +15,7 @@
  * The bfd + 1 bounds check stays in the caller: the verifier must see it
  * before bfd is dereferenced here or after this returns.
  */
-static __always_inline int bfd_hdr_valid(const struct bfdhdr *bfd,
+static __always_inline int bfd_hdr_valid(const struct bfd_ctrl_pkt *bfd,
 					 const struct udphdr *udp)
 {
 	if (BFD_VERS(bfd) != BFD_VERSION || bfd->len < BFD_MIN_LEN ||

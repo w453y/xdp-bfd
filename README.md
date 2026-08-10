@@ -46,7 +46,7 @@ Four cooperating pieces, one interface:
    `XDP_TX`. Our transmit clock is the peer's transmit clock, executed
    in softirq (~30µs turnaround). No userspace wakeup in the
    per-packet path.
-4. **Userspace FSM** (`bfd_tx.c`) — session bring-up, RFC 5880 state
+4. **Userspace FSM** (`src/engine/`) — session bring-up, RFC 5880 state
    machine, Down-state slow-rate TX (1s), and the single transition
    packet on entering Up. Silent in steady state.
 
@@ -326,8 +326,9 @@ Notes:
 ## Repo layout
 
 - `bfd_xdp.c` — XDP program: parser, session map, sweep timer, RX-clocked TX
-- `bfd_tx.c` — userspace FSM daemon (`--dplane`, `--kernel-tx <if>`, `--dp-hold` modes)
-- `loader.c` — standalone observer/loader (M2 tooling)
+- `src/xdp/` — XDP helpers split by concern: maps, stats, sweep timer, checksums, v6 echo reflector
+- `src/engine/` — userspace FSM daemon (`--dplane`, `--kernel-tx <if>`, `--dp-hold` modes): `main.c` argv and the RX loop, `session.c` the session table, `dplane.c` the bfddp socket, `ktx.c` the kernel-TX mirror, `fsm.c` the RFC 5880 state machine, `echo_tx.c` the echo originator
+- `src/loader/` — standalone observer/loader (M2 tooling)
 - `include/bfd_shared.h` — shared kernel/userspace map ABI and constants
 - `docs/baseline/` — FRR bfdd stress characterization (pcaps + gap data)
 - `docs/m3-bakeoff/` — five-way TX architecture comparison evidence
@@ -367,6 +368,6 @@ academically.
 ## License
 
 GPL-2.0 (see LICENSE). The bfddp wire-protocol struct definitions in
-bfd_tx.c are adapted from FRR's bfdd/bfddp_packet.h, MIT licensed,
+src/engine/bffdp.h are adapted from FRR's bfdd/bfddp_packet.h, MIT licensed,
 Copyright (C) 2020 NetDEF, Rafael F. Zalamena.
 

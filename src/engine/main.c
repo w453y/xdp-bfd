@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * bfd_tx.c - userspace BFD endpoint (RFC 5880/5881 subset).
+ * main.c - userspace BFD endpoint (RFC 5880/5881 subset).
  *
  * M4b: FRR distributed-BFD dataplane integration. We listen on a unix
  * socket; bfdd (started with --dplaneaddr unixc:<path>) connects and

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* sweep.h - detection sweep timer.
  *
- * Split out of bfd_xdp.c. Include order matters: maps.h must precede
- * any header whose helpers reference a map by symbol.
+ * Split out of bfd_xdp.c; included after maps.h.
  */
 #ifndef BFD_XDP_SWEEP_H
 #define BFD_XDP_SWEEP_H

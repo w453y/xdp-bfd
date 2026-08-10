@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 /* maps.h - BPF map definitions.
  *
- * Split out of bfd_xdp.c. Include order matters: maps.h must precede
- * any header whose helpers reference a map by symbol.
+ * Must be included before any other src/xdp header whose helpers
+ * reference a map by symbol.
  */
 #ifndef BFD_XDP_MAPS_H
 #define BFD_XDP_MAPS_H

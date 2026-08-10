@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* loader.c v2 - attach, dump sessions each second, log liveness events. */
+/* bfd_loader.c - attach, dump sessions each second, log liveness events. */
 
 #include <stdio.h>
 #include <stdlib.h>

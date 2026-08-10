@@ -222,7 +222,7 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	if (!fresh && !s->admin_down && s->state == ST_ADMINDOWN) {
 		/* SHUTDOWN flag cleared on an existing session: leave
 		 * AdminDown and restart the FSM. Entry into AdminDown is
-		 * in fsm_tick; without this, the exit never happens. */
+		 * in fsm_tx; without this, the exit never happens. */
 		state_transition(s, ST_DOWN, 0, now_us(),
 				 "admin shutdown cleared");
 		s->next_tx_us = now_us();

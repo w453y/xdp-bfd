@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* csum.h - checksum helpers.
  *
- * Split out of bfd_xdp.c. Include order matters: maps.h must precede
- * any header whose helpers reference a map by symbol.
+ * Split out of bfd_xdp.c; included after maps.h.
  */
 #ifndef BFD_XDP_CSUM_H
 #define BFD_XDP_CSUM_H

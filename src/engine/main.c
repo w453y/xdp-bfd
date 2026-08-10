@@ -205,6 +205,13 @@ int main(int argc, char **argv)
 			.msg_iov = &iov, .msg_iovlen = 1,
 			.msg_control = cbuf, .msg_controllen = sizeof(cbuf),
 		};
+		/* This recvmsg is the loop's clock: it blocks with the 2ms
+		 * SO_RCVTIMEO set above, which is what keeps main from spinning
+		 * and what sets how often the per-session tick below runs. The
+		 * three drains that follow are MSG_DONTWAIT on purpose. The
+		 * asymmetry is deliberate - collapsing the four into one helper
+		 * means choosing one blocking discipline for all of them, which
+		 * changes transmit and detect pacing. */
 		ssize_t n = recvmsg(rx_sock, &mh, 0);
 		uint64_t t = now_us();
 

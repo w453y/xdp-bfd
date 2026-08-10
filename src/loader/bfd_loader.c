@@ -15,7 +15,6 @@
 
 #include "bfd_shared.h"
 
-static const char *state_str[] = { "AdminDown", "Down", "Init", "Up" };
 static volatile sig_atomic_t stop;
 static void on_int(int sig) { (void)sig; stop = 1; }
 static FILE *evlog;
@@ -147,8 +146,7 @@ int main(int argc, char **argv)
 				double age = (now - st.last_seen_ns) / 1e6;
 				printf("%s state=%s alive=%u pkts=%llu age=%.1fms\n",
 				       peer,
-				       st.remote_state <= 3 ?
-					   state_str[st.remote_state] : "?",
+				       bfd_state_str(st.remote_state),
 				       st.alive,
 				       (unsigned long long)st.rx_pkts, age);
 				if (log) {

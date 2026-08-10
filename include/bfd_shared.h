@@ -2,7 +2,7 @@
 /*
  * bfd_shared.h - kernel/userspace shared wire ABI.
  *
- * Included by bfd_xdp.c (BPF), bfd_tx.c and loader.c. The struct
+ * Included by src/xdp/ (BPF), src/engine/ and src/loader/. The struct
  * layouts here ARE the BPF map value formats: any change must be made
  * here and nowhere else, or the userspace mirrors silently misread the
  * maps.
@@ -29,6 +29,43 @@
 /* Control packet flag bits (RFC 5880 s4.1) */
 #define BFD_F_POLL  0x20
 #define BFD_F_FINAL 0x10
+
+/* Session state (RFC 5880 s6.8.1). The ordering IS the wire encoding:
+ * the XDP parser stores BFD_STATE(bfd) straight into
+ * session_state.remote_state and userspace compares that against these
+ * names, so the two agree only as long as this order is the wire order. */
+enum bfd_state { ST_ADMINDOWN, ST_DOWN, ST_INIT, ST_UP };
+
+static inline const char *bfd_state_str(int st)
+{
+        switch (st) {
+        case ST_ADMINDOWN: return "AdminDown";
+        case ST_DOWN:      return "Down";
+        case ST_INIT:      return "Init";
+        case ST_UP:        return "Up";
+        default:           return "?";
+        }
+}
+
+/* Control packet, the 24-byte mandatory section (RFC 5880 s4.1).
+ * One definition for both halves: the XDP parser and the userspace
+ * FSM read and write these same bytes, and two descriptions of one
+ * wire format is how they drift. */
+struct bfd_ctrl_pkt {
+	__u8   vers_diag;
+	__u8   flags;
+	__u8   detect_mult;
+	__u8   len;
+	__be32 my_disc;
+	__be32 your_disc;
+	__be32 min_tx;
+	__be32 min_rx;
+	__be32 min_echo_rx;
+} __attribute__((packed));
+
+#define BFD_VERS(h)   (((h)->vers_diag >> 5) & 0x7)
+#define BFD_DIAG(h)   ((h)->vers_diag & 0x1f)
+#define BFD_STATE(h)  (((h)->flags >> 6) & 0x3)
 
 struct bfd_addr {
 	__u8 b[16];

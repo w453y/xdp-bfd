@@ -3,13 +3,13 @@
 
 bfd_xdp.c sets st->final_seq = cfg->poll_seq when a packet with F arrives
 during a poll. That cannot be driven from the injector: cfg->poll is only
-mirrored for a session in ST_UP (bfd_tx.c:435), so the phantom never polls,
+mirrored for a session in ST_UP (ktx_mirror, src/engine/ktx.c), so the phantom never polls,
 and on a live session the real peer answers within a few milliseconds, so
 an injected F could never be attributed.
 
 So observe a real one instead. Raising transmit-interval makes bfd_tx bump
-poll_seq and set polling (bfd_tx.c:1015), the peer answers with F, the
-kernel records final_seq, and bfd_tx ends the poll on the match at :508.
+poll_seq and set polling (dp_handle_add, src/engine/dplane.c), the peer answers with F, the
+kernel records final_seq, and bfd_tx ends the poll on the match in ktx_poll_map.
 Every step is readable from the maps.
 
 Run it separately: it changes session config, which the matrix must not

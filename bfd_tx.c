@@ -39,6 +39,10 @@
 #include "bfd_shared.h"
 #include "util.h"
 #include "session.h"
+#include "dplane.h"
+#include "ktx.h"
+#include "fsm.h"
+#include "echo_tx.h"
 #include <sys/ioctl.h>
 #include <linux/if_packet.h>
 #include <linux/if_ether.h>
@@ -59,7 +63,7 @@ struct bfdpkt {
 
 
 /* ---------- globals ---------- */
-static int rx_sock = -1, tx_sock = -1, rx6_sock = -1, tx6_sock = -1;
+int rx_sock = -1, tx_sock = -1, rx6_sock = -1, tx6_sock = -1;
 static int rxm_sock = -1;   /* v4 multihop RX, port 4784 */
 static int rxm6_sock = -1;  /* v6 multihop RX, port 4784 */
 
@@ -113,26 +117,26 @@ static int slot_sock(int slot, const struct session *s)
 	slot_tx[slot] = fd + 1;
 	return fd;
 }
-static int use_ktx = 0;
-static int cfg_fd = -1, sess_fd = -1, echo_peers_fd = -1;
-static int echo_sock = -1, echo_ifindex = 0;
-static int echo_disc_fd = -1;
+int use_ktx = 0;
+int cfg_fd = -1, sess_fd = -1, echo_peers_fd = -1;
+int echo_sock = -1, echo_ifindex = 0;
+int echo_disc_fd = -1;
 static int flags_fd = -1;
-static uint8_t echo_src_mac[6];
+uint8_t echo_src_mac[6];
 static uint32_t echo_nonce_ctr;
 static struct bpf_object *bpf_obj;
 
 static int dp_listen = -1, dp_conn = -1;
 static uint8_t dp_buf[4096];
 static size_t dp_have;
-static uint64_t dp_hold_us;              /* --dp-hold: keep sessions
+uint64_t dp_hold_us;              /* --dp-hold: keep sessions
                                           * across bfdd restarts */
-static uint64_t dp_reconcile_us;         /* sweep deadline after reconnect */
+uint64_t dp_reconcile_us;         /* sweep deadline after reconnect */
 #define DP_RECONCILE_US (10ull * 1000000)
 
 
 /* ---------- BPF plumbing ---------- */
-static int ktx_attach(const char *ifname)
+int ktx_attach(const char *ifname)
 {
 	int ifindex = if_nametoindex(ifname);
 	if (!ifindex) { perror("ifname"); return -1; }
@@ -182,7 +186,7 @@ static int ktx_attach(const char *ifname)
  * session exists, so it must defer the TTL verdict instead of dropping
  * everything below 255 outright. Clearing it again restores the cheap
  * early filter for single-hop-only deployments. */
-static void ktx_update_mhop_flag(void)
+void ktx_update_mhop_flag(void)
 {
 	if (flags_fd < 0)
 		return;
@@ -202,7 +206,7 @@ static void ktx_update_mhop_flag(void)
 		bpf_map_update_elem(flags_fd, &zero, &want, 0);
 }
 
-static void ktx_mirror(struct session *s)
+void ktx_mirror(struct session *s)
 {
 	if (!use_ktx)
 		return;
@@ -232,7 +236,7 @@ static void ktx_mirror(struct session *s)
 	s->pushed_valid = 1;
 }
 
-static void ktx_clear(struct session *s)
+void ktx_clear(struct session *s)
 {
 	if (!use_ktx)
 		return;
@@ -249,11 +253,11 @@ static void ktx_clear(struct session *s)
 	ktx_update_mhop_flag();
 }
 
-static void dp_notify_state(struct session *s);
-static void state_transition(struct session *s, int newstate, int diag,
+void dp_notify_state(struct session *s);
+void state_transition(struct session *s, int newstate, int diag,
 			     uint64_t t, const char *why);
 
-static void ktx_poll_map(struct session *s, uint64_t t)
+void ktx_poll_map(struct session *s, uint64_t t)
 {
 	if (!use_ktx || s->state != ST_UP)
 		return;
@@ -314,7 +318,7 @@ static void ktx_poll_map(struct session *s, uint64_t t)
 }
 
 /* ---------- dplane socket: outbound ---------- */
-static void ktx_clear(struct session *s);
+void ktx_clear(struct session *s);
 
 static void dp_sessions_teardown(const char *why)
 {
@@ -329,7 +333,7 @@ static void dp_sessions_teardown(const char *why)
 		printf("dplane: %s - tore down %d session(s)\n", why, n);
 }
 
-static void sess_teardown_one(struct session *s, const char *why)
+void sess_teardown_one(struct session *s, const char *why)
 {
 	printf("dplane: lid=%u %s - torn down\n", s->lid, why);
 	ktx_clear(s);
@@ -372,7 +376,7 @@ static void dp_send(const void *msg, size_t len)
 	}
 }
 
-static void dp_notify_state(struct session *s)
+void dp_notify_state(struct session *s)
 {
 	struct {
 		struct bfddp_message_header h;
@@ -396,7 +400,7 @@ static void dp_notify_state(struct session *s)
 }
 
 /* ---------- FSM ---------- */
-static void state_transition(struct session *s, int newstate, int diag,
+void state_transition(struct session *s, int newstate, int diag,
 			     uint64_t t, const char *why)
 {
 	if (s->state == newstate)
@@ -416,7 +420,7 @@ static void state_transition(struct session *s, int newstate, int diag,
 	dp_notify_state(s);
 }
 
-static void fsm_rx(struct session *s, const struct bfdpkt *p, uint64_t t)
+void fsm_rx(struct session *s, const struct bfdpkt *p, uint64_t t)
 {
 	int ps = (p->flags >> 6) & 3;
 
@@ -482,7 +486,7 @@ static void fsm_rx(struct session *s, const struct bfdpkt *p, uint64_t t)
 	}
 }
 
-static void fsm_detect(struct session *s, uint64_t t)
+void fsm_detect(struct session *s, uint64_t t)
 {
 	if (s->state == ST_DOWN || s->state == ST_ADMINDOWN || !s->last_rx_us)
 		return;
@@ -516,7 +520,7 @@ static uint16_t ip_csum(const void *data, size_t len)
  * payload word carries a nonce; the return is matched on it for RTT.
  * Detection keys off the outstanding nonce, so if this stalls there is
  * simply no echo outstanding and no timeout can fire. */
-static void echo_tx_maybe(struct session *s, uint64_t t)
+void echo_tx_maybe(struct session *s, uint64_t t)
 {
 	if (echo_sock < 0 || !s->echo_tx_us || s->state != ST_UP)
 		return;
@@ -637,7 +641,7 @@ static void echo_tx_maybe(struct session *s, uint64_t t)
 }
 
 
-static void fsm_tx(struct session *s, uint64_t t)
+void fsm_tx(struct session *s, uint64_t t)
 {
 	if (s->admin_down && s->state != ST_ADMINDOWN)
 		state_transition(s, ST_ADMINDOWN, 7, t, "admin shutdown");
@@ -939,7 +943,7 @@ static void dp_process(const uint8_t *buf, size_t len)
 	}
 }
 
-static void dp_read(void)
+void dp_read(void)
 {
 	if (dp_conn < 0)
 		return;
@@ -988,7 +992,7 @@ static void dp_read(void)
 	}
 }
 
-static void dp_accept(void)
+void dp_accept(void)
 {
 	if (dp_listen < 0)
 		return;
@@ -1013,7 +1017,7 @@ static void dp_accept(void)
 		}
 }
 
-static int dp_listen_init(const char *arg)
+int dp_listen_init(const char *arg)
 {
 	/* "<path>" = unix socket; "<port number>" = TCP on 127.0.0.1.
 	 * Note: FRR <=10.5 bfdd unixc: client mode passes an oversized

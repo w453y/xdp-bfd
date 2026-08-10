@@ -29,7 +29,8 @@
 #include "echo_tx.h"
 
 int use_ktx = 0;
-int cfg_fd = -1, sess_fd = -1, echo_peers_fd = -1;
+static int cfg_fd = -1;
+int sess_fd = -1, echo_peers_fd = -1;
 int echo_disc_fd = -1;
 static int flags_fd = -1;
 static struct bpf_object *bpf_obj;

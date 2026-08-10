@@ -49,6 +49,9 @@ static int slot_sock(int slot, const struct session *s)
 	int fd, rc;
 	if (s->family == AF_INET6) {
 		fd = socket(AF_INET6, SOCK_DGRAM, 0);
+		if (fd < 0)
+			return -1;   /* fd exhaustion: fall back for now,
+				      * slot stays 0 so a later call retries */
 		int hops = 255, on = 1;
 		setsockopt(fd, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &hops, sizeof(hops));
 		setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &on, sizeof(on));
@@ -58,6 +61,9 @@ static int slot_sock(int slot, const struct session *s)
 		rc = bind(fd, (void *)&sa6, sizeof(sa6));
 	} else {
 		fd = socket(AF_INET, SOCK_DGRAM, 0);
+		if (fd < 0)
+			return -1;   /* fd exhaustion: fall back for now,
+				      * slot stays 0 so a later call retries */
 		int ttl = 255;
 		setsockopt(fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
 		struct sockaddr_in sa = { .sin_family = AF_INET,

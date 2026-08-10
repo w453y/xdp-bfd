@@ -54,7 +54,7 @@
 
 
 /* ---------- globals ---------- */
-int rx_sock = -1, rx6_sock = -1;
+static int rx_sock = -1, rx6_sock = -1;
 static int rxm_sock = -1;   /* v4 multihop RX, port 4784 */
 static int rxm6_sock = -1;  /* v6 multihop RX, port 4784 */
 

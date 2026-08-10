@@ -162,6 +162,7 @@ int main(int argc, char **argv)
 	if (ktx_if) {
 		if (ktx_attach(ktx_if))
 			return 1;
+		echo_tx_init(ktx_if);
 		use_ktx = 1;
 	}
 	if (dplane_path && dp_listen_init(dplane_path))

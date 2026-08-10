@@ -24,6 +24,8 @@
 #include "bfd_shared.h"
 #include "util.h"
 #include "session.h"
+#include <net/if.h>
+#include <sys/ioctl.h>
 #include "echo_tx.h"
 #include "ktx.h"
 
@@ -40,6 +42,29 @@ static uint16_t ip_csum(const void *data, size_t len)
 	if (len) sum += *(const uint8_t *)w;
 	while (sum >> 16) sum = (sum & 0xffff) + (sum >> 16);
 	return (uint16_t)~sum;
+}
+
+void echo_tx_init(const char *ifname)
+{
+        	/* Echo TX needs a raw L2 socket: a self-addressed UDP packet sent
+        	 * through a normal socket is routed to loopback and never reaches
+        	 * the wire. */
+        	echo_ifindex = if_nametoindex(ifname);
+        	struct ifreq ifr;
+        	memset(&ifr, 0, sizeof(ifr));
+        	strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+        	int mfd = socket(AF_INET, SOCK_DGRAM, 0);
+        	if (mfd >= 0) {
+        		if (!ioctl(mfd, SIOCGIFHWADDR, &ifr))
+        			memcpy(echo_src_mac, ifr.ifr_hwaddr.sa_data, 6);
+        		close(mfd);
+        	}
+        	echo_sock = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+        	if (echo_sock < 0)
+        		perror("echo raw socket");
+        	printf("echo-tx: ifindex %d src-mac %02x:%02x:%02x:%02x:%02x:%02x sock %d\n",
+        	       echo_ifindex, echo_src_mac[0], echo_src_mac[1], echo_src_mac[2],
+        	       echo_src_mac[3], echo_src_mac[4], echo_src_mac[5], echo_sock);
 }
 
 /* Self-addressed UDP/3785 to the neighbour's MAC, TTL 255. The trailing

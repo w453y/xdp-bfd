@@ -59,25 +59,6 @@ int ktx_attach(const char *ifname)
 	flags_fd = bpf_object__find_map_fd_by_name(bpf_obj, "prog_flags");
 	printf("kernel-tx: XDP attached to %s\n", ifname);
 
-	/* Echo TX needs a raw L2 socket: a self-addressed UDP packet sent
-	 * through a normal socket is routed to loopback and never reaches
-	 * the wire. */
-	echo_ifindex = ifindex;
-	struct ifreq ifr;
-	memset(&ifr, 0, sizeof(ifr));
-	strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
-	int mfd = socket(AF_INET, SOCK_DGRAM, 0);
-	if (mfd >= 0) {
-		if (!ioctl(mfd, SIOCGIFHWADDR, &ifr))
-			memcpy(echo_src_mac, ifr.ifr_hwaddr.sa_data, 6);
-		close(mfd);
-	}
-	echo_sock = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
-	if (echo_sock < 0)
-		perror("echo raw socket");
-	printf("echo-tx: ifindex %d src-mac %02x:%02x:%02x:%02x:%02x:%02x sock %d\n",
-	       echo_ifindex, echo_src_mac[0], echo_src_mac[1], echo_src_mac[2],
-	       echo_src_mac[3], echo_src_mac[4], echo_src_mac[5], echo_sock);
 	return 0;
 }
 

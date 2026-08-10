@@ -220,16 +220,16 @@ void fsm_tx(struct session *s, uint64_t t)
 		return;
 
 	struct bfd_ctrl_pkt o = {0};
-	o.vers_diag = (1 << 5) | (s->diag & 0x1f);
-	o.flags     = (s->state << 6) |
+	o.vers_diag   = (1 << 5) | (s->diag & 0x1f);
+	o.flags       = (s->state << 6) |
 		      (s->send_final ? F_F : (s->polling ? F_P : 0));
 	o.detect_mult = s->detect_mult;
-	o.len       = 24;
-	o.my_disc   = htonl(s->wire_disc);
-	o.your_disc = htonl(s->rdisc);
-	o.min_tx    = htonl(s->state == ST_UP ? s->min_tx_us
+	o.len         = 24;
+	o.my_disc     = htonl(s->wire_disc);
+	o.your_disc   = htonl(s->rdisc);
+	o.min_tx      = htonl(s->state == ST_UP ? s->min_tx_us
 					      : (uint32_t)SLOW_TX_US);
-	o.min_rx    = htonl(s->min_rx_us);
+	o.min_rx      = htonl(s->min_rx_us);
 	o.min_echo_rx = htonl(s->min_echo_rx_us);
 
 	int txfd = slot_sock((int)(s - sessions), s);

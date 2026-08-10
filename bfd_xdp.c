@@ -40,10 +40,13 @@ struct {
 	__type(value, struct session_state);
 } bfd_sessions SEC(".maps");
 
-/* stats: 0=pkts 1=bfd 2=malformed 3=rejects 4=echo-reflected */
+/* stats: 0=pkts 1=bfd 2=malformed 3=rejects 4=echo-reflected
+ *        5=echo-returns 6=echo-declined 7=echo-not-self 8=echo-ttl
+ * 7 is not an error counter: FRR sources its own v6 echoes at the
+ * peer rather than self-addressed, so it climbs in normal use. */
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 6);
+	__uint(max_entries, 9);
 	__type(key, __u32);
 	__type(value, __u64);
 } bfd_stats SEC(".maps");
@@ -233,20 +236,26 @@ static __always_inline int echo_reflect_v6(struct ethhdr *eth,
 	__u8 tmp[6];
 
 	/* GTSM: single-hop echoes only. */
-	if (ip6->hop_limit != 255)
+	if (ip6->hop_limit != 255) {
+		count(8);          /* echo-ttl */
 		return XDP_PASS;
+	}
 
 	/* A classic echo is self-addressed to the originator. */
 	if (sa[0] != da[0] || sa[1] != da[1] ||
-	    sa[2] != da[2] || sa[3] != da[3])
+	    sa[2] != da[2] || sa[3] != da[3]) {
+		count(7);          /* echo-not-self */
 		return XDP_PASS;
+	}
 
 	/* Reflect only for a peer of an echo-active session; otherwise this
 	 * is an arbitrary 3785 packet and returning it is an amplification
 	 * vector. */
 	key_set_v6(&esrc, &ip6->saddr);
-	if (!bpf_map_lookup_elem(&echo_peers, &esrc))
+	if (!bpf_map_lookup_elem(&echo_peers, &esrc)) {
+		count(6);          /* echo-declined */
 		return XDP_PASS;
+	}
 
 	/* L2 swap: return to the originating MAC. */
 	__builtin_memcpy(tmp, eth->h_dest, 6);
@@ -383,17 +392,24 @@ int bfd_observer(struct xdp_md *ctx)
 			count(5);
 			return XDP_DROP;
 		}
-		if (iph->ttl != 255)      /* GTSM: single-hop echoes only */
+		/* GTSM: single-hop echoes only. */
+		if (iph->ttl != 255) {
+			count(8);          /* echo-ttl */
 			return XDP_PASS;
+		}
 		/* A classic echo is self-addressed to the originator. */
-		if (iph->saddr != iph->daddr)
+		if (iph->saddr != iph->daddr) {
+			count(7);          /* echo-not-self */
 			return XDP_PASS;
+		}
 		/* Reflect only for a peer of an echo-active session; otherwise
 		 * this is an arbitrary 3785 packet (amplification vector). */
 		struct bfd_addr esrc;
 		key_set_v4(&esrc, iph->saddr);
-		if (!bpf_map_lookup_elem(&echo_peers, &esrc))
+		if (!bpf_map_lookup_elem(&echo_peers, &esrc)) {
+			count(6);          /* echo-declined */
 			return XDP_PASS;
+		}
 
 		/* L2 swap: return to the originating MAC. */
 		__u8 tmp[6];

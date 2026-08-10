@@ -3,7 +3,7 @@ CC        ?= gcc
 CFLAGS    := -O2 -g -Wall -Iinclude -Isrc/engine
 BPFFLAGS  := -O2 -g -Wall -target bpf -Iinclude -Isrc/xdp -I/usr/include/x86_64-linux-gnu
 
-ENGINE_OBJS := bfd_tx.o
+ENGINE_OBJS := bfd_tx.o src/engine/session.o
 
 all: bfd_xdp.o bfd_loader bfd_tx
 

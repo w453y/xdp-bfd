@@ -1,6 +1,6 @@
 CLANG     ?= clang
 CC        ?= gcc
-CFLAGS    := -O2 -g -Wall -Iinclude
+CFLAGS    := -O2 -g -Wall -Iinclude -Isrc/engine
 BPFFLAGS  := -O2 -g -Wall -target bpf -Iinclude -Isrc/xdp -I/usr/include/x86_64-linux-gnu
 
 ENGINE_OBJS := bfd_tx.o
@@ -16,7 +16,7 @@ bfd_loader: src/loader/bfd_loader.c include/bfd_shared.h
 bfd_tx: $(ENGINE_OBJS)
 	$(CC) $(CFLAGS) $^ -o $@ -lbpf
 
-%.o: %.c include/bfd_shared.h
+%.o: %.c include/bfd_shared.h $(wildcard src/engine/*.h)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:

@@ -17,6 +17,7 @@
 #include "maps.h"
 #include "stats.h"
 #include "parse.h"
+#include "validate.h"
 #include "sweep.h"
 #include "csum.h"
 #include "echo.h"
@@ -68,17 +69,8 @@ int bfd_observer(struct xdp_md *ctx)
 		count(2);
 		return XDP_PASS;
 	}
-	if (BFD_VERS(bfd) != BFD_VERSION || bfd->len < BFD_MIN_LEN ||
-	    bfd->detect_mult == 0 || bfd->my_disc == 0) {
-		count(2);
+	if (!bfd_hdr_valid(bfd, udp))
 		return XDP_PASS;
-	}
-	__u16 udp_len = bpf_ntohs(udp->len);
-	if (udp_len < sizeof(*udp) + BFD_MIN_LEN ||
-	    bfd->len > udp_len - sizeof(*udp)) {
-		count(2);
-		return XDP_PASS;
-	}
 
 	count(1);
 

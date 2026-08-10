@@ -16,6 +16,7 @@
 #include "wire.h"
 #include "maps.h"
 #include "stats.h"
+#include "parse.h"
 #include "sweep.h"
 #include "csum.h"
 #include "echo.h"
@@ -32,85 +33,15 @@ int bfd_observer(struct xdp_md *ctx)
 	struct ethhdr *eth = data;
 	if ((void *)(eth + 1) > data_end)
 		return XDP_PASS;
-	__u16 proto = eth->h_proto;
 
-	struct udphdr *udp;
-	struct iphdr *iph = NULL;
-	struct ipv6hdr *ip6 = NULL;
-	struct session_key key = {};
 
-	if (proto == bpf_htons(ETH_P_IP)) {
-		iph = (void *)(eth + 1);
-		if ((void *)(iph + 1) > data_end)
-			return XDP_PASS;
-		if (iph->protocol != IPPROTO_UDP)
-			return XDP_PASS;
-		/* IP options (ihl != 5) on a UDP packet: a single-hop BFD
-		 * control packet never carries them. Passing would skip the
-		 * GTSM/your_disc checks below (UDP header sits at a variable
-		 * offset with options) and leak the packet to the userspace
-		 * socket unvalidated - the same bypass class as an XDP_PASS
-		 * reject. Drop it. */
-		if (iph->ihl != 5) {
-			count(3);
-			return XDP_DROP;
-		}
-		udp = (void *)(iph + 1);
-		if ((void *)(udp + 1) > data_end)
-			return XDP_PASS;
-		/* GTSM (RFC 5881 s5): single-hop control packets MUST arrive
-		 * with TTL 255. Anything else is off-link or spoofed. The one
-		 * exception is our own echo coming back: the neighbour's
-		 * forwarding plane decremented it to 254, and the frame is
-		 * still self-addressed to us on the echo port. Kept narrow so
-		 * it cannot become a general TTL bypass. */
-		if (iph->ttl != 255 &&
-		    !(udp->dest == bpf_htons(BFD_ECHO_PORT) &&
-		      iph->ttl == 254 && iph->saddr == iph->daddr)) {
-			/* Not single-hop and not our own echo returning. If no
-			 * multihop session exists on this box the packet is
-			 * off-link or spoofed, so drop it here as before - that
-			 * keeps the cheap early filter for the common case. With
-			 * multihop configured the verdict needs the session's own
-			 * minimum, which is only known after the config lookup. */
-			__u32 mz = 0;
-			__u32 *mf = bpf_map_lookup_elem(&prog_flags, &mz);
-			if (!mf || !(*mf & 2)) {
-				count(3);
-				return XDP_DROP;
-			}
-		}
-		key_set_v4(&key.peer,  iph->saddr);
-		key_set_v4(&key.local, iph->daddr);
-	} else if (proto == bpf_htons(ETH_P_IPV6)) {
-		ip6 = (void *)(eth + 1);
-		if ((void *)(ip6 + 1) > data_end)
-			return XDP_PASS;
-		/* Non-UDP first header: ICMPv6 (ND/MLD/RA), or UDP hidden
-		 * behind extension headers we deliberately don't walk. PASS to
-		 * the stack either way - this mirrors the v4 non-UDP PASS.
-		 * DROPping here kills v6 neighbour discovery. A UDP-behind-
-		 * extheaders packet to the BFD port is left to userspace GTSM
-		 * (IPV6_MINHOPCOUNT) and demux; single-hop BFD never sends one. */
-		if (ip6->nexthdr != IPPROTO_UDP)
-			return XDP_PASS;
-		/* GTSM: hop_limit is the v6 TTL. */
-		if (ip6->hop_limit != 255) {
-			__u32 mz = 0;
-			__u32 *mf = bpf_map_lookup_elem(&prog_flags, &mz);
-			if (!mf || !(*mf & 2)) {
-				count(3);
-				return XDP_DROP;
-			}
-		}
-		udp = (void *)(ip6 + 1);
-		if ((void *)(udp + 1) > data_end)
-			return XDP_PASS;
-		key_set_v6(&key.peer,  &ip6->saddr);
-		key_set_v6(&key.local, &ip6->daddr);
-	} else {
-		return XDP_PASS;
-	}
+	struct l3ctx c = {};
+	int pv = parse_l3(eth, data_end, &c);
+	if (pv >= 0)
+		return pv;
+	struct iphdr *iph = c.iph;
+	struct ipv6hdr *ip6 = c.ip6;
+	struct udphdr *udp = c.udp;
 
 	/* Echo reflection (RFC 5880 s6.4): a self-addressed UDP/3785
 	 * packet from a neighbor whose forwarding plane is us. Return it
@@ -154,7 +85,7 @@ int bfd_observer(struct xdp_md *ctx)
 	/* Only track sessions the control plane configured, unless the
 	 * standalone loader asked for promiscuous observation. Stops
 	 * unsolicited packets from filling the session map. */
-	struct tx_cfg *cfg = bpf_map_lookup_elem(&tx_config, &key);
+	struct tx_cfg *cfg = bpf_map_lookup_elem(&tx_config, &c.key);
 	if (!cfg) {
 		__u32 zero = 0;
 		__u32 *fl = bpf_map_lookup_elem(&prog_flags, &zero);
@@ -198,11 +129,11 @@ int bfd_observer(struct xdp_md *ctx)
 
 	ensure_sweeper();
 
-	struct session_state *st = bpf_map_lookup_elem(&bfd_sessions, &key);
+	struct session_state *st = bpf_map_lookup_elem(&bfd_sessions, &c.key);
 	if (!st) {
 		struct session_state init = {};
-		bpf_map_update_elem(&bfd_sessions, &key, &init, BPF_NOEXIST);
-		st = bpf_map_lookup_elem(&bfd_sessions, &key);
+		bpf_map_update_elem(&bfd_sessions, &c.key, &init, BPF_NOEXIST);
+		st = bpf_map_lookup_elem(&bfd_sessions, &c.key);
 		if (!st)
 			return XDP_PASS;
 	}
@@ -251,7 +182,7 @@ int bfd_observer(struct xdp_md *ctx)
 		st->final_seq = cfg->poll_seq;
 
 	if (__sync_val_compare_and_swap(&st->alive, 0, 1) == 0)
-		emit(&key, st, now, 1);
+		emit(&c.key, st, now, 1);
 
 	/* RX-clocked TX: rewrite this very frame into our control packet
 	 * and bounce it. Peer's clock becomes our clock; runs in softirq.

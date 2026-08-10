@@ -185,8 +185,15 @@ def inject(spec):
         src = f.read()
     r = subprocess.run(cmd, input=src, capture_output=True, text=True)
     if r.returncode:
-        return "injector failed: %s" % (r.stderr.strip() or r.stdout.strip())
-    return None
+        return "injector failed: %s" % (r.stderr.strip() or r.stdout.strip()), {}
+    cap = {}
+    for line in r.stdout.splitlines():
+        if line.startswith("{"):
+            try:
+                cap = json.loads(line).get("capture", {})
+            except ValueError:
+                pass
+    return None, cap
 
 
 # Header rules the engine checks before it will look a session up. Each
@@ -255,6 +262,24 @@ def build_cases(got):
                   dict(family=4, src=s["peer"], dst=s["local"], ttl=255,
                        dport=3784, ydisc=0, state=1, options=True),
                   "rejected", COUNT))
+        pf = session_value(s["peer"], s["local"])
+        if pf:
+            # Poll/Final responder (RFC 5880 s6.5). Everything but the P
+            # bit is replayed from the session's own state, so each write
+            # in the accept path lands back identical and the collateral
+            # check verifies that. Only the reply proves the F bit, so
+            # this case needs the capture oracle.
+            c.append(("poll-final", "a packet with Poll set is answered "
+                      "with Final",
+                      dict(family=4, src=s["peer"], dst=s["local"], ttl=255,
+                           dport=3784, ydisc=s["my_disc"],
+                           state=pf["remote_state"], mydisc=pf["remote_disc"],
+                           mult=pf["detect_mult"], mintx=pf["min_tx_us"],
+                           minrx=pf["min_rx_us"],
+                           minecho=pf.get("remote_min_echo_us", 0),
+                           flags=0x20, l2dst=MAC, capture=True),
+                      [("cap:final", COUNT)], None))
+
         c.extend(malformed_cases(s, 4))
         c.append(("echo-not-self", "a 3785 packet that is not self-addressed "
                   "is never reflected",
@@ -324,8 +349,9 @@ def build_cases(got):
         c.append(("echo-reflect-v%d" % fam,
                   "echo from a peer of an echo-active session is returned",
                   dict(family=fam, src=addr, dst=addr, ttl=255,
-                       dport=3785, ydisc=0, state=1, l2dst=MAC),
-                  "reflected", COUNT))
+                       dport=3785, ydisc=0, state=1, l2dst=MAC,
+                       capture=True),
+                  [("reflected", COUNT), ("cap:replies", COUNT)], None))
         # Same packet, only the TTL wrong: proves the echo GTSM check is
         # what blocks it, not anything about the peer or the payload.
         c.append(("echo-gtsm-v%d" % fam,
@@ -380,13 +406,17 @@ def orchestrate(args):
 
         spec = dict(spec, iface=IFACE, count=COUNT)
         before = counters()
-        err = inject(spec)
+        err, cap = inject(spec)
         if err:
             print("%-22s ERROR  %s" % (name, err))
             failures += 1
             continue
         time.sleep(SETTLE)
         after = counters()
+        # Capture results ride in as pseudo-counters with nothing in
+        # `before`, so the existing delta arithmetic yields the raw count
+        # and every counter-based case is untouched.
+        after.update({"cap:%s" % k: v for k, v in cap.items()})
 
         checks = counter if isinstance(counter, list) else [(counter, expect)]
         results, ok, recorded = [], True, []
@@ -465,12 +495,12 @@ def send(spec):
     from scapy.all import IPOption_NOP
 
     def bfd(ydisc, state, vers=1, mult=3, blen=24, mydisc=0xcafebabe,
-            mintx=300000, minrx=300000, minecho=0):
+            mintx=300000, minrx=300000, minecho=0, flags=0):
         """Defaults build a well-formed header; each knob breaks one rule
         the engine checks before it will look a session up."""
         md = mydisc
         return bytes([
-            (vers << 5), (state & 3) << 6, mult, blen,
+            (vers << 5), ((state & 3) << 6) | flags, mult, blen,
             (md >> 24) & 0xff, (md >> 16) & 0xff, (md >> 8) & 0xff, md & 0xff,
             (ydisc >> 24) & 0xff, (ydisc >> 16) & 0xff,
             (ydisc >> 8) & 0xff, ydisc & 0xff,
@@ -489,7 +519,8 @@ def send(spec):
                   mydisc=spec.get("mydisc", 0xcafebabe),
                   mintx=spec.get("mintx", 300000),
                   minrx=spec.get("minrx", 300000),
-                  minecho=spec.get("minecho", 0))
+                  minecho=spec.get("minecho", 0),
+                  flags=spec.get("flags", 0))
     if spec.get("trunc"):
         payload = payload[:spec["trunc"]]
     if spec.get("pad"):
@@ -509,8 +540,36 @@ def send(spec):
     else:
         ip = IPv6(src=spec["src"], dst=spec["dst"], hlim=spec["ttl"])
 
+    if not spec.get("capture"):
+        sendp(eth / ip / l4, iface=spec["iface"], count=spec["count"],
+              inter=0.005, verbose=0)
+        return 0
+
+    # Capture oracle. Counters prove the program reached a count() call;
+    # they cannot prove a correct frame left the NIC. Both the reflect and
+    # the control-bounce paths swap MACs, so whatever comes back is
+    # addressed to us even though the IP is the spoofed peer's.
+    from scapy.all import AsyncSniffer, get_if_hwaddr
+    mymac = get_if_hwaddr(spec["iface"]).lower()
+    sn = AsyncSniffer(iface=spec["iface"], store=True,
+                      filter="udp and (port 3784 or port 3785)")
+    sn.start()
+    time.sleep(0.3)
     sendp(eth / ip / l4, iface=spec["iface"], count=spec["count"],
           inter=0.005, verbose=0)
+    time.sleep(0.7)
+
+    replies = final = 0
+    for pkt in sn.stop():
+        if not pkt.haslayer(Ether) or pkt[Ether].dst.lower() != mymac:
+            continue
+        raw = bytes(pkt[UDP].payload)
+        if len(raw) < 2:
+            continue
+        replies += 1
+        if raw[1] & 0x10:          # BFD_F_FINAL
+            final += 1
+    print(json.dumps({"capture": {"replies": replies, "final": final}}))
     return 0
 
 

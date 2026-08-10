@@ -215,7 +215,7 @@ int main(int argc, char **argv)
 		ssize_t n = recvmsg(rx_sock, &mh, 0);
 		uint64_t t = now_us();
 
-		if (n >= 24 && ((p.vers_diag >> 5) & 7) == 1 &&
+		if (n >= 24 && BFD_VERS(&p) == BFD_VERSION &&
 		    p.detect_mult && p.my_disc) {
 			uint32_t dst_ip = 0;
 			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh); c;
@@ -254,7 +254,7 @@ int main(int argc, char **argv)
 		
 			if (nm < 0)
 				break;
-			if (nm < 24 || ((pm.vers_diag >> 5) & 7) != 1 ||
+			if (nm < 24 || BFD_VERS(&pm) != BFD_VERSION ||
 			    !pm.detect_mult || !pm.my_disc)
 				continue;
 		
@@ -293,7 +293,7 @@ int main(int argc, char **argv)
 			ssize_t n6 = recvmsg(rx6_sock, &mh6, MSG_DONTWAIT);
 			if (n6 < 0)
 				break;
-			if (n6 < 24 || ((p6.vers_diag >> 5) & 7) != 1 ||
+			if (n6 < 24 || BFD_VERS(&p6) != BFD_VERSION ||
 			    !p6.detect_mult || !p6.my_disc)
 				continue;
 			struct bfd_addr fp6 = {0}, fl6 = {0};
@@ -330,7 +330,7 @@ int main(int argc, char **argv)
 		
 			if (nm6 < 0)
 				break;
-			if (nm6 < 24 || ((pm6.vers_diag >> 5) & 7) != 1 ||
+			if (nm6 < 24 || BFD_VERS(&pm6) != BFD_VERSION ||
 			    !pm6.detect_mult || !pm6.my_disc)
 				continue;
 		

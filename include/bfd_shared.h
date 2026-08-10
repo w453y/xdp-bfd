@@ -30,6 +30,23 @@
 #define BFD_F_POLL  0x20
 #define BFD_F_FINAL 0x10
 
+/* Session state (RFC 5880 s6.8.1). The ordering IS the wire encoding:
+ * the XDP parser stores BFD_STATE(bfd) straight into
+ * session_state.remote_state and userspace compares that against these
+ * names, so the two agree only as long as this order is the wire order. */
+enum bfd_state { ST_ADMINDOWN, ST_DOWN, ST_INIT, ST_UP };
+
+static inline const char *bfd_state_str(int st)
+{
+        switch (st) {
+        case ST_ADMINDOWN: return "AdminDown";
+        case ST_DOWN:      return "Down";
+        case ST_INIT:      return "Init";
+        case ST_UP:        return "Up";
+        default:           return "?";
+        }
+}
+
 struct bfd_addr {
 	__u8 b[16];
 };

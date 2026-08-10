@@ -22,7 +22,6 @@
 #define SLOW_TX_US   1000000ull
 #define MAX_SESSIONS BFD_MAX_SESSIONS
 
-enum { ST_ADMINDOWN, ST_DOWN, ST_INIT, ST_UP };
 
 /* ---------- session ---------- */
 struct session {

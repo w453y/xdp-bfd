@@ -2,3 +2,5 @@ bfd_loader
 bfd_tx
 *.o
 __pycache__/
+events.csv
+observer.csv

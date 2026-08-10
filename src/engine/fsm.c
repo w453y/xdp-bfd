@@ -24,7 +24,6 @@
 #include "dplane.h"
 #include "ktx.h"
 
-static const char *stname[] = { "AdminDown", "Down", "Init", "Up" };
 
 int tx_sock = -1, tx6_sock = -1;
 
@@ -86,7 +85,7 @@ void state_transition(struct session *s, int newstate, int diag,
 	if (s->state == newstate)
 		return;
 	printf("[%llu] lid=%u %s -> %s (%s)\n", (unsigned long long)t,
-	       s->lid, stname[s->state], stname[newstate], why);
+	       s->lid, bfd_state_str(s->state), bfd_state_str(newstate), why);
 	s->state = newstate;
 	s->diag  = diag;
 	if (newstate == ST_DOWN)

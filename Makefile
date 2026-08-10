@@ -10,7 +10,7 @@ all: bfd_xdp.o bfd_loader bfd_tx
 bfd_xdp.o: bfd_xdp.c include/bfd_shared.h $(wildcard src/xdp/*.h)
 	$(CLANG) $(BPFFLAGS) -c $< -o $@
 
-bfd_loader: loader.c include/bfd_shared.h
+bfd_loader: src/loader/bfd_loader.c include/bfd_shared.h
 	$(CC) $(CFLAGS) $< -o $@ -lbpf
 
 bfd_tx: $(ENGINE_OBJS)

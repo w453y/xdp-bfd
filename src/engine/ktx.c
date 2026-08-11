@@ -185,10 +185,12 @@ void ktx_poll_map(struct session *s, uint64_t t)
 	}
 	if (ms.min_tx_us && (ms.min_tx_us != s->r_min_tx ||
 			     ms.min_rx_us != s->r_min_rx ||
-			     ms.remote_min_echo_us != s->r_min_echo)) {
+			     ms.remote_min_echo_us != s->r_min_echo ||
+			     ms.remote_flags != s->r_flags)) {
 		s->r_min_tx = ms.min_tx_us;
 		s->r_min_rx = ms.min_rx_us;
 		s->r_min_echo = ms.remote_min_echo_us;
+		s->r_flags = ms.remote_flags;
 		dp_notify_state(s);
 	}
 	if (ms.remote_state == ST_DOWN)

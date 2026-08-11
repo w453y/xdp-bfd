@@ -111,11 +111,20 @@ void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 
 	{
 		uint32_t ntx = ntohl(p->min_tx), nrx = ntohl(p->min_rx);
+		uint8_t  nfl = p->flags & 0x3f;
+
+		/* The peer's flags are reported to bfdd in the state
+		 * change, so a flags-only change needs a notify too:
+		 * without it a peer entering or leaving Demand mode
+		 * is never seen by the control plane.
+		 */
 		if (s->state == ST_UP &&
-		    (ntx != s->r_min_tx || nrx != s->r_min_rx)) {
+		    (ntx != s->r_min_tx || nrx != s->r_min_rx ||
+		     nfl != s->r_flags)) {
 			s->r_min_tx = ntx;
 			s->r_min_rx = nrx;
-			dp_notify_state(s);   /* refresh remote timers */
+			s->r_flags  = nfl;
+			dp_notify_state(s);   /* remote timers or flags */
 		}
 	}
 	s->rdisc    = ntohl(p->my_disc);

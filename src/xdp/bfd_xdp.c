@@ -164,6 +164,7 @@ int bfd_observer(struct xdp_md *ctx)
 	st->remote_min_echo_us = bpf_ntohl(bfd->min_echo_rx);
 	st->remote_state = BFD_STATE(bfd);
 	st->remote_diag  = BFD_DIAG(bfd);
+	st->remote_flags = bfd->flags & 0x3f;
 	st->detect_mult  = bfd->detect_mult;
 
 	/* Poll termination (RFC 5880 s6.8.4): peer answered our P with

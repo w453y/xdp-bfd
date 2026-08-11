@@ -32,6 +32,14 @@ enum bfddp_session_flag {
 	SESSION_SHUTDOWN = (1 << 6),
 };
 
+/* Peer's bits as bfdd expects them in bfddp_state_change.remote_flags.
+ * These are NOT the wire flag positions; see rflags_from_wire(). */
+enum bfd_remote_flags {
+	RBIT_CPI    = (1 << 0),
+	RBIT_DEMAND = (1 << 1),
+	RBIT_MP     = (1 << 2),
+};
+
 struct bfddp_message_header {
 	uint8_t  version;      /* 1 */
 	uint8_t  zero;

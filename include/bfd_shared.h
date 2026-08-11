@@ -29,6 +29,10 @@
 /* Control packet flag bits (RFC 5880 s4.1) */
 #define BFD_F_POLL  0x20
 #define BFD_F_FINAL 0x10
+#define BFD_F_CPI    0x08   /* Control Plane Independent */
+#define BFD_F_AUTH   0x04   /* Authentication Present */
+#define BFD_F_DEMAND 0x02   /* Demand mode */
+#define BFD_F_MP     0x01   /* Multipoint */
 
 /* Session state (RFC 5880 s6.8.1). The ordering IS the wire encoding:
  * the XDP parser stores BFD_STATE(bfd) straight into
@@ -105,7 +109,8 @@ struct session_state {
 	__u8  remote_state;
 	__u8  remote_diag;
 	__u8  detect_mult;
-	__u8  pad;
+	__u8  remote_flags;  /* peer's last control packet flags,
+	                      * masked to the six non-state bits */
 	__u32 alive;          /* our sweep's verdict: 1 = hearing peer.
 	                       * 32-bit: BPF atomics need 32/64-bit; RX
 	                       * set and sweep clear race across CPUs. */

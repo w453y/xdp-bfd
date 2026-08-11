@@ -38,6 +38,25 @@ uint64_t dp_hold_us;              /* --dp-hold: keep sessions
 uint64_t dp_reconcile_us;         /* sweep deadline after reconnect */
 #define DP_RECONCILE_US (10ull * 1000000)
 
+/* Translate the peer's last received wire flags into the RBIT_*
+ * encoding bfdd expects in bfddp_state_change.remote_flags. The two
+ * use different bit positions and only Demand happens to coincide,
+ * so shipping the raw wire byte mislabels the peer's bits.
+ */
+static uint32_t rflags_from_wire(uint8_t wire)
+{
+	uint32_t r = 0;
+
+	if (wire & BFD_F_CPI)
+		r |= RBIT_CPI;
+	if (wire & BFD_F_DEMAND)
+		r |= RBIT_DEMAND;
+	if (wire & BFD_F_MP)
+		r |= RBIT_MP;
+
+	return r;
+}
+
 /* ---------- dplane socket: outbound ---------- */
 
 static void dp_sessions_teardown(const char *why)
@@ -109,7 +128,7 @@ void dp_notify_state(struct session *s)
 	m.h.length  = htons(sizeof(m));
 	m.sc.lid    = htonl(s->lid);
 	m.sc.rid    = htonl(s->rdisc);
-	m.sc.remote_flags = htonl(s->r_flags);
+	m.sc.remote_flags = htonl(rflags_from_wire(s->r_flags));
 	m.sc.desired_tx   = htonl(s->r_min_tx);
 	m.sc.required_rx  = htonl(s->r_min_rx);
 	m.sc.required_echo_rx = htonl(s->r_min_echo);

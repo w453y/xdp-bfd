@@ -45,6 +45,32 @@ static __always_inline int parse_l3(struct ethhdr *eth, void *data_end,
 		c->udp = (void *)(c->iph + 1);
 		if ((void *)(c->udp + 1) > data_end)
 			return XDP_PASS;
+		/* Fragmented UDP. Nothing below this point is safe on a
+		 * fragment: at any offset but 0 there is no UDP header at
+		 * all, so c->udp points at payload and every port test
+		 * reads garbage. At offset 0 with MF set the header IS
+		 * there, so the packet can satisfy every check below and
+		 * then be bounced with MF still set - a nonsense fragment
+		 * emitted onto the wire while the stack separately
+		 * reassembles the datagram for the socket.
+		 *
+		 * A BFD control packet is 66 bytes and never fragments, so
+		 * dropping a fragment aimed at a BFD port costs nothing and
+		 * closes the same bypass class as the ihl != 5 rule above.
+		 * Everything else PASSes to the stack as before.
+		 *
+		 * IPv6 needs no equivalent: a fragment header makes
+		 * nexthdr != IPPROTO_UDP and falls out of the dispatch. */
+		if (c->iph->frag_off & bpf_htons(0x3fff)) {
+			if (!(c->iph->frag_off & bpf_htons(0x1fff)) &&
+			    (c->udp->dest == bpf_htons(BFD_PORT_1HOP) ||
+			     c->udp->dest == bpf_htons(BFD_PORT_MHOP) ||
+			     c->udp->dest == bpf_htons(BFD_ECHO_PORT))) {
+				count(3);
+				return XDP_DROP;
+			}
+			return XDP_PASS;
+		}
 		/* GTSM (RFC 5881 s5): single-hop control packets MUST arrive
 		 * with TTL 255. Anything else is off-link or spoofed. The one
 		 * exception is our own echo coming back: the neighbour's

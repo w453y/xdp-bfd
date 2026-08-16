@@ -4,3 +4,6 @@ bfd_tx
 __pycache__/
 events.csv
 observer.csv
+
+# review patch scripts
+0*.py

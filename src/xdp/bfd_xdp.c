@@ -69,8 +69,9 @@ int bfd_observer(struct xdp_md *ctx)
 		count(2);
 		return XDP_PASS;
 	}
-	if (!bfd_hdr_valid(bfd, udp))
-		return XDP_PASS;
+	int hv = bfd_hdr_verdict(bfd, udp);
+	if (hv >= 0)
+		return hv;
 
 	count(1);
 

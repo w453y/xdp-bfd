@@ -48,6 +48,12 @@ MAC = None
 # Fields an injected packet must not disturb on a live session.
 WATCH = ("remote_disc", "detect_iv_us", "min_tx_us", "min_rx_us",
          "detect_mult", "peer_mac")
+# An address pair with no session and no tx_config entry, used to prove the
+# deferred GTSM drops rather than passing an unconfigured pair to the
+# stack. Must not collide with any mesh, multihop or phantom address.
+UNKNOWN_SRC = "10.66.0.240"
+UNKNOWN_DST = "10.66.0.241"
+
 STAT = {0: "seen", 1: "well-formed", 2: "malformed", 3: "rejected",
         4: "reflected", 5: "echo-returns", 6: "declined", 7: "not-self", 8: "echo-ttl"}
 
@@ -262,6 +268,23 @@ def build_cases(got):
                   dict(family=4, src=s["peer"], dst=s["local"], ttl=255,
                        dport=3784, ydisc=0, state=1, options=True),
                   "rejected", COUNT))
+        c.append(("frag-first", "a first fragment aimed at 3784 is dropped, "
+                  "not bounced back out with MF set",
+                  dict(family=4, src=s["peer"], dst=s["local"], ttl=255,
+                       dport=3784, ydisc=0, state=1, mf=True),
+                  "rejected", COUNT))
+        # Only meaningful while a multihop session exists: that is what
+        # sets prog_flags bit 1 and makes parse_l3 defer the TTL verdict
+        # instead of dropping the packet at the front filter. Without one
+        # the packet dies earlier and the case would pass for a reason
+        # that has nothing to do with the fix.
+        if any(k in got for k in ("mh4", "mh6", "phantom", "phantom6")):
+            c.append(("gtsm-unconfigured-pair",
+                      "a low-TTL packet naming an address pair we have no "
+                      "session for dies in XDP even with multihop configured",
+                      dict(family=4, src=UNKNOWN_SRC, dst=UNKNOWN_DST,
+                           ttl=64, dport=3784, ydisc=0, state=1, l2dst=MAC),
+                      "rejected", COUNT))
         pf = session_value(s["peer"], s["local"])
         if pf:
             # Poll/Final responder (RFC 5880 s6.5). Everything but the P
@@ -539,6 +562,11 @@ def send(spec):
 
     if spec["family"] == 4:
         ip = IP(src=spec["src"], dst=spec["dst"], ttl=spec["ttl"])
+        if spec.get("mf"):
+            # Offset 0 with More Fragments set. The UDP and BFD headers
+            # are all present, so this is the fragment that could pass
+            # every check and be bounced back out still marked MF.
+            ip.flags = "MF"
         if spec.get("options"):
             # Four NOPs is one option word, so ihl becomes 6 and the UDP
             # header moves. Single-hop BFD never carries options, and the

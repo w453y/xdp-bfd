@@ -65,7 +65,16 @@ static int sweep_fire(void *map, __u32 *key, struct sweep *sw)
 
 /* bpf_timer can only be initialized and armed from BPF program context,
  * not from userspace at load time, so the first packet through the
- * program arms the sweep. The CAS makes exactly one CPU do it. */
+ * program arms the sweep. The CAS makes exactly one CPU do it.
+ *
+ * Setting `inited` BEFORE bpf_timer_init looks like a race and is not
+ * one, so do not 'fix' it: a losing CPU returns early and assumes the
+ * timer is armed, but nothing here or anywhere else reads the timer,
+ * so the only consequence is that the very first sweep may be armed a
+ * few microseconds after the packet that triggered it. Initialising
+ * first and then CASing would be worse - two CPUs would both call
+ * bpf_timer_init and bpf_timer_start on the same timer.
+ */
 static __always_inline void ensure_sweeper(void)
 {
 	__u32 zero = 0;

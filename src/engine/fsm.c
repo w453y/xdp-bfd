@@ -263,18 +263,28 @@ void fsm_tx(struct session *s, uint64_t t)
 	s->just_up = 0;
 
 	if (t >= s->next_tx_us) {
-		uint64_t iv;
-		if (s->state == ST_UP) {
+		uint64_t iv, span;
+
+		if (s->state == ST_UP)
 			iv = s->applied_tx_us > s->r_min_rx ? s->applied_tx_us
 							    : s->r_min_rx;
-			/* RFC 5880 s6.8.7: jitter the interval to 75-100%,
-			 * but only 75-90% when detect_mult is 1. */
-			uint64_t span = s->detect_mult == 1 ? iv * 3 / 20
-							    : iv / 4;
-			iv = iv * 3 / 4 + (random() % (span + 1));
-		} else {
+		else
 			iv = SLOW_TX_US;
-		}
+
+		/* RFC 5880 s6.8.3: jitter the interval to 75-100%, but only
+		 * 75-90% when detect_mult is 1. This applies to the slow
+		 * rate as well, which previously used SLOW_TX_US raw - so
+		 * every session below Up transmitted on the same 1s grid and
+		 * a mesh coming up at once synchronised into a burst every
+		 * second, which is what jitter exists to prevent.
+		 *
+		 * It looks like an undershoot but is not: the 'not less than
+		 * one second' rule in s6.8.7 constrains
+		 * bfd.DesiredMinTxInterval, not the resulting gap.
+		 */
+		span = s->detect_mult == 1 ? iv * 3 / 20 : iv / 4;
+		iv = iv * 3 / 4 + (random() % (span + 1));
+
 		s->next_tx_us = t + iv;
 	}
 }

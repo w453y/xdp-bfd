@@ -109,31 +109,34 @@ void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 {
 	int ps = (p->flags >> 6) & 3;
 
-	{
-		uint32_t ntx = ntohl(p->min_tx), nrx = ntohl(p->min_rx);
-		uint8_t  nfl = p->flags & 0x3f;
+	/* Everything dp_notify_state reports about the peer - timers,
+	 * flags, detect_mult, remote discriminator - is read out of the
+	 * session, so the notify has to run AFTER the assignments below.
+	 * It used to run before them and shipped the previous mult and
+	 * rdisc alongside the new timers. Decide here whether anything
+	 * moved, assign, then notify.
+	 *
+	 * A flags-only change counts: without it a peer entering or
+	 * leaving Demand mode is never seen by the control plane. So does
+	 * a mult-only change, which bfdd displays and which alters the
+	 * peer's detection budget for us.
+	 */
+	uint32_t ntx = ntohl(p->min_tx), nrx = ntohl(p->min_rx);
+	uint8_t  nfl = p->flags & 0x3f;
+	int rparams_changed = (ntx != s->r_min_tx || nrx != s->r_min_rx ||
+			       nfl != s->r_flags ||
+			       p->detect_mult != s->r_mult);
 
-		/* The peer's flags are reported to bfdd in the state
-		 * change, so a flags-only change needs a notify too:
-		 * without it a peer entering or leaving Demand mode
-		 * is never seen by the control plane.
-		 */
-		if (s->state == ST_UP &&
-		    (ntx != s->r_min_tx || nrx != s->r_min_rx ||
-		     nfl != s->r_flags)) {
-			s->r_min_tx = ntx;
-			s->r_min_rx = nrx;
-			s->r_flags  = nfl;
-			dp_notify_state(s);   /* remote timers or flags */
-		}
-	}
 	s->rdisc    = ntohl(p->my_disc);
 	s->r_state  = ps;
-	s->r_min_rx = ntohl(p->min_rx);
-	s->r_min_tx = ntohl(p->min_tx);
+	s->r_min_rx = nrx;
+	s->r_min_tx = ntx;
 	s->r_min_echo = ntohl(p->min_echo_rx);
 	s->r_mult   = p->detect_mult;
-	s->r_flags  = p->flags & 0x3f;
+	s->r_flags  = nfl;
+
+	if (s->state == ST_UP && rparams_changed)
+		dp_notify_state(s);
 
 	/* Poll-aware detect basis: decreases apply only once traffic
 	 * actually paces at the new interval (RFC 5880 s6.8.3). */

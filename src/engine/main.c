@@ -287,6 +287,20 @@ int main(int argc, char **argv)
 			.msg_iov = &iov, .msg_iovlen = 1,
 			.msg_control = cbuf, .msg_controllen = sizeof(cbuf),
 		};
+		/* Packets drained per socket per pass. Each of these loops
+		 * used to run until EAGAIN, so a sustained flood of frames
+		 * XDP passes to the stack kept the loop here and starved
+		 * everything below it - transmit, detection, the map poll,
+		 * the dplane read. The process stays alive and does nothing,
+		 * which is the failure mode no process-liveness check sees.
+		 *
+		 * MAX_SESSIONS is one packet per configured session per pass,
+		 * so a legitimate burst still clears in a single iteration and
+		 * anything larger spreads across the next few 2ms ticks
+		 * instead of monopolising this one.
+		 */
+		const int drain_budget = MAX_SESSIONS;
+
 		/* This recvmsg is the loop's clock: it blocks with the 2ms
 		 * SO_RCVTIMEO set above, which is what keeps main from spinning
 		 * and what sets how often the per-session tick below runs. The
@@ -325,7 +339,7 @@ int main(int argc, char **argv)
 
 		/* RFC 5883 multihop control packets, port 4784. Same demux as
 		 * single-hop: your_disc first, address pair as fallback. */
-		while (rxm_sock >= 0) {
+		for (int d = 0; rxm_sock >= 0 && d < drain_budget; d++) {
 			struct bfd_ctrl_pkt pm;
 			struct sockaddr_in fromm;
 			struct iovec iovm = { .iov_base = &pm,
@@ -381,7 +395,7 @@ int main(int argc, char **argv)
 				fsm_rx(ms, &pm, now_us());
 		}
 
-		for (;;) {
+		for (int d = 0; d < drain_budget; d++) {
 			struct bfd_ctrl_pkt p6;
 			struct sockaddr_in6 from6;
 			struct iovec iov6 = { .iov_base = &p6,
@@ -418,7 +432,7 @@ int main(int argc, char **argv)
 		}
 
 		/* v6 multihop control packets, port 4784. */
-		while (rxm6_sock >= 0) {
+		for (int d = 0; rxm6_sock >= 0 && d < drain_budget; d++) {
 			struct bfd_ctrl_pkt pm6;
 			struct sockaddr_in6 fromm6;
 			struct iovec iovm6 = { .iov_base = &pm6,

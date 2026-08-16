@@ -90,8 +90,22 @@ int main(int argc, char **argv)
 				return 1;
 			}
 		}
-		else if (!strcmp(argv[i], "--dp-hold") && i + 1 < argc)
-			dp_hold_us = strtoull(argv[++i], NULL, 10) * 1000000ull;
+		else if (!strcmp(argv[i], "--dp-hold") && i + 1 < argc) {
+			const char *a = argv[++i];
+			char *end;
+			unsigned long long v = strtoull(a, &end, 10);
+
+			/* A NULL endptr made "abc" a silent zero-second
+			 * hold and "10s" a silent 10 - both look like the
+			 * flag worked. */
+			if (end == a || *end || v > 86400) {
+				fprintf(stderr,
+					"--dp-hold: expected seconds (0-86400), got '%s'\n",
+					a);
+				return 1;
+			}
+			dp_hold_us = v * 1000000ull;
+		}
 		else if (!static_local)
 			static_local = argv[i];
 		else if (!static_peer)
@@ -107,6 +121,10 @@ int main(int argc, char **argv)
 	}
 
 	rx_sock = socket(AF_INET, SOCK_DGRAM, 0);
+	if (rx_sock < 0) {
+		perror("socket v4 control");
+		return 1;
+	}
 	struct sockaddr_in la = { .sin_family = AF_INET,
 				  .sin_port = htons(PORT_CTRL),
 				  .sin_addr.s_addr = INADDR_ANY };
@@ -124,18 +142,30 @@ int main(int argc, char **argv)
 	 * handles both ports once a session is Up, but establishment
 	 * still comes through userspace. */
 	rxm_sock = socket(AF_INET, SOCK_DGRAM, 0);
-	struct sockaddr_in lam = { .sin_family = AF_INET,
-				   .sin_port = htons(BFD_PORT_MHOP),
-				   .sin_addr.s_addr = INADDR_ANY };
-	if (bind(rxm_sock, (void *)&lam, sizeof(lam)))
-		perror("bind 4784 (multihop disabled)");
-	else
-		setsockopt(rxm_sock, IPPROTO_IP, IP_PKTINFO, &pi, sizeof(pi));
+	if (rxm_sock < 0) {
+		perror("socket v4 multihop (multihop disabled)");
+	} else {
+		struct sockaddr_in lam = { .sin_family = AF_INET,
+					   .sin_port = htons(BFD_PORT_MHOP),
+					   .sin_addr.s_addr = INADDR_ANY };
+		if (bind(rxm_sock, (void *)&lam, sizeof(lam))) {
+			perror("bind 4784 (multihop disabled)");
+			close(rxm_sock);
+			rxm_sock = -1;
+		} else {
+			setsockopt(rxm_sock, IPPROTO_IP, IP_PKTINFO, &pi,
+				   sizeof(pi));
+		}
+	}
 
 #ifndef IPV6_MINHOPCOUNT
 #define IPV6_MINHOPCOUNT 73
 #endif
 	rx6_sock = socket(AF_INET6, SOCK_DGRAM, 0);
+	if (rx6_sock < 0) {
+		perror("socket v6 control");
+		return 1;
+	}
 	int v6only = 1;
 	setsockopt(rx6_sock, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
 	struct sockaddr_in6 la6 = { .sin6_family = AF_INET6,
@@ -155,25 +185,40 @@ int main(int argc, char **argv)
 	 * drop them all. The per-session minimum is enforced in XDP
 	 * against cfg->min_ttl instead, so nothing is given up. */
 	rxm6_sock = socket(AF_INET6, SOCK_DGRAM, 0);
-	setsockopt(rxm6_sock, IPPROTO_IPV6, IPV6_V6ONLY, &v6only,
-		   sizeof(v6only));
-	struct sockaddr_in6 lam6 = { .sin6_family = AF_INET6,
-				     .sin6_port = htons(BFD_PORT_MHOP) };
-	if (bind(rxm6_sock, (void *)&lam6, sizeof(lam6)))
-		perror("bind 4784 v6 (v6 multihop disabled)");
-	else
-		setsockopt(rxm6_sock, IPPROTO_IPV6, IPV6_RECVPKTINFO, &pi,
-			   sizeof(pi));
+	if (rxm6_sock < 0) {
+		perror("socket v6 multihop (v6 multihop disabled)");
+	} else {
+		setsockopt(rxm6_sock, IPPROTO_IPV6, IPV6_V6ONLY, &v6only,
+			   sizeof(v6only));
+		struct sockaddr_in6 lam6 = { .sin6_family = AF_INET6,
+					     .sin6_port = htons(BFD_PORT_MHOP) };
+		if (bind(rxm6_sock, (void *)&lam6, sizeof(lam6))) {
+			perror("bind 4784 v6 (v6 multihop disabled)");
+			close(rxm6_sock);
+			rxm6_sock = -1;
+		} else {
+			setsockopt(rxm6_sock, IPPROTO_IPV6, IPV6_RECVPKTINFO,
+				   &pi, sizeof(pi));
+		}
+	}
 
 	/* Unbound fallback TX socket; per-slot bound sockets carry
 	 * normal traffic (slot_sock). */
 	tx_sock = socket(AF_INET, SOCK_DGRAM, 0);
-	int ttl = 255;
-	setsockopt(tx_sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
+	if (tx_sock < 0) {
+		perror("socket v4 fallback TX");
+	} else {
+		int ttl = 255;
+		setsockopt(tx_sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
+	}
 	tx6_sock = socket(AF_INET6, SOCK_DGRAM, 0);
-	int hops6 = 255;
-	setsockopt(tx6_sock, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &hops6,
-		   sizeof(hops6));
+	if (tx6_sock < 0) {
+		perror("socket v6 fallback TX");
+	} else {
+		int hops6 = 255;
+		setsockopt(tx6_sock, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &hops6,
+			   sizeof(hops6));
+	}
 
 	if (ktx_if) {
 		if (ktx_attach(ktx_if))

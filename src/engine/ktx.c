@@ -21,6 +21,7 @@
 #include <bpf/bpf.h>
 
 #include "bfd_shared.h"
+#include "objpath.h"
 #include "util.h"
 #include "session.h"
 #include "ktx.h"
@@ -29,6 +30,7 @@
 #include "echo_tx.h"
 
 int use_ktx = 0;
+const char *ktx_obj_path;   /* --bpf-obj, or NULL for the default search */
 static int cfg_fd = -1;
 int sess_fd = -1, echo_peers_fd = -1;
 int echo_disc_fd = -1;
@@ -41,13 +43,19 @@ int ktx_attach(const char *ifname)
 	int ifindex = if_nametoindex(ifname);
 	if (!ifindex) { perror("ifname"); return -1; }
 
-	bpf_obj = bpf_object__open_file("bfd_xdp.o", NULL);
+	const char *obj = bfd_obj_path(ktx_obj_path);
+
+	bpf_obj = bpf_object__open_file(obj, NULL);
 	if (!bpf_obj || bpf_object__load(bpf_obj)) {
-		fprintf(stderr, "bfd_xdp.o load failed\n");
+		fprintf(stderr, "%s load failed\n", obj);
 		return -1;
 	}
 	struct bpf_program *pr =
 		bpf_object__find_program_by_name(bpf_obj, "bfd_observer");
+	if (!pr) {
+		fprintf(stderr, "bfd_observer not found in %s\n", obj);
+		return -1;
+	}
 	if (bpf_xdp_attach(ifindex, bpf_program__fd(pr),
 			   XDP_FLAGS_DRV_MODE, NULL)) {
 		fprintf(stderr, "native XDP attach failed on %s\n", ifname);

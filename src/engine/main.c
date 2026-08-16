@@ -75,6 +75,8 @@ int main(int argc, char **argv)
 			dplane_path = argv[++i];
 		else if (!strcmp(argv[i], "--kernel-tx") && i + 1 < argc)
 			ktx_if = argv[++i];
+		else if (!strcmp(argv[i], "--bpf-obj") && i + 1 < argc)
+			ktx_obj_path = argv[++i];
 		else if (!strcmp(argv[i], "--dp-hold") && i + 1 < argc)
 			dp_hold_us = strtoull(argv[++i], NULL, 10) * 1000000ull;
 		else if (!static_local)
@@ -85,7 +87,8 @@ int main(int argc, char **argv)
 	if (!dplane_path && (!static_local || !static_peer)) {
 		fprintf(stderr,
 			"usage: %s <local-ip> <peer-ip> [--kernel-tx <if>]\n"
-			"       %s --dplane <port|sock-path> [--kernel-tx <if>] [--dp-hold <sec>]\n",
+			"       %s --dplane <port|sock-path> [--kernel-tx <if>] [--dp-hold <sec>]\n"
+			"       [--bpf-obj <path>]\n",
 			argv[0], argv[0]);
 		return 1;
 	}

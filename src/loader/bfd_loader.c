@@ -14,6 +14,7 @@
 #include <linux/if_link.h>
 
 #include "bfd_shared.h"
+#include "objpath.h"
 
 static volatile sig_atomic_t stop;
 static void on_int(int sig) { (void)sig; stop = 1; }
@@ -56,9 +57,10 @@ int main(int argc, char **argv)
 	int ifindex = if_nametoindex(argv[1]);
 	if (!ifindex) { perror("if_nametoindex"); return 1; }
 
-	struct bpf_object *obj = bpf_object__open_file("bfd_xdp.o", NULL);
+	const char *objpath = bfd_obj_path(NULL);
+	struct bpf_object *obj = bpf_object__open_file(objpath, NULL);
 	if (!obj || bpf_object__load(obj)) {
-		fprintf(stderr, "open/load failed\n");
+		fprintf(stderr, "%s open/load failed\n", objpath);
 		return 1;
 	}
 	struct bpf_program *prog =

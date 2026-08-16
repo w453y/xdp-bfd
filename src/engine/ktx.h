@@ -6,6 +6,7 @@
 #include "session.h"
 
 extern int use_ktx;
+extern const char *ktx_obj_path;
 extern int sess_fd;
 extern int echo_peers_fd;
 extern int echo_disc_fd;

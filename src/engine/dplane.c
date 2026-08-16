@@ -64,6 +64,7 @@ static void dp_sessions_teardown(const char *why)
 	int n = 0;
 	for (int i = 0; i < MAX_SESSIONS; i++)
 		if (sessions[i].used) {
+			fsm_announce_down(&sessions[i]);
 			ktx_clear(&sessions[i]);
 			memset(&sessions[i], 0, sizeof(sessions[i]));
 			n++;
@@ -75,6 +76,7 @@ static void dp_sessions_teardown(const char *why)
 void sess_teardown_one(struct session *s, const char *why)
 {
 	printf("dplane: lid=%u %s - torn down\n", s->lid, why);
+	fsm_announce_down(s);
 	ktx_clear(s);
 	memset(s, 0, sizeof(*s));
 }
@@ -342,6 +344,7 @@ static void dp_handle_delete(const struct bfddp_session_msg *sm)
 	if (!s)
 		return;
 	printf("dplane: DELETE session lid=%u\n", s->lid);
+	fsm_announce_down(s);
 	ktx_clear(s);
 	memset(s, 0, sizeof(*s));
 }

@@ -208,35 +208,11 @@ void fsm_detect(struct session *s, uint64_t t)
 	}
 }
 
-void fsm_tx(struct session *s, uint64_t t)
+/* Build and send one control packet from the session's current state.
+ * Split out of fsm_tx so the teardown path can emit a few without
+ * re-deriving any of the pacing logic that precedes it there. */
+static void tx_one(struct session *s)
 {
-	if (s->admin_down && s->state != ST_ADMINDOWN)
-		state_transition(s, ST_ADMINDOWN, 7, t, "admin shutdown");
-
-	if (s->last_rx_us) {
-		uint64_t cur = (s->state == ST_UP)
-			? (s->applied_tx_us > s->r_min_rx ? s->applied_tx_us
-							  : s->r_min_rx)
-			: SLOW_TX_US;
-		if (s->next_tx_us > t + cur)
-			s->next_tx_us = t + cur;
-	}
-
-	int due = (t >= s->next_tx_us) || s->send_final;
-	if (use_ktx && s->state == ST_UP && !s->send_final && !s->just_up) {
-		/* Kernel echo covers TX only at the peer's pace. If the
-		 * peer paces slower than our required rate (its detect
-		 * budget for us), transmit from here at the required
-		 * pace; otherwise stay silent as before. last_rx_us is
-		 * synced from the map, so it tracks kernel echo times. */
-		uint64_t pace = s->applied_tx_us > s->r_min_rx ?
-				s->applied_tx_us : s->r_min_rx;
-		if (t - s->last_rx_us < pace)
-			due = 0;
-	}
-	if (!due)
-		return;
-
 	struct bfd_ctrl_pkt o = {0};
 	o.vers_diag   = (1 << 5) | (s->diag & 0x1f);
 	o.flags       = (s->state << 6) |
@@ -267,6 +243,69 @@ void fsm_tx(struct session *s, uint64_t t)
 	s->tx_pkts++;
 	s->send_final = 0;
 	s->just_up = 0;
+}
+
+/* RFC 5880 s6.8.16: a system tearing a session down should say so
+ * rather than going quiet. Silent teardown makes the peer wait out its
+ * whole detection time and then report diag 1, control detection time
+ * expired - a link failure - for an orderly local event. Announcing
+ * AdminDown gets the peer down immediately with diag 3, neighbor
+ * signaled session down, which is both faster and true.
+ *
+ * Three packets because there is no retransmission once the slot is
+ * freed and a single one is one drop away from being lost. 24 bytes
+ * each, once per teardown.
+ *
+ * NOT called on the dp_hold orphan path: there the peer must not
+ * notice bfdd restarting, which is the entire point of the feature.
+ */
+void fsm_announce_down(struct session *s)
+{
+	if (!s->used || !s->wire_disc || s->state == ST_ADMINDOWN)
+		return;
+
+	/* Assigned directly rather than through state_transition: bfdd
+	 * asked for this teardown, so telling it about a transition into a
+	 * state the session is about to leave entirely is noise. */
+	s->state = ST_ADMINDOWN;
+	s->diag  = 7;   /* Administratively Down */
+	s->send_final = 0;
+	s->polling = 0;
+
+	for (int i = 0; i < 3; i++)
+		tx_one(s);
+}
+
+void fsm_tx(struct session *s, uint64_t t)
+{
+	if (s->admin_down && s->state != ST_ADMINDOWN)
+		state_transition(s, ST_ADMINDOWN, 7, t, "admin shutdown");
+
+	if (s->last_rx_us) {
+		uint64_t cur = (s->state == ST_UP)
+			? (s->applied_tx_us > s->r_min_rx ? s->applied_tx_us
+							  : s->r_min_rx)
+			: SLOW_TX_US;
+		if (s->next_tx_us > t + cur)
+			s->next_tx_us = t + cur;
+	}
+
+	int due = (t >= s->next_tx_us) || s->send_final;
+	if (use_ktx && s->state == ST_UP && !s->send_final && !s->just_up) {
+		/* Kernel echo covers TX only at the peer's pace. If the
+		 * peer paces slower than our required rate (its detect
+		 * budget for us), transmit from here at the required
+		 * pace; otherwise stay silent as before. last_rx_us is
+		 * synced from the map, so it tracks kernel echo times. */
+		uint64_t pace = s->applied_tx_us > s->r_min_rx ?
+				s->applied_tx_us : s->r_min_rx;
+		if (t - s->last_rx_us < pace)
+			due = 0;
+	}
+	if (!due)
+		return;
+
+	tx_one(s);
 
 	if (t >= s->next_tx_us) {
 		uint64_t iv, span;

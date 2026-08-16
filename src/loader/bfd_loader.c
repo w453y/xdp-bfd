@@ -43,6 +43,14 @@ static const char *const stat_name[] = {
 };
 #define NSTATS ((__u32)(sizeof(stat_name) / sizeof(stat_name[0])))
 
+/* fopen(..., "a") does not define where the stream position starts, so
+ * ftell() on a fresh append handle is not reliably 0 on an empty file.
+ * Seek to the end explicitly before deciding whether to write a header. */
+static int file_is_empty(FILE *f)
+{
+	return f && !fseek(f, 0, SEEK_END) && ftell(f) == 0;
+}
+
 static __u64 mono_now_ns(void)
 {
 	struct timespec ts;
@@ -137,11 +145,11 @@ int main(int argc, char **argv)
 	}
 
 	evlog = fopen("events.csv", "a");
-	if (evlog && ftell(evlog) == 0)
+	if (file_is_empty(evlog))
 		fprintf(evlog, "epoch,mono_ns,event,peer,silent_ms\n");
 
 	FILE *log = fopen("observer.csv", "a");
-	if (log && ftell(log) == 0)
+	if (file_is_empty(log))
 		fprintf(log, "epoch,rx_pkts,age_ms,remote_state,alive\n");
 
 	signal(SIGINT, on_int);

@@ -371,21 +371,39 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h,
 	m.h.length  = htons(sizeof(m));
 	m.c.lid     = htonl(lid);
 	if (s) {
-		uint64_t rx = 0, ktx = 0;
+		uint64_t krx = 0, ktx = 0;
+
 		if (use_ktx) {
 			struct session_key k = {};
 			k.peer  = s->peer;
 			k.local = s->local;
 			struct session_state ms;
 			if (!bpf_map_lookup_elem(sess_fd, &k, &ms)) {
-				rx  = ms.rx_pkts;
+				krx = ms.rx_pkts;
 				ktx = ms.tx_pkts;
 			}
 		}
+
+		/* Both halves of each direction. Establishment runs in
+		 * userspace and the steady state runs in the kernel, so
+		 * reporting only one of them understates every session -
+		 * and with kernel-TX off, rx used to be reported as a flat
+		 * zero for a session that was plainly Up.
+		 *
+		 * The kernel byte count is ESTIMATED at the 24-byte minimum:
+		 * session_state has no byte counter and its spare pad went to
+		 * remote_flags. A peer that pads its control packets is
+		 * therefore undercounted on the bytes line while the packet
+		 * line stays exact. Our own transmissions really are 24
+		 * bytes, so the output side needs no such caveat.
+		 */
+		uint64_t rx = s->rx_pkts + krx;
+		uint64_t rx_bytes = s->rx_bytes + krx * BFD_MIN_LEN;
 		uint64_t tx = s->tx_pkts + ktx;
-		m.c.control_input_bytes    = htobe64(rx * 24);
+
+		m.c.control_input_bytes    = htobe64(rx_bytes);
 		m.c.control_input_packets  = htobe64(rx);
-		m.c.control_output_bytes   = htobe64(tx * 24);
+		m.c.control_output_bytes   = htobe64(tx * BFD_MIN_LEN);
 		m.c.control_output_packets = htobe64(tx);
 	}
 	dp_send(&m, sizeof(m));

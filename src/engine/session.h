@@ -54,6 +54,11 @@ struct session {
 	struct tx_cfg pushed_cfg;
 	uint64_t last_rx_us, next_tx_us;
 	uint64_t tx_pkts;             /* userspace-sent control packets */
+	uint64_t rx_pkts;             /* userspace-received control packets;
+	                               * the kernel keeps its own in
+	                               * session_state.rx_pkts and the two are
+	                               * summed for the counters reply */
+	uint64_t rx_bytes;            /* exact, from the validated len field */
 	uint32_t echo_tx_us;          /* echo interval from the ADD; 0 = off */
 	uint32_t min_echo_rx_us;      /* advertised Required Min Echo RX */
 	uint8_t  min_ttl;             /* from the ADD; 255 = single-hop */

@@ -109,6 +109,12 @@ void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 {
 	int ps = (p->flags >> 6) & 3;
 
+	/* Only accepted packets reach here, so this is the userspace half
+	 * of the session's receive count. p->len is safe to bill: the
+	 * shared predicate already checked it against the payload. */
+	s->rx_pkts++;
+	s->rx_bytes += p->len;
+
 	/* Everything dp_notify_state reports about the peer - timers,
 	 * flags, detect_mult, remote discriminator - is read out of the
 	 * session, so the notify has to run AFTER the assignments below.

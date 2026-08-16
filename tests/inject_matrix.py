@@ -55,7 +55,8 @@ UNKNOWN_SRC = "10.66.0.240"
 UNKNOWN_DST = "10.66.0.241"
 
 STAT = {0: "seen", 1: "well-formed", 2: "malformed", 3: "rejected",
-        4: "reflected", 5: "echo-returns", 6: "declined", 7: "not-self", 8: "echo-ttl"}
+        4: "reflected", 5: "echo-returns", 6: "declined", 7: "not-self",
+        8: "echo-ttl", 9: "unsupported-flags"}
 
 
 def sh(cmd):
@@ -217,6 +218,35 @@ MALFORMED = (
 )
 
 
+# Well-formed headers carrying a flag we cannot honour. Unlike the
+# malformed set these DROP rather than PASS: passing one hands it to a
+# userspace path that would accept it as plain unauthenticated BFD.
+UNSUPPORTED = (
+    ("auth-bit", "the A bit with no authentication configured", 0x04),
+    ("mp-bit", "the M bit is reserved for multipoint", 0x01),
+)
+
+
+def unsupported_cases(sess, fam):
+    """The unsupported-flag set for one family. Same reasoning as
+    malformed_cases: the check sits after the family branch, so running
+    both exercises each parse path into it."""
+    out = []
+    for cname, cdesc, fl in UNSUPPORTED:
+        # ydisc naming no session, peer state Up: on a build WITHOUT the
+        # flag check this is rejected by the demux (slot 3) instead of
+        # reaching the session state update. That matters for the
+        # before-arm - ydisc=0 with the peer in Init is admitted by the
+        # demux, so the pre-fix run would overwrite a live session's
+        # remote_disc and trip the collateral check.
+        spec = dict(family=fam, src=sess["peer"], dst=sess["local"],
+                    ttl=255, dport=3784, ydisc=0x11111111, state=3,
+                    flags=fl)
+        out.append(("%s-v%d" % (cname, fam), cdesc, spec,
+                    "unsupported-flags", COUNT))
+    return out
+
+
 def malformed_cases(sess, fam):
     """The malformed set for one family. The checks sit after the family
     branch, so running both exercises each parse path into them."""
@@ -304,6 +334,7 @@ def build_cases(got):
                       [("cap:final", COUNT)], None))
 
         c.extend(malformed_cases(s, 4))
+        c.extend(unsupported_cases(s, 4))
         c.append(("echo-not-self", "a 3785 packet that is not self-addressed "
                   "is never reflected",
                   dict(family=4, src=s["peer"], dst=s["local"], ttl=255,
@@ -323,6 +354,7 @@ def build_cases(got):
                        dport=3784, ydisc=0, state=1),
                   "rejected", COUNT))
         c.extend(malformed_cases(s, 6))
+        c.extend(unsupported_cases(s, 6))
         c.append(("disc-mismatch-v6", "your_disc naming no session of ours",
                   dict(family=6, src=s["peer"], dst=s["local"], ttl=255,
                        dport=3784, ydisc=0x11111111, state=3),

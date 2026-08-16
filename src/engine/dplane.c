@@ -101,18 +101,77 @@ static void dp_sessions_orphan(const char *why)
 		       why, n, (unsigned long long)(dp_hold_us / 1000000));
 }
 
+/* Outbound queue.
+ *
+ * dp_conn is non-blocking (dp_accept sets O_NONBLOCK), so a full
+ * socket buffer surfaces as EAGAIN rather than a block. Treating that
+ * as fatal orphaned every session over what is usually transient - a
+ * counters sweep at 64 sessions is a few KB arriving faster than a
+ * busy bfdd reads it.
+ *
+ * Waiting for room is not an option either: dp_notify_state runs
+ * inside the per-session tick, so even a 1ms wait per message would
+ * cost tens of milliseconds in one pass, and this loop's pacing is
+ * upstream of transmit and detect timing.
+ *
+ * Everything therefore goes through the queue, which keeps ordering
+ * trivially correct and makes partial writes fall out for free. The
+ * common case is still one send() per message. Tearing the connection
+ * down is reserved for the queue overflowing, which means bfdd has
+ * stopped reading long enough that it really is gone - the case
+ * dp_hold exists to cover.
+ *
+ * 64KB is about fifteen full counter sweeps at 64 sessions.
+ */
+static char dp_out[65536];
+static size_t dp_out_len;
+
+static void dp_drop_conn(const char *why)
+{
+	close(dp_conn);
+	dp_conn = -1;
+	dp_have = 0;
+	dp_out_len = 0;
+	dp_sessions_orphan(why);
+}
+
+void dp_flush(void)
+{
+	if (dp_conn < 0)
+		return;
+
+	while (dp_out_len) {
+		ssize_t n = send(dp_conn, dp_out, dp_out_len, MSG_NOSIGNAL);
+
+		if (n > 0) {
+			dp_out_len -= (size_t)n;
+			memmove(dp_out, dp_out + n, dp_out_len);
+			continue;
+		}
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+			return;   /* still backed up; retry next pass */
+		printf("dplane: send failed (%s), dropping connection\n",
+		       n < 0 ? strerror(errno) : "zero-length write");
+		dp_drop_conn("send failure");
+		return;
+	}
+}
+
 static void dp_send(const void *msg, size_t len)
 {
 	if (dp_conn < 0)
 		return;
-	if (send(dp_conn, msg, len, MSG_NOSIGNAL) < 0) {
-		printf("dplane: send failed (%s), dropping connection\n",
-		       strerror(errno));
-		close(dp_conn);
-		dp_conn = -1;
-		dp_have = 0;
-		dp_sessions_orphan("send failure");
+	if (len > sizeof(dp_out) - dp_out_len) {
+		printf("dplane: output queue full (%zu bytes pending), "
+		       "dropping connection\n", dp_out_len);
+		dp_drop_conn("output queue overflow");
+		return;
 	}
+	memcpy(dp_out + dp_out_len, msg, len);
+	dp_out_len += len;
+	dp_flush();
 }
 
 void dp_notify_state(struct session *s)
@@ -372,10 +431,7 @@ void dp_read(void)
 			 sizeof(dp_buf) - dp_have, 0);
 	if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
 		printf("dplane: bfdd disconnected\n");
-		close(dp_conn);
-		dp_conn = -1;
-		dp_have = 0;
-		dp_sessions_orphan("bfdd disconnected");
+		dp_drop_conn("bfdd disconnected");
 		return;
 	}
 	if (n < 0)
@@ -396,10 +452,7 @@ void dp_read(void)
 			 * the sessions survive the reconnect. */
 			printf("dplane: bad frame length %u, dropping connection\n",
 			       mlen);
-			close(dp_conn);
-			dp_conn = -1;
-			dp_have = 0;
-			dp_sessions_orphan("bad frame length");
+			dp_drop_conn("bad frame length");
 			return;
 		}
 		if (dp_have - off < mlen)

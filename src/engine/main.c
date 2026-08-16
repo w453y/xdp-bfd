@@ -277,6 +277,9 @@ int main(int argc, char **argv)
 	for (;;) {
 		dp_accept();
 		dp_read();
+		/* Anything that did not fit the socket last pass. Cheap when
+		 * the queue is empty, which is the normal case. */
+		dp_flush();
 
 		struct bfd_ctrl_pkt p;
 		struct sockaddr_in from;

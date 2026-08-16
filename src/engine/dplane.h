@@ -13,6 +13,7 @@ extern uint64_t dp_reconcile_us;
 void dp_notify_state(struct session *s);
 void sess_teardown_one(struct session *s, const char *why);
 void dp_read(void);
+void dp_flush(void);
 void dp_accept(void);
 int dp_listen_init(const char *arg);
 

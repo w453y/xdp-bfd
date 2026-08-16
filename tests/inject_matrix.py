@@ -396,6 +396,13 @@ def orchestrate(args):
               % ", ".join(sorted(missing)))
     print()
 
+    if args.only and not any(c[0] == args.only for c in cases):
+        # A name that matches nothing used to run zero cases and still
+        # report "all cases passed". Every +0 assertion in this file
+        # needs a witness; so does the case list itself.
+        sys.exit("no case named %r. Available now: %s"
+                 % (args.only, ", ".join(c[0] for c in cases)))
+
     failures = 0
     report = {"cases": [], "collateral": []}
     sess_before = session_states()

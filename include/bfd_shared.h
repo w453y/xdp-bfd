@@ -71,6 +71,42 @@ struct bfd_ctrl_pkt {
 #define BFD_DIAG(h)   ((h)->vers_diag & 0x1f)
 #define BFD_STATE(h)  (((h)->flags >> 6) & 0x3)
 
+/* Why a control packet was not accepted (RFC 5880 s6.8.6). */
+enum bfd_ctrl_verdict {
+	BFD_CTRL_ACCEPT = 0,
+	BFD_CTRL_MALFORMED,     /* header does not parse */
+	BFD_CTRL_UNSUPPORTED,   /* well formed, carries a flag we cannot honour */
+};
+
+/* The acceptance rule, shared so the kernel fast path and the userspace
+ * establishment path cannot drift. They had already drifted: userspace
+ * never looked at bfd->len, so a packet claiming 200 bytes inside a
+ * 24-byte datagram was accepted there and rejected in XDP.
+ *
+ * Every argument is in HOST order and passed explicitly, because the two
+ * planes byte-swap with different helpers (bpf_ntohs vs ntohs) and this
+ * header is compiled by both. payload_len is how many bytes actually
+ * follow the UDP header - udp->len - 8 in the kernel, the recvmsg return
+ * in userspace - which is what makes the overread guard expressible
+ * once instead of twice.
+ *
+ * Caller counts and decides the disposition; this only classifies.
+ */
+static inline int bfd_ctrl_check(__u8 vers_diag, __u8 flags, __u8 mult,
+				 __u8 len, __u32 my_disc, __u32 payload_len)
+{
+	if (((vers_diag >> 5) & 0x7) != BFD_VERSION)
+		return BFD_CTRL_MALFORMED;
+	if (len < BFD_MIN_LEN || len > payload_len)
+		return BFD_CTRL_MALFORMED;
+	if (mult == 0 || my_disc == 0)
+		return BFD_CTRL_MALFORMED;
+	if (flags & (BFD_F_AUTH | BFD_F_MP))
+		return BFD_CTRL_UNSUPPORTED;
+
+	return BFD_CTRL_ACCEPT;
+}
+
 struct bfd_addr {
 	__u8 b[16];
 };

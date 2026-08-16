@@ -19,36 +19,38 @@
  *
  * Every check bails before any session lookup or state write.
  *
+ * my_disc goes in without a byte swap on purpose: the shared predicate
+ * only tests it against zero, which reads the same either way.
+ *
  * The bfd + 1 bounds check stays in the caller: the verifier must see it
  * before bfd is dereferenced here or after this returns.
  */
 static __always_inline int bfd_hdr_verdict(const struct bfd_ctrl_pkt *bfd,
 					   const struct udphdr *udp)
 {
-	if (BFD_VERS(bfd) != BFD_VERSION || bfd->len < BFD_MIN_LEN ||
-	    bfd->detect_mult == 0 || bfd->my_disc == 0) {
-		count(2);
-		return XDP_PASS;
-	}
 	__u16 udp_len = bpf_ntohs(udp->len);
-	if (udp_len < sizeof(*udp) + BFD_MIN_LEN ||
-	    bfd->len > udp_len - sizeof(*udp)) {
+	__u32 payload = udp_len >= sizeof(*udp) ? udp_len - sizeof(*udp) : 0;
+
+	/* Guarded before the subtraction because udp_len is attacker-set:
+	 * an under-8 value would wrap and hand bfd_ctrl_check a payload
+	 * length of nearly 4G, which every length test would then pass. */
+	switch (bfd_ctrl_check(bfd->vers_diag, bfd->flags, bfd->detect_mult,
+			       bfd->len, bfd->my_disc, payload)) {
+	case BFD_CTRL_MALFORMED:
 		count(2);
 		return XDP_PASS;
-	}
-
-	/* RFC 5880 s6.8.6: a packet with the M bit set MUST be discarded
-	 * (multipoint is not this protocol), and one with the A bit set
-	 * MUST be discarded when no authentication is configured. s6.7 is
-	 * unimplemented here, so that is every session - an authenticated
-	 * peer's packets were being accepted as though they carried no
-	 * auth section at all.
-	 *
-	 * If auth is ever implemented this becomes "PASS to userspace when
-	 * the session has auth configured, DROP otherwise". Keyed digests
-	 * do not belong in the verifier.
-	 */
-	if (bfd->flags & (BFD_F_AUTH | BFD_F_MP)) {
+	case BFD_CTRL_UNSUPPORTED:
+		/* RFC 5880 s6.8.6: the M bit MUST be discarded (multipoint
+		 * is not this protocol), and the A bit MUST be discarded
+		 * when no authentication is configured. s6.7 is
+		 * unimplemented here, so that is every session - an
+		 * authenticated peer's packets were being accepted as
+		 * though they carried no auth section at all.
+		 *
+		 * If auth is ever implemented this becomes "PASS to
+		 * userspace when the session has auth configured, DROP
+		 * otherwise". Keyed digests do not belong in the verifier.
+		 */
 		count(9);
 		return XDP_DROP;
 	}

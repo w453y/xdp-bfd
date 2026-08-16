@@ -273,11 +273,16 @@ int main(int argc, char **argv)
 		 * asymmetry is deliberate - collapsing the four into one helper
 		 * means choosing one blocking discipline for all of them, which
 		 * changes transmit and detect pacing. */
-		ssize_t n = recvmsg(rx_sock, &mh, 0);
+		ssize_t n = recvmsg(rx_sock, &mh, MSG_TRUNC);
 		uint64_t t = now_us();
 
-		if (n >= 24 && BFD_VERS(&p) == BFD_VERSION &&
-		    p.detect_mult && p.my_disc) {
+		/* Same predicate the XDP path uses. Userspace used to check a
+		 * shorter list that ignored p.len entirely, so a packet
+		 * claiming 200 bytes inside a 24-byte datagram was accepted
+		 * here and rejected in the kernel. */
+		if (n >= 0 &&
+		    bfd_ctrl_check(p.vers_diag, p.flags, p.detect_mult, p.len,
+				   p.my_disc, (__u32)n) == BFD_CTRL_ACCEPT) {
 			uint32_t dst_ip = 0;
 			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh); c;
 			     c = CMSG_NXTHDR(&mh, c))
@@ -311,12 +316,13 @@ int main(int argc, char **argv)
 				.msg_control = cbufm,
 				.msg_controllen = sizeof(cbufm),
 			};
-			ssize_t nm = recvmsg(rxm_sock, &mhm, MSG_DONTWAIT);
+			ssize_t nm = recvmsg(rxm_sock, &mhm, MSG_DONTWAIT | MSG_TRUNC);
 		
 			if (nm < 0)
 				break;
-			if (nm < 24 || BFD_VERS(&pm) != BFD_VERSION ||
-			    !pm.detect_mult || !pm.my_disc)
+			if (bfd_ctrl_check(pm.vers_diag, pm.flags,
+					   pm.detect_mult, pm.len, pm.my_disc,
+					   (__u32)nm) != BFD_CTRL_ACCEPT)
 				continue;
 		
 			uint32_t mdst = 0;
@@ -351,11 +357,12 @@ int main(int argc, char **argv)
 				.msg_control = cbuf6,
 				.msg_controllen = sizeof(cbuf6),
 			};
-			ssize_t n6 = recvmsg(rx6_sock, &mh6, MSG_DONTWAIT);
+			ssize_t n6 = recvmsg(rx6_sock, &mh6, MSG_DONTWAIT | MSG_TRUNC);
 			if (n6 < 0)
 				break;
-			if (n6 < 24 || BFD_VERS(&p6) != BFD_VERSION ||
-			    !p6.detect_mult || !p6.my_disc)
+			if (bfd_ctrl_check(p6.vers_diag, p6.flags,
+					   p6.detect_mult, p6.len, p6.my_disc,
+					   (__u32)n6) != BFD_CTRL_ACCEPT)
 				continue;
 			struct bfd_addr fp6 = {0}, fl6 = {0};
 			memcpy(fp6.b, &from6.sin6_addr, 16);
@@ -387,12 +394,13 @@ int main(int argc, char **argv)
 				.msg_control = cbufm6,
 				.msg_controllen = sizeof(cbufm6),
 			};
-			ssize_t nm6 = recvmsg(rxm6_sock, &mhm6, MSG_DONTWAIT);
+			ssize_t nm6 = recvmsg(rxm6_sock, &mhm6, MSG_DONTWAIT | MSG_TRUNC);
 		
 			if (nm6 < 0)
 				break;
-			if (nm6 < 24 || BFD_VERS(&pm6) != BFD_VERSION ||
-			    !pm6.detect_mult || !pm6.my_disc)
+			if (bfd_ctrl_check(pm6.vers_diag, pm6.flags,
+					   pm6.detect_mult, pm6.len, pm6.my_disc,
+					   (__u32)nm6) != BFD_CTRL_ACCEPT)
 				continue;
 		
 			struct bfd_addr mp6 = {0}, ml6 = {0};

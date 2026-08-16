@@ -59,7 +59,12 @@ void echo_tx_init(const char *ifname)
         			memcpy(echo_src_mac, ifr.ifr_hwaddr.sa_data, 6);
         		close(mfd);
         	}
-        	echo_sock = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+        	/* Protocol 0, not ETH_P_ALL: this socket only ever sends.
+        	 * ETH_P_ALL subscribes the process to every inbound frame on
+        	 * every interface, so packet_rcv runs for all host traffic and
+        	 * queues it on a socket nothing reads. TX behaviour is
+        	 * identical either way. */
+        	echo_sock = socket(AF_PACKET, SOCK_RAW, 0);
         	if (echo_sock < 0)
         		perror("echo raw socket");
         	printf("echo-tx: ifindex %d src-mac %02x:%02x:%02x:%02x:%02x:%02x sock %d\n",

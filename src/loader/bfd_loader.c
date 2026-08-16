@@ -52,6 +52,17 @@ static int file_is_empty(FILE *f)
 	return f && !fseek(f, 0, SEEK_END) && ftell(f) == 0;
 }
 
+/* Age of a timestamp against a snapshot taken slightly earlier. A packet
+ * arriving between the snapshot and the map read leaves last_seen_ns
+ * ahead of now, and an unguarded __u64 subtraction then wraps to about
+ * 1.8e13 ms. sweep.h's check_session() already guards this the same way. */
+static double age_ms(__u64 now, __u64 then)
+{
+	__s64 d = (__s64)(now - then);
+
+	return d > 0 ? d / 1e6 : 0.0;
+}
+
 static __u64 mono_now_ns(void)
 {
 	struct timespec ts;
@@ -66,7 +77,7 @@ static int on_event(void *ctx, void *data, size_t len)
 
 	addr_str(&e->key.peer, peer, sizeof(peer));
 
-	double silent_ms = (e->ts_ns - e->last_seen_ns) / 1e6;
+	double silent_ms = age_ms(e->ts_ns, e->last_seen_ns);
 
 	printf(">>> %s peer=%s disc=%u silent=%.1fms mono_ts=%llu\n",
 	       e->event ? "ALIVE" : "DETECT-DOWN",
@@ -188,7 +199,7 @@ int main(int argc, char **argv)
 				char peer[INET6_ADDRSTRLEN];
 
 				addr_str(&next.peer, peer, sizeof(peer));
-				double age = (now - st.last_seen_ns) / 1e6;
+				double age = age_ms(now, st.last_seen_ns);
 				printf("%s state=%s alive=%u pkts=%llu age=%.1fms\n",
 				       peer,
 				       bfd_state_str(st.remote_state),

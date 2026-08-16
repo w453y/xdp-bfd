@@ -38,6 +38,11 @@ const char *ktx_obj_path;   /* --bpf-obj, or NULL for the default search */
  * properties this project measures - use it for functional testing,
  * never for a timing claim. */
 unsigned int ktx_xdp_flags = XDP_FLAGS_DRV_MODE;
+/* Held for the life of the process. Closing it detaches the program,
+ * which is the whole point: we never close it deliberately. -1 means
+ * we fell back to the flags-based attach and the program will outlive
+ * us. */
+static int xdp_link_fd = -1;
 static int cfg_fd = -1;
 int sess_fd = -1, echo_peers_fd = -1;
 int echo_disc_fd = -1;
@@ -65,16 +70,40 @@ int ktx_attach(const char *ifname)
 	}
 	const char *mode = (ktx_xdp_flags & XDP_FLAGS_SKB_MODE) ? "generic"
 								: "native";
-	if (bpf_xdp_attach(ifindex, bpf_program__fd(pr), ktx_xdp_flags, NULL)) {
-		fprintf(stderr, "%s XDP attach failed on %s\n", mode, ifname);
-		return -1;
+	/* Attach through a bpf_link, so the kernel detaches the program
+	 * when this process dies - including on SIGKILL, where we get no
+	 * chance to clean up. With the plain attach the fast path kept
+	 * answering control packets from a frozen tx_config after the
+	 * engine was gone, so the peer saw a session that nothing was
+	 * driving.
+	 *
+	 * A driver or an older kernel can still refuse link mode, so fall
+	 * back rather than failing to start - but say so, because the
+	 * fallback silently restores the old behaviour.
+	 */
+	LIBBPF_OPTS(bpf_link_create_opts, lopts, .flags = ktx_xdp_flags);
+
+	xdp_link_fd = bpf_link_create(bpf_program__fd(pr), ifindex, BPF_XDP,
+				      &lopts);
+	if (xdp_link_fd < 0) {
+		if (bpf_xdp_attach(ifindex, bpf_program__fd(pr),
+				   ktx_xdp_flags, NULL)) {
+			fprintf(stderr, "%s XDP attach failed on %s\n", mode,
+				ifname);
+			return -1;
+		}
+		fprintf(stderr,
+			"kernel-tx: bpf_link unavailable (%s), attached with "
+			"flags - the program will OUTLIVE this process\n",
+			strerror(-xdp_link_fd));
 	}
 	cfg_fd  = bpf_object__find_map_fd_by_name(bpf_obj, "tx_config");
 	sess_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_sessions");
 	echo_peers_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_peers");
 	echo_disc_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_disc");
 	flags_fd = bpf_object__find_map_fd_by_name(bpf_obj, "prog_flags");
-	printf("kernel-tx: XDP attached to %s (%s mode)\n", ifname, mode);
+	printf("kernel-tx: XDP attached to %s (%s mode, %s)\n", ifname, mode,
+	       xdp_link_fd >= 0 ? "link" : "flags");
 
 	return 0;
 }

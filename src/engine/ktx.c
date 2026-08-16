@@ -162,19 +162,67 @@ void ktx_mirror(struct session *s)
 	s->pushed_valid = 1;
 }
 
-void ktx_clear(struct session *s)
+/* echo_peers is keyed on the peer address alone - that is all the
+ * reflector has when a self-addressed echo arrives, since it never
+ * learns which of our local addresses the session used. Several
+ * sessions can therefore share one entry, so no single session owns it
+ * and no single session may delete it: doing that disabled reflection
+ * for every other session with the same peer.
+ *
+ * Membership is re-derived from the session table rather than
+ * refcounted. A refcount that drifts by one silently disables or
+ * silently enables echo and there is no witness for either; a rescan of
+ * 64 slots on a config event costs nothing.
+ *
+ * `skip` is the session being torn down or reconfigured, whose own
+ * state must not count toward the answer.
+ */
+void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip)
+{
+	__u8 one = 1;
+	int wanted = 0;
+
+	if (echo_peers_fd < 0)
+		return;
+	for (int i = 0; i < MAX_SESSIONS; i++) {
+		struct session *o = &sessions[i];
+
+		if (!o->used || o == skip || !o->echo_on)
+			continue;
+		if (!memcmp(&o->peer, peer, sizeof(*peer))) {
+			wanted = 1;
+			break;
+		}
+	}
+	if (wanted)
+		bpf_map_update_elem(echo_peers_fd, peer, &one, 0);
+	else
+		bpf_map_delete_elem(echo_peers_fd, peer);
+}
+
+/* Clear the kernel state for an address pair. Split from ktx_clear so
+ * an address change can drop the OLD key while the session lives on
+ * under the new one. */
+void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local,
+		   uint32_t wire_disc)
 {
 	if (!use_ktx)
 		return;
 	struct session_key k = {};
-	k.peer  = s->peer;
-	k.local = s->local;
+	k.peer  = *peer;
+	k.local = *local;
 	bpf_map_delete_elem(cfg_fd, &k);
 	bpf_map_delete_elem(sess_fd, &k);
-	if (echo_peers_fd >= 0)
-		bpf_map_delete_elem(echo_peers_fd, &s->peer);
-	if (echo_disc_fd >= 0 && s->wire_disc)
-		bpf_map_delete_elem(echo_disc_fd, &s->wire_disc);
+	if (echo_disc_fd >= 0 && wire_disc)
+		bpf_map_delete_elem(echo_disc_fd, &wire_disc);
+}
+
+void ktx_clear(struct session *s)
+{
+	if (!use_ktx)
+		return;
+	ktx_clear_key(&s->peer, &s->local, s->wire_disc);
+	echo_peer_refresh(&s->peer, s);
 	s->min_ttl = 0;
 	ktx_update_mhop_flag();
 }

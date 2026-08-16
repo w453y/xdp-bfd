@@ -12,6 +12,10 @@ extern int sess_fd;
 extern int echo_peers_fd;
 extern int echo_disc_fd;
 
+void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip);
+void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local,
+		   uint32_t wire_disc);
+
 int ktx_attach(const char *ifname);
 void ktx_update_mhop_flag(void);
 void ktx_mirror(struct session *s);

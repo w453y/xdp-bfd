@@ -59,6 +59,10 @@ struct session {
 	                               * session_state.rx_pkts and the two are
 	                               * summed for the counters reply */
 	uint64_t rx_bytes;            /* exact, from the validated len field */
+	uint8_t  echo_on;             /* SESSION_ECHO from the ADD. Explicit
+	                               * rather than inferred from echo_tx_us,
+	                               * which is 0 for an echo-enabled
+	                               * session whose peer asked for 0 */
 	uint32_t echo_tx_us;          /* echo interval from the ADD; 0 = off */
 	uint32_t min_echo_rx_us;      /* advertised Required Min Echo RX */
 	uint8_t  min_ttl;             /* from the ADD; 255 = single-hop */

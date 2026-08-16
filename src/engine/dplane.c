@@ -254,13 +254,30 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 		s->wire_disc = lid;   /* adopted sessions keep their wire
 		                       * discriminator (RFC 5880: constant
 		                       * while Up) */
+	/* An UPDATE for an existing lid may move the address pair. The old
+	 * pair's tx_config and bfd_sessions entries would otherwise stay
+	 * behind with enable=1 and keep being answered from the fast path -
+	 * finding 1 in miniature, with the engine still running. */
+	struct bfd_addr old_peer = s->peer, old_local = s->local;
+
 	sm_addrs(sm, &s->local, &s->peer, &s->family);
+	if (!fresh && (memcmp(&old_peer, &s->peer, sizeof(old_peer)) ||
+		       memcmp(&old_local, &s->local, sizeof(old_local)))) {
+		printf("dplane: ADD lid=%u moved address pair, clearing the old\n",
+		       lid);
+		ktx_clear_key(&old_peer, &old_local, s->wire_disc);
+		echo_peer_refresh(&old_peer, s);
+		/* echo_disc mapped the discriminator to the OLD key, so let
+		 * echo_tx_maybe re-insert it under the new one. */
+		s->echo_disc_done = 0;
+	}
 	uint32_t old_tx = s->min_tx_us, old_rx = s->min_rx_us;
 	s->min_tx_us   = ntohl(sm->min_tx);
 	s->min_rx_us   = ntohl(sm->min_rx);
 	s->detect_mult = sm->detect_mult;
 	s->passive     = !!(flags & SESSION_PASSIVE);
 	s->admin_down  = !!(flags & SESSION_SHUTDOWN);
+	s->echo_on     = !!(flags & SESSION_ECHO);
 	s->echo_tx_us  = (flags & SESSION_ECHO) ? ntohl(sm->min_echo_tx) : 0;
 	s->min_echo_rx_us = (flags & SESSION_ECHO)
 				    ? ntohl(sm->min_echo_rx) : 0;
@@ -270,14 +287,9 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	/* echo policy: track peers of echo-active sessions so the reflector
 	 * returns only their echoes, not arbitrary 3785 traffic. The map is
 	 * keyed on the shared 16-byte address, so both families share it. */
-	if (echo_peers_fd >= 0) {
-		if (flags & SESSION_ECHO) {
-			__u8 one = 1;
-			bpf_map_update_elem(echo_peers_fd, &s->peer, &one, 0);
-		} else {
-			bpf_map_delete_elem(echo_peers_fd, &s->peer);
-		}
-	}
+	/* Not a bare update/delete on this session's say-so: the entry is
+	 * shared with every other session that has the same peer. */
+	echo_peer_refresh(&s->peer, NULL);
 	if (!fresh && s->state == ST_UP &&
 	    (s->min_tx_us != old_tx || s->min_rx_us != old_rx)) {
 		/* RFC 5880 s6.8.3: parameter change while Up requires a

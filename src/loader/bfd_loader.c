@@ -20,6 +20,29 @@ static volatile sig_atomic_t stop;
 static void on_int(int sig) { (void)sig; stop = 1; }
 static FILE *evlog;
 
+/* The session key always holds the shared 16-byte address, with v4 stored
+ * v4-mapped (::ffff:a.b.c.d). Rendering it unconditionally as AF_INET
+ * printed a v6 peer as the last four bytes of its address. Same test the
+ * python harness uses in addr_of(). */
+static const char *addr_str(const struct bfd_addr *a, char *buf, size_t n)
+{
+	static const __u8 v4map[12] = { 0, 0, 0, 0, 0, 0,
+					0, 0, 0, 0, 0xff, 0xff };
+
+	if (!memcmp(a->b, v4map, sizeof(v4map)))
+		return inet_ntop(AF_INET, &a->b[12], buf, n);
+	return inet_ntop(AF_INET6, a->b, buf, n);
+}
+
+/* Slot names must track the comment on bfd_stats in src/xdp/maps.h, and
+ * the STAT dict in tests/inject_matrix.py. The dump only ever covered the
+ * first four of nine, so no echo activity was ever visible here. */
+static const char *const stat_name[] = {
+	"pkts", "well-formed", "malformed", "rejected", "echo-reflected",
+	"echo-returns", "echo-declined", "echo-not-self", "echo-ttl",
+};
+#define NSTATS ((__u32)(sizeof(stat_name) / sizeof(stat_name[0])))
+
 static __u64 mono_now_ns(void)
 {
 	struct timespec ts;
@@ -30,8 +53,9 @@ static __u64 mono_now_ns(void)
 static int on_event(void *ctx, void *data, size_t len)
 {
 	struct bfd_event *e = data;
-	char peer[INET_ADDRSTRLEN];
-	inet_ntop(AF_INET, &e->key.peer.b[12], peer, sizeof(peer));
+	char peer[INET6_ADDRSTRLEN];
+
+	addr_str(&e->key.peer, peer, sizeof(peer));
 
 	double silent_ms = (e->ts_ns - e->last_seen_ns) / 1e6;
 
@@ -133,19 +157,18 @@ int main(int argc, char **argv)
 			continue;
 		last_dump = time(NULL);
 
-		__u64 totals[4] = {0};
-		for (__u32 i = 0; i < 4; i++) {
-			__u64 vals[ncpu];
+		printf("--");
+		for (__u32 i = 0; i < NSTATS; i++) {
+			__u64 vals[ncpu], tot = 0;
+
 			memset(vals, 0, sizeof(vals));
 			if (!bpf_map_lookup_elem(stats_fd, &i, vals))
 				for (int c = 0; c < ncpu; c++)
-					totals[i] += vals[c];
+					tot += vals[c];
+			printf(" %s:%llu", stat_name[i],
+			       (unsigned long long)tot);
 		}
-		printf("-- pkts:%llu bfd:%llu bad:%llu rej:%llu --\n",
-		       (unsigned long long)totals[0],
-		       (unsigned long long)totals[1],
-		       (unsigned long long)totals[2],
-		       (unsigned long long)totals[3]);
+		printf(" --\n");
 
 		struct session_key key, next;
 		void *pkey = NULL;
@@ -153,9 +176,9 @@ int main(int argc, char **argv)
 		while (bpf_map_get_next_key(sess_fd, pkey, &next) == 0) {
 			struct session_state st;
 			if (bpf_map_lookup_elem(sess_fd, &next, &st) == 0) {
-				char peer[INET_ADDRSTRLEN];
-				inet_ntop(AF_INET, &next.peer.b[12],
-					  peer, sizeof(peer));
+				char peer[INET6_ADDRSTRLEN];
+
+				addr_str(&next.peer, peer, sizeof(peer));
 				double age = (now - st.last_seen_ns) / 1e6;
 				printf("%s state=%s alive=%u pkts=%llu age=%.1fms\n",
 				       peer,

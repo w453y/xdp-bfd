@@ -136,6 +136,18 @@ int main(int argc, char **argv)
 	setsockopt(rx_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 	int pi = 1;
 	setsockopt(rx_sock, IPPROTO_IP, IP_PKTINFO, &pi, sizeof(pi));
+	/* GTSM (RFC 5881 s5). The v6 socket below has always had the
+	 * equivalent; the v4 one had nothing, so an off-link packet that
+	 * XDP passed up was accepted here at any TTL. Absolute rather
+	 * than per-session because this socket only ever serves
+	 * single-hop, where the answer is always 255. */
+#ifndef IP_MINTTL
+#define IP_MINTTL 21
+#endif
+	int minttl = 255;
+	if (setsockopt(rx_sock, IPPROTO_IP, IP_MINTTL, &minttl,
+		       sizeof(minttl)))
+		perror("IP_MINTTL (v4 GTSM not enforced in userspace)");
 
 	/* RFC 5883 multihop control packets arrive on 4784. Bound
 	 * separately so single-hop demux is untouched; the XDP path
@@ -154,6 +166,11 @@ int main(int argc, char **argv)
 			rxm_sock = -1;
 		} else {
 			setsockopt(rxm_sock, IPPROTO_IP, IP_PKTINFO, &pi,
+				   sizeof(pi));
+			/* No IP_MINTTL here: the minimum is per session, from
+			 * the ADD, and one socket serves them all. Ask for the
+			 * arriving TTL instead and compare after demux. */
+			setsockopt(rxm_sock, IPPROTO_IP, IP_RECVTTL, &pi,
 				   sizeof(pi));
 		}
 	}
@@ -198,6 +215,10 @@ int main(int argc, char **argv)
 			rxm6_sock = -1;
 		} else {
 			setsockopt(rxm6_sock, IPPROTO_IPV6, IPV6_RECVPKTINFO,
+				   &pi, sizeof(pi));
+			/* Same reasoning as the v4 multihop socket: the minimum
+			 * is per session, so read the hop limit per packet. */
+			setsockopt(rxm6_sock, IPPROTO_IPV6, IPV6_RECVHOPLIMIT,
 				   &pi, sizeof(pi));
 		}
 	}
@@ -309,7 +330,11 @@ int main(int argc, char **argv)
 			struct sockaddr_in fromm;
 			struct iovec iovm = { .iov_base = &pm,
 					      .iov_len = sizeof(pm) };
-			char cbufm[CMSG_SPACE(sizeof(struct in_pktinfo))];
+			/* Two cmsgs now: IP_PKTINFO and IP_TTL. A buffer sized
+			 * for one silently truncates the second, and the TTL
+			 * check would then never see a value. */
+			char cbufm[CMSG_SPACE(sizeof(struct in_pktinfo)) +
+				   CMSG_SPACE(sizeof(int))];
 			struct msghdr mhm = {
 				.msg_name = &fromm, .msg_namelen = sizeof(fromm),
 				.msg_iov = &iovm, .msg_iovlen = 1,
@@ -326,12 +351,17 @@ int main(int argc, char **argv)
 				continue;
 		
 			uint32_t mdst = 0;
+			int mttl = -1;
 			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mhm); c;
-			     c = CMSG_NXTHDR(&mhm, c))
+			     c = CMSG_NXTHDR(&mhm, c)) {
 				if (c->cmsg_level == IPPROTO_IP &&
 				    c->cmsg_type == IP_PKTINFO)
 					mdst = ((struct in_pktinfo *)
 						CMSG_DATA(c))->ipi_addr.s_addr;
+				if (c->cmsg_level == IPPROTO_IP &&
+				    c->cmsg_type == IP_TTL)
+					memcpy(&mttl, CMSG_DATA(c), sizeof(mttl));
+			}
 		
 			struct session *ms = sess_by_wire(ntohl(pm.your_disc));
 			if (!ms) {
@@ -340,6 +370,13 @@ int main(int argc, char **argv)
 				key_set_v4(&ml, mdst);
 				ms = sess_by_addr(&mp, &ml);
 			}
+			/* GTSM against this session's own minimum, the same rule
+			 * the kernel applies against cfg->min_ttl. Enforced after
+			 * demux because that is when the minimum is known. A
+			 * missing cmsg (mttl < 0) means the setsockopt did not
+			 * take, so drop rather than silently accept anything. */
+			if (ms && (mttl < 0 || mttl < (int)ms->min_ttl))
+				continue;
 			if (ms)
 				fsm_rx(ms, &pm, now_us());
 		}
@@ -386,7 +423,8 @@ int main(int argc, char **argv)
 			struct sockaddr_in6 fromm6;
 			struct iovec iovm6 = { .iov_base = &pm6,
 					       .iov_len = sizeof(pm6) };
-			char cbufm6[CMSG_SPACE(sizeof(struct in6_pktinfo))];
+			char cbufm6[CMSG_SPACE(sizeof(struct in6_pktinfo)) +
+				    CMSG_SPACE(sizeof(int))];
 			struct msghdr mhm6 = {
 				.msg_name = &fromm6,
 				.msg_namelen = sizeof(fromm6),
@@ -405,17 +443,25 @@ int main(int argc, char **argv)
 		
 			struct bfd_addr mp6 = {0}, ml6 = {0};
 			memcpy(mp6.b, &fromm6.sin6_addr, 16);
+			int mhl6 = -1;
 			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mhm6); c;
-			     c = CMSG_NXTHDR(&mhm6, c))
+			     c = CMSG_NXTHDR(&mhm6, c)) {
+				if (c->cmsg_level == IPPROTO_IPV6 &&
+				    c->cmsg_type == IPV6_HOPLIMIT)
+					memcpy(&mhl6, CMSG_DATA(c), sizeof(mhl6));
 				if (c->cmsg_level == IPPROTO_IPV6 &&
 				    c->cmsg_type == IPV6_PKTINFO)
 					memcpy(ml6.b,
 					       &((struct in6_pktinfo *)
 						CMSG_DATA(c))->ipi6_addr, 16);
+			}
 		
 			struct session *ms6 = sess_by_wire(ntohl(pm6.your_disc));
 			if (!ms6)
 				ms6 = sess_by_addr(&mp6, &ml6);
+			/* Same per-session GTSM as the v4 multihop path. */
+			if (ms6 && (mhl6 < 0 || mhl6 < (int)ms6->min_ttl))
+				continue;
 			if (ms6)
 				fsm_rx(ms6, &pm6, t);
 		}

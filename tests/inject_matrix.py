@@ -43,6 +43,11 @@ COUNT = 20
 SETTLE = 0.6
 UNKNOWN_ECHO = "10.66.0.250"
 UNKNOWN_ECHO6 = "fd66::250"
+# Configured peers nothing answers on, used as positive controls.
+# Pinned by address: "multihop session with enable == 0" also
+# describes every real multihop peer that is merely down.
+PHANTOM4 = "10.66.0.200"
+PHANTOM6 = "fd66::200"
 
 MAC = None
 # Fields an injected packet must not disturb on a live session.
@@ -172,11 +177,14 @@ def pick(sess):
                 and "mh4" not in got):
             got["mh4"] = s
         # A configured peer nothing answers on: enable stays 0, so the
-        # TX bounce never fires and its rx_pkts moves only when we inject.
-        if (s["family"] == 4 and s["min_ttl"] < 255 and not s["enable"]
+        # TX bounce never fires and its rx_pkts moves only when we
+        # inject. Matched on the address, not on enable == 0 - that also
+        # matches a real multihop peer during bring-up, and the case then
+        # asserts against a session carrying live traffic.
+        if (s["family"] == 4 and s["peer"] == PHANTOM4
                 and "phantom" not in got):
             got["phantom"] = s
-        if (s["family"] == 6 and s["min_ttl"] < 255 and not s["enable"]
+        if (s["family"] == 6 and s["peer"] == PHANTOM6
                 and "phantom6" not in got):
             got["phantom6"] = s
         if s["family"] == 6 and s["min_ttl"] < 255 and "mh6" not in got:
@@ -449,6 +457,13 @@ def orchestrate(args):
     if missing:
         print("no session for %s, those cases are skipped"
               % ", ".join(sorted(missing)))
+    for kind, addr in (("phantom", PHANTOM4), ("phantom6", PHANTOM6)):
+        if kind not in got:
+            # Silent before: a phantom that does not resolve just dropped
+            # its cases from the list, and the run still said everything
+            # passed. Say so instead.
+            print("no configured session for %s %s, its cases are skipped"
+                  % (kind, addr))
     print()
 
     if args.only and not any(c[0] == args.only for c in cases):
@@ -642,6 +657,7 @@ def send(spec):
 
 def main():
     global INJECTOR_HOST, IFACE, COUNT, SETTLE, UNKNOWN_ECHO, UNKNOWN_ECHO6
+    global PHANTOM4, PHANTOM6
     p = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -664,6 +680,10 @@ def main():
                    help="address for the echo peer we do not serve")
     p.add_argument("--unknown-echo6", default=UNKNOWN_ECHO6,
                    help="v6 address for the echo peer we do not serve")
+    p.add_argument("--phantom", default=PHANTOM4,
+                   help="configured peer with no host behind it")
+    p.add_argument("--phantom6", default=PHANTOM6,
+                   help="v6 configured peer with no host behind it")
     args = p.parse_args()
 
     INJECTOR_HOST = args.injector
@@ -672,6 +692,8 @@ def main():
     SETTLE = args.settle
     UNKNOWN_ECHO = args.unknown_echo
     UNKNOWN_ECHO6 = args.unknown_echo6
+    PHANTOM4 = args.phantom
+    PHANTOM6 = args.phantom6
 
     if args.send:
         return send(json.loads(args.send))

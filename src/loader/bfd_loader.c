@@ -50,9 +50,19 @@ static int on_event(void *ctx, void *data, size_t len)
 
 int main(int argc, char **argv)
 {
-	if (argc != 2) {
-		fprintf(stderr, "usage: %s <ifname>\n", argv[0]);
+	unsigned int xdp_flags = XDP_FLAGS_DRV_MODE;
+
+	if (argc < 2 || argc > 3) {
+		fprintf(stderr, "usage: %s <ifname> [--generic]\n", argv[0]);
 		return 1;
+	}
+	if (argc == 3) {
+		if (strcmp(argv[2], "--generic")) {
+			fprintf(stderr, "usage: %s <ifname> [--generic]\n",
+				argv[0]);
+			return 1;
+		}
+		xdp_flags = XDP_FLAGS_SKB_MODE;
 	}
 	int ifindex = if_nametoindex(argv[1]);
 	if (!ifindex) { perror("if_nametoindex"); return 1; }
@@ -69,19 +79,20 @@ int main(int argc, char **argv)
 		fprintf(stderr, "bfd_observer not found in object\n");
 		return 1;
 	}
-	if (bpf_xdp_attach(ifindex, bpf_program__fd(prog),
-			   XDP_FLAGS_DRV_MODE, NULL)) {
-		fprintf(stderr, "native XDP attach failed on %s\n", argv[1]);
+	const char *mode = (xdp_flags & XDP_FLAGS_SKB_MODE) ? "GENERIC"
+							    : "NATIVE";
+	if (bpf_xdp_attach(ifindex, bpf_program__fd(prog), xdp_flags, NULL)) {
+		fprintf(stderr, "%s XDP attach failed on %s\n", mode, argv[1]);
 		return 1;
 	}
-	printf("attached (NATIVE mode)\n");
+	printf("attached (%s mode)\n", mode);
 
 	int sess_fd  = bpf_object__find_map_fd_by_name(obj, "bfd_sessions");
 	int stats_fd = bpf_object__find_map_fd_by_name(obj, "bfd_stats");
 	int rb_fd    = bpf_object__find_map_fd_by_name(obj, "bfd_events");
 	if (sess_fd < 0 || stats_fd < 0 || rb_fd < 0) {
 		fprintf(stderr, "map lookup failed\n");
-		bpf_xdp_detach(ifindex, XDP_FLAGS_DRV_MODE, NULL);
+		bpf_xdp_detach(ifindex, xdp_flags, NULL);
 		return 1;
 	}
 
@@ -97,7 +108,7 @@ int main(int argc, char **argv)
 		ring_buffer__new(rb_fd, on_event, NULL, NULL);
 	if (!rb) {
 		fprintf(stderr, "ringbuf setup failed\n");
-		bpf_xdp_detach(ifindex, XDP_FLAGS_DRV_MODE, NULL);
+		bpf_xdp_detach(ifindex, xdp_flags, NULL);
 		return 1;
 	}
 
@@ -164,7 +175,7 @@ int main(int argc, char **argv)
 		fflush(stdout);
 	}
 
-	bpf_xdp_detach(ifindex, XDP_FLAGS_DRV_MODE, NULL);
+	bpf_xdp_detach(ifindex, xdp_flags, NULL);
 	printf("\ndetached.\n");
 	if (log) fclose(log);
 	if (evlog) fclose(evlog);

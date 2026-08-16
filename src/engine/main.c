@@ -77,6 +77,19 @@ int main(int argc, char **argv)
 			ktx_if = argv[++i];
 		else if (!strcmp(argv[i], "--bpf-obj") && i + 1 < argc)
 			ktx_obj_path = argv[++i];
+		else if (!strcmp(argv[i], "--xdp-mode") && i + 1 < argc) {
+			const char *m = argv[++i];
+			if (!strcmp(m, "generic") || !strcmp(m, "skb"))
+				ktx_xdp_flags = XDP_FLAGS_SKB_MODE;
+			else if (!strcmp(m, "drv") || !strcmp(m, "native"))
+				ktx_xdp_flags = XDP_FLAGS_DRV_MODE;
+			else {
+				fprintf(stderr,
+					"--xdp-mode: expected drv or generic, got '%s'\n",
+					m);
+				return 1;
+			}
+		}
 		else if (!strcmp(argv[i], "--dp-hold") && i + 1 < argc)
 			dp_hold_us = strtoull(argv[++i], NULL, 10) * 1000000ull;
 		else if (!static_local)
@@ -88,7 +101,7 @@ int main(int argc, char **argv)
 		fprintf(stderr,
 			"usage: %s <local-ip> <peer-ip> [--kernel-tx <if>]\n"
 			"       %s --dplane <port|sock-path> [--kernel-tx <if>] [--dp-hold <sec>]\n"
-			"       [--bpf-obj <path>]\n",
+			"       [--bpf-obj <path>] [--xdp-mode drv|generic]\n",
 			argv[0], argv[0]);
 		return 1;
 	}

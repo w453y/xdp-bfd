@@ -31,6 +31,13 @@
 
 int use_ktx = 0;
 const char *ktx_obj_path;   /* --bpf-obj, or NULL for the default search */
+/* Attach mode. Native is the default and is what every measured
+ * result was taken with; generic (skb) mode exists so the engine can
+ * run on veth and other drivers with no native XDP. Generic mode runs
+ * after skb allocation, so it does NOT carry the softirq-timing
+ * properties this project measures - use it for functional testing,
+ * never for a timing claim. */
+unsigned int ktx_xdp_flags = XDP_FLAGS_DRV_MODE;
 static int cfg_fd = -1;
 int sess_fd = -1, echo_peers_fd = -1;
 int echo_disc_fd = -1;
@@ -56,9 +63,10 @@ int ktx_attach(const char *ifname)
 		fprintf(stderr, "bfd_observer not found in %s\n", obj);
 		return -1;
 	}
-	if (bpf_xdp_attach(ifindex, bpf_program__fd(pr),
-			   XDP_FLAGS_DRV_MODE, NULL)) {
-		fprintf(stderr, "native XDP attach failed on %s\n", ifname);
+	const char *mode = (ktx_xdp_flags & XDP_FLAGS_SKB_MODE) ? "generic"
+								: "native";
+	if (bpf_xdp_attach(ifindex, bpf_program__fd(pr), ktx_xdp_flags, NULL)) {
+		fprintf(stderr, "%s XDP attach failed on %s\n", mode, ifname);
 		return -1;
 	}
 	cfg_fd  = bpf_object__find_map_fd_by_name(bpf_obj, "tx_config");
@@ -66,7 +74,7 @@ int ktx_attach(const char *ifname)
 	echo_peers_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_peers");
 	echo_disc_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_disc");
 	flags_fd = bpf_object__find_map_fd_by_name(bpf_obj, "prog_flags");
-	printf("kernel-tx: XDP attached to %s\n", ifname);
+	printf("kernel-tx: XDP attached to %s (%s mode)\n", ifname, mode);
 
 	return 0;
 }

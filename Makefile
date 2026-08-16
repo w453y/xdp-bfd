@@ -1,7 +1,11 @@
 CLANG     ?= clang
 CC        ?= gcc
 CFLAGS    := -O2 -g -Wall -Iinclude -Isrc/engine
-BPFFLAGS  := -O2 -g -Wall -target bpf -Iinclude -Isrc/xdp -I/usr/include/x86_64-linux-gnu
+# The BPF target has no multiarch include path of its own, so the host
+# compiler's triple supplies it. Hardcoding x86_64-linux-gnu broke any
+# other architecture.
+TRIPLE    := $(shell $(CC) -dumpmachine)
+BPFFLAGS  := -O2 -g -Wall -target bpf -Iinclude -Isrc/xdp -I/usr/include/$(TRIPLE)
 
 ENGINE_OBJS := src/engine/main.o src/engine/session.o src/engine/dplane.o src/engine/ktx.o src/engine/echo_tx.o src/engine/fsm.o
 

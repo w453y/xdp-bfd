@@ -40,7 +40,7 @@ static const char *addr_str(const struct bfd_addr *a, char *buf, size_t n)
 static const char *const stat_name[] = {
 	"pkts", "well-formed", "malformed", "rejected", "echo-reflected",
 	"echo-returns", "echo-declined", "echo-not-self", "echo-ttl",
-	"unsupported-flags",
+	"unsupported-flags", "sweep-init-fail",
 };
 #define NSTATS ((__u32)(sizeof(stat_name) / sizeof(stat_name[0])))
 

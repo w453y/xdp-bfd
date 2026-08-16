@@ -67,26 +67,41 @@ static int sweep_fire(void *map, __u32 *key, struct sweep *sw)
  * not from userspace at load time, so the first packet through the
  * program arms the sweep. The CAS makes exactly one CPU do it.
  *
- * Setting `inited` BEFORE bpf_timer_init looks like a race and is not
- * one, so do not 'fix' it: a losing CPU returns early and assumes the
- * timer is armed, but nothing here or anywhere else reads the timer,
- * so the only consequence is that the very first sweep may be armed a
- * few microseconds after the packet that triggered it. Initialising
- * first and then CASing would be worse - two CPUs would both call
- * bpf_timer_init and bpf_timer_start on the same timer.
+ * Setting `inited` BEFORE the init looks like a race and is not one, so
+ * do not 'fix' it by initialising first: that would have two CPUs both
+ * calling bpf_timer_init and bpf_timer_start on the same timer. A
+ * losing CPU returning early is harmless, since nothing anywhere reads
+ * the timer.
+ *
+ * What DOES matter is that these calls can fail - on a kernel without
+ * bpf_timer support they always will - and `inited` is already 1 by
+ * then. Without a witness the sweep would silently never arm, kernel
+ * side detection would be off, and nothing would say so. So record the
+ * error and count it. Slot 10 must stay flat on a healthy system.
+ *
+ * Deliberately not retried: on an unsupported kernel a retry would run
+ * a failing helper on every packet forever.
  */
 static __always_inline void ensure_sweeper(void)
 {
 	__u32 zero = 0;
 	struct sweep *sw = bpf_map_lookup_elem(&sweep_map, &zero);
+	long err;
 
 	if (!sw)
 		return;
 	if (__sync_val_compare_and_swap(&sw->inited, 0, 1) != 0)
 		return;
-	bpf_timer_init(&sw->timer, &sweep_map, 0);
-	bpf_timer_set_callback(&sw->timer, sweep_fire);
-	bpf_timer_start(&sw->timer, SWEEP_NS, 0);
+
+	err = bpf_timer_init(&sw->timer, &sweep_map, 0);
+	if (!err)
+		err = bpf_timer_set_callback(&sw->timer, sweep_fire);
+	if (!err)
+		err = bpf_timer_start(&sw->timer, SWEEP_NS, 0);
+	if (err) {
+		sw->init_err = (__s32)err;
+		count(10);
+	}
 }
 
 #endif /* BFD_XDP_SWEEP_H */

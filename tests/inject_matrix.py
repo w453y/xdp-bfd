@@ -61,7 +61,8 @@ UNKNOWN_DST = "10.66.0.241"
 
 STAT = {0: "seen", 1: "well-formed", 2: "malformed", 3: "rejected",
         4: "reflected", 5: "echo-returns", 6: "declined", 7: "not-self",
-        8: "echo-ttl", 9: "unsupported-flags"}
+        8: "echo-ttl", 9: "unsupported-flags",
+        10: "sweep-init-fail"}
 
 
 def sh(cmd):

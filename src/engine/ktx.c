@@ -43,6 +43,9 @@ unsigned int ktx_xdp_flags = XDP_FLAGS_DRV_MODE;
  * we fell back to the flags-based attach and the program will outlive
  * us. */
 static int xdp_link_fd = -1;
+/* The one interface the fast path lives on. Sessions on any other
+ * interface run entirely in userspace; dp_handle_add says so. */
+int ktx_ifindex;
 static int cfg_fd = -1;
 int sess_fd = -1, echo_peers_fd = -1;
 int echo_disc_fd = -1;
@@ -54,6 +57,7 @@ int ktx_attach(const char *ifname)
 {
 	int ifindex = if_nametoindex(ifname);
 	if (!ifindex) { perror("ifname"); return -1; }
+	ktx_ifindex = ifindex;
 
 	const char *obj = bfd_obj_path(ktx_obj_path);
 

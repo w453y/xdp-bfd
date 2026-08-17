@@ -67,6 +67,9 @@ struct session {
 	uint32_t min_echo_rx_us;      /* advertised Required Min Echo RX */
 	uint8_t  min_ttl;             /* from the ADD; 255 = single-hop */
 	int      is_mhop;             /* RFC 5883: control port 4784 */
+	uint8_t  iface_warned;        /* the off-interface notice is once per
+	                               * session, not once per ADD - bfdd
+	                               * re-sends one on every config touch */
 	uint8_t  peer_mac[6];         /* synced from the map, learned by XDP */
 	int      mac_valid;
 	uint64_t next_echo_tx_us;

@@ -286,6 +286,28 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	s->min_ttl     = sm->ttl ? sm->ttl : 255;
 	s->is_mhop     = !!(flags & SESSION_MULTIHOP);
 	ktx_update_mhop_flag();
+
+	/* The fast path is attached to one interface. A single-hop session
+	 * bfdd placed on a different one still works, but entirely in
+	 * userspace: no RX-clocked TX, no kernel detection sweep, and none
+	 * of the XDP validation. Every measured result in this project is
+	 * about the fast path, so a session quietly off it invalidates any
+	 * claim made about it - say so once.
+	 *
+	 * Multihop is exempt: a routed session can ingress anywhere, so the
+	 * interface bfdd names for it does not mean what it means here.
+	 */
+	uint32_t sif = ntohl(sm->ifindex);
+
+	if (use_ktx && !s->is_mhop && sif && ktx_ifindex &&
+	    sif != (uint32_t)ktx_ifindex && !s->iface_warned) {
+		s->iface_warned = 1;
+		printf("dplane: lid=%u is on %.*s (ifindex %u), not the attached "
+		       "interface (ifindex %d) - this session runs in userspace "
+		       "only\n",
+		       s->lid, (int)sizeof(sm->ifname), sm->ifname, sif,
+		       ktx_ifindex);
+	}
 	/* echo policy: track peers of echo-active sessions so the reflector
 	 * returns only their echoes, not arbitrary 3785 traffic. The map is
 	 * keyed on the shared 16-byte address, so both families share it. */

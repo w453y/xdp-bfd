@@ -280,12 +280,42 @@ int main(int argc, char **argv)
 
 	if (static_local) {
 		struct session *s = sess_alloc();
-		uint32_t sl, sp;
-		inet_pton(AF_INET, static_local, &sl);
-		inet_pton(AF_INET, static_peer, &sp);
-		key_set_v4(&s->local, sl);
-		key_set_v4(&s->peer, sp);
-		s->family = AF_INET;
+		/* Family from the address text: a colon means v6. Both
+		 * arguments must agree - a session cannot span families, and
+		 * silently picking one would build a key that matches nothing
+		 * arriving. */
+		int fam = strchr(static_local, ':') ? AF_INET6 : AF_INET;
+
+		if ((strchr(static_peer, ':') != NULL) != (fam == AF_INET6)) {
+			fprintf(stderr,
+				"static: %s and %s are different families\n",
+				static_local, static_peer);
+			return 1;
+		}
+		if (fam == AF_INET6) {
+			struct in6_addr sl6, sp6;
+
+			/* Checked, unlike before: a typo used to produce a
+			 * zero address and a session that could never match. */
+			if (inet_pton(AF_INET6, static_local, &sl6) != 1 ||
+			    inet_pton(AF_INET6, static_peer, &sp6) != 1) {
+				fprintf(stderr, "static: bad IPv6 address\n");
+				return 1;
+			}
+			key_set_v6(&s->local, &sl6);
+			key_set_v6(&s->peer, &sp6);
+		} else {
+			uint32_t sl, sp;
+
+			if (inet_pton(AF_INET, static_local, &sl) != 1 ||
+			    inet_pton(AF_INET, static_peer, &sp) != 1) {
+				fprintf(stderr, "static: bad IPv4 address\n");
+				return 1;
+			}
+			key_set_v4(&s->local, sl);
+			key_set_v4(&s->peer, sp);
+		}
+		s->family = fam;
 		s->lid         = (random() & 0x7fffffff) | 1;
 		s->wire_disc   = s->lid;
 		s->min_tx_us   = DEF_MIN_TX;

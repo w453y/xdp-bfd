@@ -14,25 +14,14 @@
 #include <linux/if_link.h>
 
 #include "bfd_shared.h"
+#include "addrstr.h"
 #include "objpath.h"
 
 static volatile sig_atomic_t stop;
 static void on_int(int sig) { (void)sig; stop = 1; }
 static FILE *evlog;
 
-/* The session key always holds the shared 16-byte address, with v4 stored
- * v4-mapped (::ffff:a.b.c.d). Rendering it unconditionally as AF_INET
- * printed a v6 peer as the last four bytes of its address. Same test the
- * python harness uses in addr_of(). */
-static const char *addr_str(const struct bfd_addr *a, char *buf, size_t n)
-{
-	static const __u8 v4map[12] = { 0, 0, 0, 0, 0, 0,
-					0, 0, 0, 0, 0xff, 0xff };
-
-	if (!memcmp(a->b, v4map, sizeof(v4map)))
-		return inet_ntop(AF_INET, &a->b[12], buf, n);
-	return inet_ntop(AF_INET6, a->b, buf, n);
-}
+#define addr_str bfd_addr_str
 
 /* The only place the slot names are instantiated. Generated from the
  * same list the enum comes from, so the dump cannot drift from the

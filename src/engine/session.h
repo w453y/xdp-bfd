@@ -35,6 +35,15 @@ struct session {
 	int      admin_down;          /* SESSION_SHUTDOWN */
 
 	int      state, diag;
+	/* Transitions were logged and never counted, so nothing could
+	 * answer "how often has this session bounced". bfdd counts it
+	 * separately and bfddp_counters has no field for it, so it cannot
+	 * travel over the dplane socket - it comes out of the stats dump. */
+	uint32_t up_events, down_events;
+	uint64_t last_transition_us;
+	char     last_reason[24];    /* copied, not aliased: every caller
+	                              * passes a literal today and nothing
+	                              * should have to keep doing so */
 	uint32_t rdisc;
 	uint32_t r_min_tx, r_min_rx;
 	uint32_t r_min_echo;          /* peer's Required Min Echo RX */

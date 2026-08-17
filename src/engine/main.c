@@ -42,6 +42,7 @@
 #include "dplane.h"
 #include "ktx.h"
 #include "fsm.h"
+#include "stats.h"
 #include "echo_tx.h"
 #include <sys/ioctl.h>
 #include <linux/if_packet.h>
@@ -77,6 +78,8 @@ int main(int argc, char **argv)
 			ktx_if = argv[++i];
 		else if (!strcmp(argv[i], "--bpf-obj") && i + 1 < argc)
 			ktx_obj_path = argv[++i];
+		else if (!strcmp(argv[i], "--stats-dump") && i + 1 < argc)
+			stats_path = argv[++i];
 		else if (!strcmp(argv[i], "--xdp-mode") && i + 1 < argc) {
 			const char *m = argv[++i];
 			if (!strcmp(m, "generic") || !strcmp(m, "skb"))
@@ -115,7 +118,8 @@ int main(int argc, char **argv)
 		fprintf(stderr,
 			"usage: %s <local-ip> <peer-ip> [--kernel-tx <if>]\n"
 			"       %s --dplane <port|sock-path> [--kernel-tx <if>] [--dp-hold <sec>]\n"
-			"       [--bpf-obj <path>] [--xdp-mode drv|generic]\n",
+			"       [--bpf-obj <path>] [--xdp-mode drv|generic]\n"
+			"       [--stats-dump <path>]   (SIGUSR1 writes it)\n",
 			argv[0], argv[0]);
 		return 1;
 	}
@@ -251,6 +255,10 @@ int main(int argc, char **argv)
 		return 1;
 
 	srandom(getpid() ^ time(NULL));
+	/* The only signal the engine handles. It sets a flag; the dump
+	 * happens in the loop below, so nothing in it needs to be
+	 * async-signal-safe. */
+	signal(SIGUSR1, stats_on_signal);
 
 	if (static_local) {
 		struct session *s = sess_alloc();
@@ -280,6 +288,11 @@ int main(int argc, char **argv)
 		/* Anything that did not fit the socket last pass. Cheap when
 		 * the queue is empty, which is the normal case. */
 		dp_flush();
+
+		if (stats_wanted) {
+			stats_wanted = 0;
+			stats_dump();
+		}
 
 		struct bfd_ctrl_pkt p;
 		struct sockaddr_in from;

@@ -49,6 +49,8 @@ int ktx_ifindex;
 static int cfg_fd = -1;
 int sess_fd = -1, echo_peers_fd = -1;
 int echo_disc_fd = -1;
+int stats_fd = -1;      /* the only map fd ktx did not keep; the stats
+                         * dump needs it */
 static int flags_fd = -1;
 static struct bpf_object *bpf_obj;
 
@@ -106,6 +108,7 @@ int ktx_attach(const char *ifname)
 	echo_peers_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_peers");
 	echo_disc_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_disc");
 	flags_fd = bpf_object__find_map_fd_by_name(bpf_obj, "prog_flags");
+	stats_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_stats");
 	printf("kernel-tx: XDP attached to %s (%s mode, %s)\n", ifname, mode,
 	       xdp_link_fd >= 0 ? "link" : "flags");
 

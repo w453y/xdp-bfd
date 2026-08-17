@@ -94,6 +94,12 @@ void state_transition(struct session *s, int newstate, int diag,
 	       s->lid, bfd_state_str(s->state), bfd_state_str(newstate), why);
 	s->state = newstate;
 	s->diag  = diag;
+	if (newstate == ST_UP)
+		s->up_events++;
+	else if (newstate == ST_DOWN)
+		s->down_events++;
+	s->last_transition_us = t;
+	snprintf(s->last_reason, sizeof(s->last_reason), "%s", why);
 	if (newstate == ST_DOWN)
 		s->detect_iv_us = 0;
 	if (newstate == ST_UP || newstate == ST_DOWN) {

@@ -12,6 +12,7 @@ extern int ktx_ifindex;
 extern int sess_fd;
 extern int echo_peers_fd;
 extern int echo_disc_fd;
+extern int stats_fd;
 
 void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip);
 void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local,

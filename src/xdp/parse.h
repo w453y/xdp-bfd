@@ -39,7 +39,7 @@ static __always_inline int parse_l3(struct ethhdr *eth, void *data_end,
 		 * socket unvalidated - the same bypass class as an XDP_PASS
 		 * reject. Drop it. */
 		if (c->iph->ihl != 5) {
-			count(3);
+			count(BFD_STAT_REJECTED);
 			return XDP_DROP;
 		}
 		c->udp = (void *)(c->iph + 1);
@@ -66,7 +66,7 @@ static __always_inline int parse_l3(struct ethhdr *eth, void *data_end,
 			    (c->udp->dest == bpf_htons(BFD_PORT_1HOP) ||
 			     c->udp->dest == bpf_htons(BFD_PORT_MHOP) ||
 			     c->udp->dest == bpf_htons(BFD_ECHO_PORT))) {
-				count(3);
+				count(BFD_STAT_REJECTED);
 				return XDP_DROP;
 			}
 			return XDP_PASS;
@@ -89,7 +89,7 @@ static __always_inline int parse_l3(struct ethhdr *eth, void *data_end,
 			__u32 mz = 0;
 			__u32 *mf = bpf_map_lookup_elem(&prog_flags, &mz);
 			if (!mf || !(*mf & 2)) {
-				count(3);
+				count(BFD_STAT_REJECTED);
 				return XDP_DROP;
 			}
 		}
@@ -112,7 +112,7 @@ static __always_inline int parse_l3(struct ethhdr *eth, void *data_end,
 			__u32 mz = 0;
 			__u32 *mf = bpf_map_lookup_elem(&prog_flags, &mz);
 			if (!mf || !(*mf & 2)) {
-				count(3);
+				count(BFD_STAT_REJECTED);
 				return XDP_DROP;
 			}
 		}

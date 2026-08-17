@@ -71,6 +71,43 @@ struct bfd_ctrl_pkt {
 #define BFD_DIAG(h)   ((h)->vers_diag & 0x1f)
 #define BFD_STATE(h)  (((h)->flags >> 6) & 0x3)
 
+/* Stat slots, defined once.
+ *
+ * The table used to live in three places that had to agree - the
+ * comment on bfd_stats, the loader's name array and the test harness's
+ * STAT dict - plus twenty bare count(N) calls. It grew from 9 slots to
+ * 11 during one review branch, and nothing caught a missed edit: the
+ * loader would print the wrong name and the harness would assert on the
+ * wrong counter, both silently.
+ *
+ * The BPF side takes only the enum. Name strings are instantiated by
+ * userspace alone, so none of them land in the object file.
+ *
+ * Slots 2, 3, 9 and 10 should stay flat on a healthy system; 0, 1, 4,
+ * 5 and 8 climb in normal operation, and so does 7 - FRR sources its
+ * own v6 echoes at the peer rather than self-addressed, so a v6 echo
+ * arriving is routine rather than an error.
+ */
+#define BFD_STAT_LIST(X)                                              \
+	X(SEEN,              "seen")               /* every packet seen */ \
+	X(WELL_FORMED,       "well-formed")        /* parses as BFD */     \
+	X(MALFORMED,         "malformed")          /* header does not */   \
+	X(REJECTED,          "rejected")           /* GTSM, demux, frag */ \
+	X(REFLECTED,         "reflected")          /* echo bounced */      \
+	X(ECHO_RETURNS,      "echo-returns")       /* our echo came back */\
+	X(DECLINED,          "declined")           /* echo, peer unknown */\
+	X(NOT_SELF,          "not-self")           /* echo, not self-addr */\
+	X(ECHO_TTL,          "echo-ttl")           /* echo GTSM */         \
+	X(UNSUPPORTED_FLAGS, "unsupported-flags")  /* A or M bit */        \
+	X(SWEEP_INIT_FAIL,   "sweep-init-fail")    /* sweeper never armed */
+
+enum bfd_stat {
+#define BFD_STAT_ENUM(n, s) BFD_STAT_##n,
+	BFD_STAT_LIST(BFD_STAT_ENUM)
+#undef BFD_STAT_ENUM
+	BFD_STAT_MAX
+};
+
 /* Why a control packet was not accepted (RFC 5880 s6.8.6). */
 enum bfd_ctrl_verdict {
 	BFD_CTRL_ACCEPT = 0,

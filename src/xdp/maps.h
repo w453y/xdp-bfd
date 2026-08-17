@@ -14,14 +14,11 @@ struct {
 	__type(value, struct session_state);
 } bfd_sessions SEC(".maps");
 
-/* stats: 0=pkts 1=bfd 2=malformed 3=rejects 4=echo-reflected
- *        5=echo-returns 6=echo-declined 7=echo-not-self 8=echo-ttl
- *        9=unsupported-flags 10=sweep-init-fail
- * 7 is not an error counter: FRR sources its own v6 echoes at the
- * peer rather than self-addressed, so it climbs in normal use. */
+/* Slots and their meanings are defined once by BFD_STAT_LIST in
+ * include/bfd_shared.h; the size follows from it. */
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 11);
+	__uint(max_entries, BFD_STAT_MAX);
 	__type(key, __u32);
 	__type(value, __u64);
 } bfd_stats SEC(".maps");

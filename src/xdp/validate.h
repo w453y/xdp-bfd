@@ -37,7 +37,7 @@ static __always_inline int bfd_hdr_verdict(const struct bfd_ctrl_pkt *bfd,
 	switch (bfd_ctrl_check(bfd->vers_diag, bfd->flags, bfd->detect_mult,
 			       bfd->len, bfd->my_disc, payload)) {
 	case BFD_CTRL_MALFORMED:
-		count(2);
+		count(BFD_STAT_MALFORMED);
 		return XDP_PASS;
 	case BFD_CTRL_UNSUPPORTED:
 		/* RFC 5880 s6.8.6: the M bit MUST be discarded (multipoint
@@ -51,7 +51,7 @@ static __always_inline int bfd_hdr_verdict(const struct bfd_ctrl_pkt *bfd,
 		 * userspace when the session has auth configured, DROP
 		 * otherwise". Keyed digests do not belong in the verifier.
 		 */
-		count(9);
+		count(BFD_STAT_UNSUPPORTED_FLAGS);
 		return XDP_DROP;
 	}
 

@@ -100,7 +100,7 @@ static __always_inline void ensure_sweeper(void)
 		err = bpf_timer_start(&sw->timer, SWEEP_NS, 0);
 	if (err) {
 		sw->init_err = (__s32)err;
-		count(10);
+		count(BFD_STAT_SWEEP_INIT_FAIL);
 	}
 }
 

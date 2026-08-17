@@ -30,6 +30,8 @@ next restart loses them.
 
 import argparse
 import json
+import os
+import re
 import shlex
 import subprocess
 import sys
@@ -59,10 +61,46 @@ WATCH = ("remote_disc", "detect_iv_us", "min_tx_us", "min_rx_us",
 UNKNOWN_SRC = "10.66.0.240"
 UNKNOWN_DST = "10.66.0.241"
 
-STAT = {0: "seen", 1: "well-formed", 2: "malformed", 3: "rejected",
-        4: "reflected", 5: "echo-returns", 6: "declined", 7: "not-self",
-        8: "echo-ttl", 9: "unsupported-flags",
-        10: "sweep-init-fail"}
+_STAT = {}
+
+
+def stat_names():
+    """Slot numbering and names, read from the BFD_STAT_LIST X-macro in
+    include/bfd_shared.h.
+
+    Resolved on first use, NOT at import: this file pipes itself to the
+    injector host over ssh and runs there as `python3 -`, where __file__
+    is "<stdin>" and the repo is not checked out at all. Only the
+    orchestrator half ever needs the table.
+
+    Hand-copied here until 2026-08: the same table lived in the header,
+    the loader and this file, and grew from 9 slots to 11 in one branch.
+    A missed edit would have made every assertion below name the wrong
+    counter, silently. Reading the definition is the only way this file
+    cannot drift from what the program actually counts.
+    """
+    if _STAT:
+        return _STAT
+
+    hdr = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "..", "include", "bfd_shared.h")
+    out, inside = {}, False
+    with open(hdr) as f:
+        for line in f:
+            if line.startswith("#define BFD_STAT_LIST"):
+                inside = True
+                continue
+            if not inside:
+                continue
+            m = re.match(r'\s*X\(\w+,\s*"([^"]+)"\)', line)
+            if m:
+                out[len(out)] = m.group(1)
+            if not line.rstrip().endswith("\\"):
+                break
+    if not out:
+        sys.exit("no BFD_STAT_LIST entries found in %s" % hdr)
+    _STAT.update(out)
+    return _STAT
 
 
 def sh(cmd):
@@ -96,8 +134,9 @@ def counters():
     rx_pkts instead. A key absent before and present after reads as 0 -> n,
     which is what a session receiving its first packet looks like.
     """
-    out = {STAT[e["key"]]: sum(c["value"] for c in e["values"])
-           for e in bpf_map("bfd_stats") if e["key"] in STAT}
+    names = stat_names()
+    out = {names[e["key"]]: sum(c["value"] for c in e["values"])
+           for e in bpf_map("bfd_stats") if e["key"] in names}
     for e in bpf_map("bfd_sessions"):
         peer = addr_of(e["key"]["peer"]["b"])[0]
         local = addr_of(e["key"]["local"]["b"])[0]

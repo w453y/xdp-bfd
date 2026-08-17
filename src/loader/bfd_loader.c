@@ -34,15 +34,15 @@ static const char *addr_str(const struct bfd_addr *a, char *buf, size_t n)
 	return inet_ntop(AF_INET6, a->b, buf, n);
 }
 
-/* Slot names must track the comment on bfd_stats in src/xdp/maps.h, and
- * the STAT dict in tests/inject_matrix.py. The dump only ever covered the
- * first four of nine, so no echo activity was ever visible here. */
+/* The only place the slot names are instantiated. Generated from the
+ * same list the enum comes from, so the dump cannot drift from the
+ * numbering the program uses. */
 static const char *const stat_name[] = {
-	"pkts", "well-formed", "malformed", "rejected", "echo-reflected",
-	"echo-returns", "echo-declined", "echo-not-self", "echo-ttl",
-	"unsupported-flags", "sweep-init-fail",
+#define BFD_STAT_NAME(n, s) s,
+	BFD_STAT_LIST(BFD_STAT_NAME)
+#undef BFD_STAT_NAME
 };
-#define NSTATS ((__u32)(sizeof(stat_name) / sizeof(stat_name[0])))
+#define NSTATS ((__u32)BFD_STAT_MAX)
 
 /* fopen(..., "a") does not define where the stream position starts, so
  * ftell() on a fresh append handle is not reliably 0 on an empty file.

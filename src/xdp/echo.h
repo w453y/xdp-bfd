@@ -35,17 +35,17 @@ static __always_inline int echo_reflect_v4(struct ethhdr *eth,
         		es->echo_last_seen_ns = bpf_ktime_get_ns();
         		es->echo_last_nonce   = bpf_ntohl(eb->min_echo_rx);
         		es->echo_rx_pkts++;
-        		count(5);
+        		count(BFD_STAT_ECHO_RETURNS);
         		return XDP_DROP;
         	}
         	/* GTSM: single-hop echoes only. */
         	if (iph->ttl != 255) {
-        		count(8);          /* echo-ttl */
+        		count(BFD_STAT_ECHO_TTL);
         		return XDP_PASS;
         	}
         	/* A classic echo is self-addressed to the originator. */
         	if (iph->saddr != iph->daddr) {
-        		count(7);          /* echo-not-self */
+        		count(BFD_STAT_NOT_SELF);
         		return XDP_PASS;
         	}
         	/* Reflect only for a peer of an echo-active session; otherwise
@@ -53,7 +53,7 @@ static __always_inline int echo_reflect_v4(struct ethhdr *eth,
         	struct bfd_addr esrc;
         	key_set_v4(&esrc, iph->saddr);
         	if (!bpf_map_lookup_elem(&echo_peers, &esrc)) {
-        		count(6);          /* echo-declined */
+        		count(BFD_STAT_DECLINED);
         		return XDP_PASS;
         	}
 
@@ -75,7 +75,7 @@ static __always_inline int echo_reflect_v4(struct ethhdr *eth,
         	csum = (csum & 0xffff) + (csum >> 16);
         	iph->check = ~csum & 0xffff;
 
-        	count(4);          /* echo-reflected */
+        	count(BFD_STAT_REFLECTED);
         	return XDP_TX;
 }
 
@@ -100,14 +100,14 @@ static __always_inline int echo_reflect_v6(struct ethhdr *eth,
 
 	/* GTSM: single-hop echoes only. */
 	if (ip6->hop_limit != 255) {
-		count(8);          /* echo-ttl */
+		count(BFD_STAT_ECHO_TTL);
 		return XDP_PASS;
 	}
 
 	/* A classic echo is self-addressed to the originator. */
 	if (sa[0] != da[0] || sa[1] != da[1] ||
 	    sa[2] != da[2] || sa[3] != da[3]) {
-		count(7);          /* echo-not-self */
+		count(BFD_STAT_NOT_SELF);
 		return XDP_PASS;
 	}
 
@@ -116,7 +116,7 @@ static __always_inline int echo_reflect_v6(struct ethhdr *eth,
 	 * vector. */
 	key_set_v6(&esrc, &ip6->saddr);
 	if (!bpf_map_lookup_elem(&echo_peers, &esrc)) {
-		count(6);          /* echo-declined */
+		count(BFD_STAT_DECLINED);
 		return XDP_PASS;
 	}
 
@@ -127,7 +127,7 @@ static __always_inline int echo_reflect_v6(struct ethhdr *eth,
 
 	ip6->hop_limit--;
 
-	count(4);          /* echo-reflected */
+	count(BFD_STAT_REFLECTED);
 	return XDP_TX;
 }
 

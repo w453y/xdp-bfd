@@ -29,7 +29,7 @@ int bfd_observer(struct xdp_md *ctx)
 	void *data     = (void *)(long)ctx->data;
 	void *data_end = (void *)(long)ctx->data_end;
 
-	count(0);
+	count(BFD_STAT_SEEN);
 
 	struct ethhdr *eth = data;
 	if ((void *)(eth + 1) > data_end)
@@ -66,14 +66,14 @@ int bfd_observer(struct xdp_md *ctx)
 
 	struct bfd_ctrl_pkt *bfd = (void *)(udp + 1);
 	if ((void *)(bfd + 1) > data_end) {
-		count(2);
+		count(BFD_STAT_MALFORMED);
 		return XDP_PASS;
 	}
 	int hv = bfd_hdr_verdict(bfd, udp);
 	if (hv >= 0)
 		return hv;
 
-	count(1);
+	count(BFD_STAT_WELL_FORMED);
 
 	/* Only track sessions the control plane configured, unless the
 	 * standalone loader asked for promiscuous observation. Stops
@@ -97,7 +97,7 @@ int bfd_observer(struct xdp_md *ctx)
 			__u32 mt = (cfg && cfg->min_ttl) ? cfg->min_ttl : 255;
 
 			if (!cfg || pttl < mt) {
-				count(3);
+				count(BFD_STAT_REJECTED);
 				return XDP_DROP;
 			}
 		}
@@ -120,7 +120,7 @@ int bfd_observer(struct xdp_md *ctx)
 		__u32 ydisc = bpf_ntohl(bfd->your_disc);
 		if (ydisc != cfg->my_disc &&
 		    !(ydisc == 0 && rstate <= 1)) {
-			count(3);
+			count(BFD_STAT_REJECTED);
 			return XDP_DROP;
 		}
 	}

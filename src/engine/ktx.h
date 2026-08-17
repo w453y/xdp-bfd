@@ -9,6 +9,7 @@ extern int use_ktx;
 extern const char *ktx_obj_path;
 extern unsigned int ktx_xdp_flags;
 extern int ktx_ifindex;
+extern __u64 ktx_sweep_ns;
 extern int sess_fd;
 extern int echo_peers_fd;
 extern int echo_disc_fd;

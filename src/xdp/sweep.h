@@ -6,7 +6,7 @@
 #ifndef BFD_XDP_SWEEP_H
 #define BFD_XDP_SWEEP_H
 
-/* Sweep: called for each session every SWEEP_NS. */
+/* Sweep: called for each session every sweep_interval(). */
 struct bpf_map;
 static long check_session(struct bpf_map *map, struct session_key *k,
 			  struct session_state *st, void *ctx)
@@ -54,12 +54,23 @@ static long check_session(struct bpf_map *map, struct session_key *k,
 	return 0;
 }
 
+/* The sweep interval: whatever userspace set before attach, else the
+ * compiled default. Read at each arm rather than cached, so a value
+ * written later would take effect on the next tick. */
+static __always_inline __u64 sweep_interval(void)
+{
+	__u32 k = BFD_TUNE_SWEEP_NS;
+	__u64 *v = bpf_map_lookup_elem(&tunables, &k);
+
+	return (v && *v) ? *v : SWEEP_NS;
+}
+
 static int sweep_fire(void *map, __u32 *key, struct sweep *sw)
 {
 	__u64 now = bpf_ktime_get_ns();
 
 	bpf_for_each_map_elem(&bfd_sessions, check_session, &now, 0);
-	bpf_timer_start(&sw->timer, SWEEP_NS, 0);
+	bpf_timer_start(&sw->timer, sweep_interval(), 0);
 	return 0;
 }
 
@@ -97,7 +108,7 @@ static __always_inline void ensure_sweeper(void)
 	if (!err)
 		err = bpf_timer_set_callback(&sw->timer, sweep_fire);
 	if (!err)
-		err = bpf_timer_start(&sw->timer, SWEEP_NS, 0);
+		err = bpf_timer_start(&sw->timer, sweep_interval(), 0);
 	if (err) {
 		sw->init_err = (__s32)err;
 		count(BFD_STAT_SWEEP_INIT_FAIL);

@@ -67,6 +67,13 @@ struct {
 	__type(value, __u32);
 } prog_flags SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, BFD_TUNE_MAX);
+	__type(key, __u32);
+	__type(value, __u64);
+} tunables SEC(".maps");
+
 struct sweep {
 	struct bpf_timer timer;
 	__u32 inited;

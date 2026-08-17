@@ -38,6 +38,8 @@ const char *ktx_obj_path;   /* --bpf-obj, or NULL for the default search */
  * properties this project measures - use it for functional testing,
  * never for a timing claim. */
 unsigned int ktx_xdp_flags = XDP_FLAGS_DRV_MODE;
+/* --sweep-us, in nanoseconds; 0 leaves the compiled default. */
+__u64 ktx_sweep_ns;
 /* Held for the life of the process. Closing it detaches the program,
  * which is the whole point: we never close it deliberately. -1 means
  * we fell back to the flags-based attach and the program will outlive
@@ -68,6 +70,22 @@ int ktx_attach(const char *ifname)
 		fprintf(stderr, "%s load failed\n", obj);
 		return -1;
 	}
+	/* Tunables go in after load and before attach, so the first packet
+	 * cannot arm the sweeper on the default and then be corrected. */
+	if (ktx_sweep_ns) {
+		int tune_fd = bpf_object__find_map_fd_by_name(bpf_obj,
+							      "tunables");
+		__u32 k = BFD_TUNE_SWEEP_NS;
+
+		if (tune_fd < 0 ||
+		    bpf_map_update_elem(tune_fd, &k, &ktx_sweep_ns, 0)) {
+			fprintf(stderr,
+				"kernel-tx: sweep interval NOT applied, "
+				"running the compiled default\n");
+			ktx_sweep_ns = 0;
+		}
+	}
+
 	struct bpf_program *pr =
 		bpf_object__find_program_by_name(bpf_obj, "bfd_observer");
 	if (!pr) {
@@ -111,6 +129,10 @@ int ktx_attach(const char *ifname)
 	stats_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_stats");
 	printf("kernel-tx: XDP attached to %s (%s mode, %s)\n", ifname, mode,
 	       xdp_link_fd >= 0 ? "link" : "flags");
+	if (ktx_sweep_ns)
+		printf("kernel-tx: sweep interval %lluus (default %lluus)\n",
+		       (unsigned long long)(ktx_sweep_ns / 1000),
+		       (unsigned long long)(BFD_SWEEP_NS_DEFAULT / 1000));
 
 	return 0;
 }

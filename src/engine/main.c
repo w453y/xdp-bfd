@@ -80,6 +80,23 @@ int main(int argc, char **argv)
 			ktx_obj_path = argv[++i];
 		else if (!strcmp(argv[i], "--stats-dump") && i + 1 < argc)
 			stats_path = argv[++i];
+		else if (!strcmp(argv[i], "--sweep-us") && i + 1 < argc) {
+			const char *a = argv[++i];
+			char *end;
+			unsigned long long v = strtoull(a, &end, 10);
+
+			/* Bounded on both sides. Below ~0.5ms the timer churn
+			 * starts to cost more than the quantization it removes;
+			 * above 100ms the sweep is slower than any detection
+			 * budget it is meant to serve. */
+			if (end == a || *end || v < 500 || v > 100000) {
+				fprintf(stderr,
+					"--sweep-us: expected 500-100000, got '%s'\n",
+					a);
+				return 1;
+			}
+			ktx_sweep_ns = v * 1000ull;
+		}
 		else if (!strcmp(argv[i], "--xdp-mode") && i + 1 < argc) {
 			const char *m = argv[++i];
 			if (!strcmp(m, "generic") || !strcmp(m, "skb"))
@@ -119,7 +136,8 @@ int main(int argc, char **argv)
 			"usage: %s <local-ip> <peer-ip> [--kernel-tx <if>]\n"
 			"       %s --dplane <port|sock-path> [--kernel-tx <if>] [--dp-hold <sec>]\n"
 			"       [--bpf-obj <path>] [--xdp-mode drv|generic]\n"
-			"       [--stats-dump <path>]   (SIGUSR1 writes it)\n",
+			"       [--stats-dump <path>]   (SIGUSR1 writes it)\n"
+			"       [--sweep-us <500-100000>]\n",
 			argv[0], argv[0]);
 		return 1;
 	}

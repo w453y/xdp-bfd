@@ -101,6 +101,20 @@ struct bfd_ctrl_pkt {
 	X(UNSUPPORTED_FLAGS, "unsupported-flags")  /* A or M bit */        \
 	X(SWEEP_INIT_FAIL,   "sweep-init-fail")    /* sweeper never armed */
 
+/* Load-time tunables, written by userspace between load and attach and
+ * treated as read-only by the program thereafter. Kept in their own map
+ * rather than in .rodata, where setting one field would mean rewriting
+ * the whole blob, and rather than in sweep_map, whose value holds a
+ * bpf_timer that userspace must not write over. */
+enum bfd_tunable {
+	BFD_TUNE_SWEEP_NS,   /* 0 means use the compiled default */
+	BFD_TUNE_MAX
+};
+
+/* The compiled sweep interval. Shared rather than kernel-side only
+ * because the engine reports what it overrode and against what. */
+#define BFD_SWEEP_NS_DEFAULT (5ull * 1000 * 1000)
+
 enum bfd_stat {
 #define BFD_STAT_ENUM(n, s) BFD_STAT_##n,
 	BFD_STAT_LIST(BFD_STAT_ENUM)

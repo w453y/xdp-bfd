@@ -442,6 +442,25 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h,
 		m.c.control_input_packets  = htobe64(rx);
 		m.c.control_output_bytes   = htobe64(tx * BFD_MIN_LEN);
 		m.c.control_output_packets = htobe64(tx);
+
+		/* Echo, which was reported as a flat zero while echo was
+		 * plainly running - the same shape as the control-input bug
+		 * above. The numbers were already here: echo_tx_pkts from
+		 * the userspace originator, echo_rx_pkts pulled out of the
+		 * session map by ktx_poll_map.
+		 *
+		 * These are the ORIGINATOR's numbers only. Frames the kernel
+		 * reflector bounces on a peer's behalf are counted globally
+		 * and cannot be attributed to a session: echo_peers is keyed
+		 * on the peer address alone, so the reflector never learns
+		 * which session an arriving echo belongs to. A peer that
+		 * echoes at us while we do not echo back therefore still
+		 * reads zero here, and that is honest rather than missing.
+		 */
+		m.c.echo_input_bytes    = htobe64(s->echo_rx_pkts * BFD_MIN_LEN);
+		m.c.echo_input_packets  = htobe64(s->echo_rx_pkts);
+		m.c.echo_output_bytes   = htobe64(s->echo_tx_pkts * BFD_MIN_LEN);
+		m.c.echo_output_packets = htobe64(s->echo_tx_pkts);
 	}
 	dp_send(&m, sizeof(m));
 }

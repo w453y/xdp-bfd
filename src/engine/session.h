@@ -41,6 +41,14 @@ struct session {
 	 * travel over the dplane socket - it comes out of the stats dump. */
 	uint32_t up_events, down_events;
 	uint64_t last_transition_us;
+	/* What the last detection actually cost, captured at the moment it
+	 * fired. Cannot be recomputed later: state_transition clears
+	 * detect_iv_us on the way into Down, so the budget the overshoot is
+	 * measured against is gone by the time anything reads the session.
+	 * Detect-timeout transitions only - a peer-signalled Down has no
+	 * overshoot, and mixing the two puts a false spike at zero. */
+	uint32_t last_detect_us;     /* silence before we declared Down */
+	uint32_t last_overshoot_us;  /* that, minus the negotiated budget */
 	char     last_reason[24];    /* copied, not aliased: every caller
 	                              * passes a literal today and nothing
 	                              * should have to keep doing so */

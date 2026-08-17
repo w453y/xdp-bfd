@@ -71,6 +71,10 @@ static void one_session(FILE *f, const struct session *s, int first)
 		s->up_events, s->down_events);
 	fprintf(f, " \"last_transition_us\": %llu, \"last_reason\": \"%s\",",
 		(unsigned long long)s->last_transition_us, s->last_reason);
+	fprintf(f, " \"last_rx_us\": %llu,",
+		(unsigned long long)s->last_rx_us);
+	fprintf(f, " \"last_detect_us\": %u, \"last_overshoot_us\": %u,",
+		s->last_detect_us, s->last_overshoot_us);
 	fprintf(f, " \"min_tx_us\": %u, \"min_rx_us\": %u, \"detect_mult\": %u,",
 		s->min_tx_us, s->min_rx_us, s->detect_mult);
 	fprintf(f, " \"remote_min_tx_us\": %u, \"remote_min_rx_us\": %u,",

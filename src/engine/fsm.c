@@ -99,6 +99,20 @@ void state_transition(struct session *s, int newstate, int diag,
 	else if (newstate == ST_DOWN)
 		s->down_events++;
 	s->last_transition_us = t;
+	if (newstate == ST_DOWN && diag == 1 && s->last_rx_us) {
+		/* Before the detect_iv_us reset below, which is why this
+		 * lives here rather than in fsm_detect: the kernel sweep can
+		 * declare Down too, via ktx_poll_map, and that path deserves
+		 * the same accounting. */
+		uint64_t silent = t - s->last_rx_us;
+		uint64_t budget = (uint64_t)(s->r_mult ? s->r_mult
+						    : s->detect_mult) *
+				  s->detect_iv_us;
+
+		s->last_detect_us = (uint32_t)silent;
+		s->last_overshoot_us = silent > budget ?
+				       (uint32_t)(silent - budget) : 0;
+	}
 	snprintf(s->last_reason, sizeof(s->last_reason), "%s", why);
 	if (newstate == ST_DOWN)
 		s->detect_iv_us = 0;

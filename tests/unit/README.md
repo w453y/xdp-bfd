@@ -39,6 +39,13 @@ Six structs pinned by size: `bfd_ctrl_pkt`, `bfd_addr`, `session_key`,
 Offsets pinned for `session_state`, `tx_cfg`, `bfd_event`,
 `session_key`, and the two `bfd_ctrl_pkt` fields the kernel rewrites.
 
-Not covered: enum values, the `BFD_STAT_LIST` numbering, and map value
-sizes as declared in the BPF object. A stat enum reordered on one side
-still misreads silently.
+Enums pinned by value rather than by count, so inserting a member in the
+middle fails rather than silently shifting everything below it: all
+eleven `BFD_STAT_LIST` slots plus `BFD_STAT_MAX`, both `bfd_tunable`
+members, and the four `bfd_state` values.
+
+Not covered: map value sizes as declared in the BPF object. A map whose
+declared value size no longer matches the struct it carries still fails
+only at load time, and only if the mismatch is large enough to be
+rejected. That check needs the loaded object rather than the header, so
+it belongs with the Layer 1 harness.

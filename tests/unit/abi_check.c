@@ -114,3 +114,32 @@ _Static_assert(offsetof(struct bfd_ctrl_pkt, my_disc) == 4,
 	       "offsetof(struct bfd_ctrl_pkt, my_disc)");
 _Static_assert(offsetof(struct bfd_ctrl_pkt, min_echo_rx) == 20,
 	       "offsetof(struct bfd_ctrl_pkt, min_echo_rx)");
+
+/* Enum values cross the plane boundary the same way struct offsets do: the
+ * engine writes tunables and reads stat slots by number, and the XDP program
+ * indexes the same arrays. A reorder misreads silently. Pinned by value, not
+ * by count, so inserting a member in the middle fails rather than shifting
+ * everything below it. */
+_Static_assert(BFD_TUNE_SWEEP_NS == 0, "BFD_TUNE_SWEEP_NS");
+_Static_assert(BFD_TUNE_MAX == 1, "BFD_TUNE_MAX");
+_Static_assert(ST_ADMINDOWN == 0, "ST_ADMINDOWN");
+_Static_assert(ST_DOWN == 1, "ST_DOWN");
+_Static_assert(ST_INIT == 2, "ST_INIT");
+_Static_assert(ST_UP == 3, "ST_UP");
+
+/* Stat slots are indexed by number on both sides: the program bumps a
+ * per-CPU array element, the engine sums the same index and prints the
+ * name from BFD_STAT_LIST. Reordering the list renames every number
+ * below the change without any type error. */
+_Static_assert(BFD_STAT_SEEN == 0, "BFD_STAT_SEEN");
+_Static_assert(BFD_STAT_WELL_FORMED == 1, "BFD_STAT_WELL_FORMED");
+_Static_assert(BFD_STAT_MALFORMED == 2, "BFD_STAT_MALFORMED");
+_Static_assert(BFD_STAT_REJECTED == 3, "BFD_STAT_REJECTED");
+_Static_assert(BFD_STAT_REFLECTED == 4, "BFD_STAT_REFLECTED");
+_Static_assert(BFD_STAT_ECHO_RETURNS == 5, "BFD_STAT_ECHO_RETURNS");
+_Static_assert(BFD_STAT_DECLINED == 6, "BFD_STAT_DECLINED");
+_Static_assert(BFD_STAT_NOT_SELF == 7, "BFD_STAT_NOT_SELF");
+_Static_assert(BFD_STAT_ECHO_TTL == 8, "BFD_STAT_ECHO_TTL");
+_Static_assert(BFD_STAT_UNSUPPORTED_FLAGS == 9, "BFD_STAT_UNSUPPORTED_FLAGS");
+_Static_assert(BFD_STAT_SWEEP_INIT_FAIL == 10, "BFD_STAT_SWEEP_INIT_FAIL");
+_Static_assert(BFD_STAT_MAX == 11, "BFD_STAT_MAX");

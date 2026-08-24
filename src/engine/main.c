@@ -158,18 +158,19 @@ int main(int argc, char **argv)
 	setsockopt(rx_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 	int pi = 1;
 	setsockopt(rx_sock, IPPROTO_IP, IP_PKTINFO, &pi, sizeof(pi));
-	/* GTSM (RFC 5881 s5). The v6 socket below has always had the
-	 * equivalent; the v4 one had nothing, so an off-link packet that
-	 * XDP passed up was accepted here at any TTL. Absolute rather
-	 * than per-session because this socket only ever serves
-	 * single-hop, where the answer is always 255. */
-#ifndef IP_MINTTL
-#define IP_MINTTL 21
-#endif
-	int minttl = 255;
-	if (setsockopt(rx_sock, IPPROTO_IP, IP_MINTTL, &minttl,
-		       sizeof(minttl)))
-		perror("IP_MINTTL (v4 GTSM not enforced in userspace)");
+	/* GTSM (RFC 5881 s5) by reading the arriving TTL, not by asking
+	 * the kernel to filter.
+	 *
+	 * IP_MINTTL is accepted on a UDP socket and then never consulted:
+	 * Linux enforces it only in tcp_v4_rcv, which has its own MIB
+	 * counter, TCPMinTtlDrop. The same is true of IPV6_MINHOPCOUNT on
+	 * the v6 socket below, which had been relying on it since long
+	 * before anything could test the userspace path. Both were
+	 * silently doing nothing; tests/netns_userspace.py caught it.
+	 *
+	 * So the same treatment the multihop sockets already get, against
+	 * a fixed 255 rather than a per-session minimum. */
+	setsockopt(rx_sock, IPPROTO_IP, IP_RECVTTL, &pi, sizeof(pi));
 
 	/* RFC 5883 multihop control packets arrive on 4784. Bound
 	 * separately so single-hop demux is untouched; the XDP path
@@ -214,9 +215,10 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	setsockopt(rx6_sock, IPPROTO_IPV6, IPV6_RECVPKTINFO, &pi, sizeof(pi));
-	int minhop = 255;
-	setsockopt(rx6_sock, IPPROTO_IPV6, IPV6_MINHOPCOUNT, &minhop,
-		   sizeof(minhop));
+	/* Not IPV6_MINHOPCOUNT - see the IP_RECVTTL comment above; it is
+	 * enforced only for TCP, so this socket has been unguarded. */
+	setsockopt(rx6_sock, IPPROTO_IPV6, IPV6_RECVHOPLIMIT, &pi,
+		   sizeof(pi));
 
 	/* v6 multihop, port 4784. Deliberately NO IPV6_MINHOPCOUNT:
 	 * multihop packets arrive below 255 by definition, so the
@@ -345,7 +347,8 @@ int main(int argc, char **argv)
 		struct bfd_ctrl_pkt p;
 		struct sockaddr_in from;
 		struct iovec iov = { .iov_base = &p, .iov_len = sizeof(p) };
-		char cbuf[CMSG_SPACE(sizeof(struct in_pktinfo))];
+		char cbuf[CMSG_SPACE(sizeof(struct in_pktinfo)) +
+			  CMSG_SPACE(sizeof(int))];
 		struct msghdr mh = {
 			.msg_name = &from, .msg_namelen = sizeof(from),
 			.msg_iov = &iov, .msg_iovlen = 1,
@@ -379,16 +382,30 @@ int main(int argc, char **argv)
 		 * shorter list that ignored p.len entirely, so a packet
 		 * claiming 200 bytes inside a 24-byte datagram was accepted
 		 * here and rejected in the kernel. */
-		if (n >= 0 &&
-		    bfd_ctrl_check(p.vers_diag, p.flags, p.detect_mult, p.len,
-				   p.my_disc, (__u32)n) == BFD_CTRL_ACCEPT) {
-			uint32_t dst_ip = 0;
+		/* cmsgs first: the arriving TTL decides whether the packet is
+		 * acceptable at all, so it is checked alongside the header
+		 * rather than after demux. rttl stays -1 when the cmsg is
+		 * missing, which drops the packet - that would mean the
+		 * setsockopt did not take, and silently accepting anything is
+		 * how this path came to be unguarded in the first place. */
+		uint32_t dst_ip = 0;
+		int rttl = -1;
+
+		if (n >= 0)
 			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh); c;
-			     c = CMSG_NXTHDR(&mh, c))
+			     c = CMSG_NXTHDR(&mh, c)) {
 				if (c->cmsg_level == IPPROTO_IP &&
 				    c->cmsg_type == IP_PKTINFO)
 					dst_ip = ((struct in_pktinfo *)
 						  CMSG_DATA(c))->ipi_addr.s_addr;
+				if (c->cmsg_level == IPPROTO_IP &&
+				    c->cmsg_type == IP_TTL)
+					memcpy(&rttl, CMSG_DATA(c), sizeof(rttl));
+			}
+
+		if (n >= 0 && rttl == 255 &&
+		    bfd_ctrl_check(p.vers_diag, p.flags, p.detect_mult, p.len,
+				   p.my_disc, (__u32)n) == BFD_CTRL_ACCEPT) {
 			struct session *rs = sess_by_wire(ntohl(p.your_disc));
 			if (!rs)
 				{
@@ -464,7 +481,8 @@ int main(int argc, char **argv)
 			struct sockaddr_in6 from6;
 			struct iovec iov6 = { .iov_base = &p6,
 				.iov_len = sizeof(p6) };
-			char cbuf6[CMSG_SPACE(sizeof(struct in6_pktinfo))];
+			char cbuf6[CMSG_SPACE(sizeof(struct in6_pktinfo)) +
+				   CMSG_SPACE(sizeof(int))];
 			struct msghdr mh6 = {
 				.msg_name = &from6,
 				.msg_namelen = sizeof(from6),
@@ -480,14 +498,23 @@ int main(int argc, char **argv)
 					   (__u32)n6) != BFD_CTRL_ACCEPT)
 				continue;
 			struct bfd_addr fp6 = {0}, fl6 = {0};
+			int rhl6 = -1;
+
 			memcpy(fp6.b, &from6.sin6_addr, 16);
 			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh6); c;
-			     c = CMSG_NXTHDR(&mh6, c))
+			     c = CMSG_NXTHDR(&mh6, c)) {
+				if (c->cmsg_level == IPPROTO_IPV6 &&
+				    c->cmsg_type == IPV6_HOPLIMIT)
+					memcpy(&rhl6, CMSG_DATA(c), sizeof(rhl6));
 				if (c->cmsg_level == IPPROTO_IPV6 &&
 				    c->cmsg_type == IPV6_PKTINFO)
 					memcpy(fl6.b,
 					       &((struct in6_pktinfo *)
 						CMSG_DATA(c))->ipi6_addr, 16);
+			}
+			/* Single-hop: exactly 255, same rule as v4 above. */
+			if (rhl6 != 255)
+				continue;
 			struct session *rs6 = sess_by_wire(ntohl(p6.your_disc));
 			if (!rs6)
 				rs6 = sess_by_addr(&fp6, &fl6);

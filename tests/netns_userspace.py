@@ -34,6 +34,8 @@ NS_A = "bfdrig-a"          # engine
 NS_B = "bfdrig-b"          # injector
 IP_A = "10.77.0.1"
 IP_B = "10.77.0.2"
+IP_A6 = "fd77::1"
+IP_B6 = "fd77::2"
 STATS = "/tmp/bfd_rig_stats.json"
 COUNT = 10
 SETTLE = 0.6
@@ -72,8 +74,15 @@ def setup():
     sh("sudo ip netns add %s" % NS_B)
     sh("sudo ip link add rig-a netns %s type veth peer name rig-b netns %s"
        % (NS_A, NS_B))
-    for ns, dev, ip in ((NS_A, "rig-a", IP_A), (NS_B, "rig-b", IP_B)):
+    for ns, dev, ip, ip6 in ((NS_A, "rig-a", IP_A, IP_A6),
+                             (NS_B, "rig-b", IP_B, IP_B6)):
         sh("sudo ip netns exec %s ip addr add %s/24 dev %s" % (ns, ip, dev))
+        # nodad: a fresh v6 address is tentative for about a second and
+        # unusable as a source, so the engine's bind to its local
+        # address would fail and fall back to an ephemeral socket - a
+        # different path from the one under test.
+        sh("sudo ip netns exec %s ip addr add %s/64 dev %s nodad"
+           % (ns, ip6, dev))
         sh("sudo ip netns exec %s ip link set %s up" % (ns, dev))
         sh("sudo ip netns exec %s ip link set lo up" % ns)
 
@@ -91,13 +100,14 @@ def engine_pids():
     return [int(x) for x in out.split()]
 
 
-def start_engine(binary):
+def start_engine(binary, fam):
     # The engine runs under sudo, so the snapshot is root-owned and
     # os.unlink from this process cannot touch it. The .tmp sibling
     # goes too, or a stale one could be renamed over a fresh run.
     sh("sudo rm -f %s %s.tmp" % (STATS, STATS))
+    la, pa = (IP_A6, IP_B6) if fam == 6 else (IP_A, IP_B)
     sh("sudo ip netns exec %s nohup %s %s %s --stats-dump %s"
-       " >/tmp/bfd_rig_engine.log 2>&1 &" % (NS_A, binary, IP_A, IP_B, STATS),
+       " >>/tmp/bfd_rig_engine.log 2>&1 &" % (NS_A, binary, la, pa, STATS),
        capture=False)
     for _ in range(50):
         time.sleep(0.2)
@@ -135,18 +145,31 @@ def bfd_bytes(vers=1, diag=0, state=1, flags=0, mult=3, length=24,
     return b[:len(b) - trunc] if trunc else b
 
 
-def inject(payload, ttl, count):
-    """Send from the peer namespace over a plain UDP socket. IP_TTL is the
-    only thing that needs setting: the single-hop socket carries IP_MINTTL
-    255, so this is what exercises GTSM."""
-    prog = (
-        "import socket,sys,base64\n"
-        "p=base64.b64decode(sys.argv[1])\n"
-        "s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\n"
-        "s.setsockopt(socket.IPPROTO_IP,socket.IP_TTL,%d)\n"
-        "s.bind(('%s',%d))\n"
-        "for _ in range(%d): s.sendto(p,('%s',%d))\n"
-    ) % (ttl, IP_B, BFD_PORT, count, IP_A, BFD_PORT)
+def inject(payload, ttl, count, fam):
+    """Send from the peer namespace over a plain UDP socket.
+
+    The hop count is the only thing that needs setting - the single-hop
+    sockets carry IP_MINTTL / IPV6_MINHOPCOUNT, so this is what exercises
+    GTSM, and on v4 it has already shown that option to be inert."""
+    if fam == 6:
+        prog = (
+            "import socket,sys,base64\n"
+            "p=base64.b64decode(sys.argv[1])\n"
+            "s=socket.socket(socket.AF_INET6,socket.SOCK_DGRAM)\n"
+            "s.setsockopt(socket.IPPROTO_IPV6,"
+            "socket.IPV6_UNICAST_HOPS,%d)\n"
+            "s.bind(('%s',%d))\n"
+            "for _ in range(%d): s.sendto(p,('%s',%d))\n"
+        ) % (ttl, IP_B6, BFD_PORT, count, IP_A6, BFD_PORT)
+    else:
+        prog = (
+            "import socket,sys,base64\n"
+            "p=base64.b64decode(sys.argv[1])\n"
+            "s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\n"
+            "s.setsockopt(socket.IPPROTO_IP,socket.IP_TTL,%d)\n"
+            "s.bind(('%s',%d))\n"
+            "for _ in range(%d): s.sendto(p,('%s',%d))\n"
+        ) % (ttl, IP_B, BFD_PORT, count, IP_A, BFD_PORT)
     import base64
     # shlex.quote, not json.dumps: json double-quotes and escapes the
     # newlines, and the shell passes \n through double quotes
@@ -160,7 +183,7 @@ CASES = (
     # name, description, payload kwargs, ttl, expected rx delta
     ("accepted", "a well-formed packet at TTL 255 reaches the session",
      {}, 255, COUNT),
-    ("gtsm", "TTL below 255 is dropped by IP_MINTTL before userspace sees it",
+    ("gtsm", "a hop count below 255 is refused on a single-hop session",
      {}, 64, 0),
     ("bad-version", "BFD version other than 1",
      {"vers": 2}, 255, 0),
@@ -203,23 +226,26 @@ def main():
         sys.exit("no case named %r. Available: %s"
                  % (args.only, ", ".join(c[0] for c in CASES)))
 
-    setup()
     failures = 0
-    try:
-        start_engine(binary)
-        time.sleep(1)
-        for name, desc, kw, ttl, expect in cases:
-            before = rx_pkts()
-            inject(bfd_bytes(**kw), ttl, COUNT)
-            time.sleep(SETTLE)
-            got = rx_pkts() - before
-            ok = got == expect
-            failures += not ok
-            print("%-16s %s  rx %+d (expected %+d)   %s"
-                  % (name, "ok  " if ok else "FAIL", got, expect, desc))
-    finally:
-        if not args.keep:
-            teardown()
+    for fam in (4, 6):
+        setup()
+        try:
+            start_engine(binary, fam)
+            time.sleep(1)
+            for name, desc, kw, ttl, expect in cases:
+                before = rx_pkts()
+                inject(bfd_bytes(**kw), ttl, COUNT, fam)
+                time.sleep(SETTLE)
+                got = rx_pkts() - before
+                ok = got == expect
+                failures += not ok
+                print("%-16s %s  rx %+d (expected %+d)   %s"
+                      % ("%s-v%d" % (name, fam), "ok  " if ok else "FAIL",
+                         got, expect, desc))
+        finally:
+            if not args.keep:
+                teardown()
+        print()
 
     print()
     if failures:

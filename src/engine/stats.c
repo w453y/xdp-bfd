@@ -138,6 +138,14 @@ void stats_dump(void)
 	fprintf(f, "  \"xdp_ifindex\": %d,\n", ktx_ifindex);
 	fprintf(f, "  \"sessions_configured\": %d,\n", configured);
 	fprintf(f, "  \"sessions_up\": %d,\n", up);
+	fprintf(f, "  \"loop_passes\": %llu, \"loop_rx_wakeups\": %llu,\n",
+		(unsigned long long)loop_passes,
+		(unsigned long long)loop_rx_wakeups);
+	fprintf(f, "  \"loop_gap_us\": [");
+	for (int i = 0; i < 24; i++)
+		fprintf(f, "%s%llu", i ? ", " : "",
+			(unsigned long long)loop_gap_us[i]);
+	fprintf(f, "],\n");
 
 	fprintf(f, "  \"stats\": {");
 	for (__u32 k = 0; k < BFD_STAT_MAX; k++)

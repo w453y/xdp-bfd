@@ -69,6 +69,19 @@ static int rxm6_sock = -1;  /* v6 multihop RX, port 4784 */
 #define TICK_US_DEFAULT 2000
 static unsigned tick_us = TICK_US_DEFAULT;
 
+/* How often the loop actually runs, and how often the control-socket
+ * recvmsg returned a packet rather than timing out. Below roughly a
+ * 1ms tick the arriving mesh traffic returns it first, so the timeout
+ * stops being what clocks the loop and detection resolution stops
+ * improving. Reported rather than reasoned about. */
+uint64_t loop_passes;
+uint64_t loop_rx_wakeups;
+
+/* Inter-pass gap histogram, log2 buckets in microseconds. The ten-second
+ * average cannot tell a steady period from fast passes plus stalls, and
+ * four explanations for the observed rate have already been wrong. */
+uint64_t loop_gap_us[24];
+
 int main(int argc, char **argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);
@@ -122,6 +135,17 @@ int main(int argc, char **argv)
 				return 1;
 			}
 			tick_us = (unsigned)v;
+			/* SO_RCVTIMEO sleeps on the jiffy timer wheel, not an hrtimer,
+			 * so a request under one jiffy is rounded up and the loop runs
+			 * no faster. There is no portable way to read CONFIG_HZ from
+			 * userspace (_SC_CLK_TCK is USER_HZ, fixed at 100), so this is
+			 * the common 1000Hz value. On this testbed a 200us tick gave a
+			 * measured 1024-2047us loop period; see docs/tick-ladder/.
+			 * Warned rather than rejected: the arm is worth reproducing. */
+			if (tick_us < 1000)
+				fprintf(stderr,
+					"--tick-us: %uus is likely below one jiffy; "
+					"SO_RCVTIMEO will round it up\n", tick_us);
 		}
 		else if (!strcmp(argv[i], "--xdp-mode") && i + 1 < argc) {
 			const char *m = argv[++i];
@@ -409,6 +433,20 @@ int main(int argc, char **argv)
 		 * changes transmit and detect pacing. */
 		ssize_t n = recvmsg(rx_sock, &mh, MSG_TRUNC);
 		uint64_t t = now_us();
+		loop_passes++;
+		{
+			static uint64_t prev;
+			if (prev) {
+				uint64_t d = t - prev;
+				int b = 0;
+				while (d >>= 1)
+					b++;
+				loop_gap_us[b < 24 ? b : 23]++;
+			}
+			prev = t;
+		}
+		if (n >= 0)
+			loop_rx_wakeups++;
 
 		/* Same predicate the XDP path uses. Userspace used to check a
 		 * shorter list that ignored p.len entirely, so a packet

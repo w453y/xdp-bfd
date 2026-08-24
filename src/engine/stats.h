@@ -3,6 +3,14 @@
 #define BFD_ENGINE_STATS_H
 
 #include <signal.h>
+#include <stdint.h>
+
+/* Main loop pass count and how many of those passes were woken by an
+ * arriving packet rather than by the tick timeout. Rates, not states:
+ * take two snapshots and divide by the now_us delta. */
+extern uint64_t loop_passes;
+extern uint64_t loop_rx_wakeups;
+extern uint64_t loop_gap_us[24];
 
 /* Where the snapshot lands; --stats-dump overrides it. */
 extern const char *stats_path;

@@ -50,6 +50,11 @@ ENGINE_ARGS = "--dp-hold 60"
 VTYSH = "/opt/frr-master/bin/vtysh"
 
 ARMS = (5000, 2000, 1000)
+# The L4 arm from docs/benchmarks: RT starvation of userspace. Run in
+# short bursts per sample rather than across the whole arm, because a
+# starved engine cannot answer SIGUSR1 either.
+STRESS = ("sudo stress-ng --cpu 4 --sched fifo --sched-prio 50"
+          " --timeout %ds")
 RUNS = 10
 SETTLE = 25
 RECOVER = 8
@@ -120,14 +125,22 @@ def block(peer_ip, local_ip, on):
             % (flag, peer_ip, local_ip))
 
 
-def one_sample(target, budget_s=3.0):
+def one_sample(target, budget_s=3.0, stress_s=0):
     """Silence one session, wait for the engine to declare it Down, and read
-    back what that detection cost. Returns microseconds, or None."""
+    back what that detection cost. Returns microseconds, or None.
+
+    With stress_s, userspace is starved for that long immediately after
+    the session goes silent - so the detection deadline falls inside the
+    starvation window rather than before it. The stress is synchronous:
+    a starved engine cannot answer SIGUSR1, so polling during it would
+    time out reading a number that has not been written yet."""
     peer_ip, local_ip = target["peer"], target["local"]
     lid = target["lid"]
 
     block(peer_ip, local_ip, True)
     try:
+        if stress_s:
+            sh(STRESS % stress_s, check=False, capture=False)
         deadline = time.time() + budget_s
         while time.time() < deadline:
             time.sleep(0.2)
@@ -143,7 +156,7 @@ def one_sample(target, budget_s=3.0):
         time.sleep(RECOVER)
 
 
-def arm(sweep_us, runs):
+def arm(sweep_us, runs, stress_s=0):
     start_engine(sweep_us)
     d = dump()
     live = up_sessions(d)
@@ -156,7 +169,7 @@ def arm(sweep_us, runs):
     out = []
     for i in range(runs):
         t = live[i % len(live)]
-        v = one_sample(t)
+        v = one_sample(t, budget_s=3.0 + stress_s, stress_s=stress_s)
         if v is None:
             print("  %2d %-16s no detection within budget - skipped"
                   % (i + 1, t["peer"]))
@@ -172,13 +185,15 @@ def main():
     p.add_argument("--runs", type=int, default=RUNS)
     p.add_argument("--arms", default=",".join(str(a) for a in ARMS))
     p.add_argument("--json", action="store_true")
+    p.add_argument("--stress", type=int, default=0, metavar="SECONDS",
+                   help="starve userspace for this long per sample")
     args = p.parse_args()
 
     peer_sh("true")   # fail early and loudly if ssh is not set up
 
     results = {}
     for a in (int(x) for x in args.arms.split(",")):
-        results[a] = arm(a, args.runs)
+        results[a] = arm(a, args.runs, args.stress)
 
     print()
     for a, vals in results.items():
@@ -193,6 +208,10 @@ def main():
 
     print("\nA difference between arms is only real if it clears the spread\n"
           "of an arm against itself. Re-run an arm before believing a gap.")
+    if args.stress:
+        print("Stressed arm: these are detection times under %ds of RT\n"
+              "starvation, so compare them against an idle run of the same\n"
+              "arm, not against the 30ms budget." % args.stress)
 
     if args.json:
         print(json.dumps({str(k): v for k, v in results.items()}))

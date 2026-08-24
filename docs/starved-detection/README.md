@@ -145,6 +145,8 @@ pass.
 - `sample-01.pcap` through `sample-10.pcap`, one per sample, hypervisor-side on
   `vmbr3`, filtered to the session pair and cut before the block was lifted
 - `samples.json`, the engine and wire series plus the run parameters
+- `exploratory/starve.pcap`, the pre-script capture the boundary
+  example above is taken from; it spans several events, not one sample
 
 Regenerate with `python3 tests/starved_detection.py`.
 

@@ -49,7 +49,12 @@ FRR_ENV = "LD_LIBRARY_PATH=/opt/frr-master/lib"
 ENGINE_ARGS = "--dp-hold 60"
 VTYSH = "/opt/frr-master/bin/vtysh"
 
-ARMS = (5000, 2000, 1000)
+# Which engine flag the arms vary. --sweep-us was the original
+# question; the sweep ladder answered it by falsifying the sweep,
+# leaving the main loop tick as the remaining candidate for what
+# quantizes detection. --tick-us varies that instead.
+KNOBS = {"sweep": ("--sweep-us", (5000, 2000, 1000)),
+         "tick":  ("--tick-us", (2000, 1000, 500))}
 # The L4 arm from docs/benchmarks: RT starvation of userspace. Run in
 # short bursts per sample rather than across the whole arm, because a
 # starved engine cannot answer SIGUSR1 either.
@@ -94,18 +99,18 @@ def dump():
         return json.load(f)
 
 
-def start_engine(sweep_us):
-    """Mirror of mode_b_opt.sh, plus --sweep-us. Engine before control
-    plane, which is the ordering the whole project depends on."""
-    print("  restarting engine at %dus sweep" % sweep_us, flush=True)
+def start_engine(value, flag="--sweep-us"):
+    """Mirror of mode_b_opt.sh, plus the arm's flag. Engine before
+    control plane, which is the ordering the whole project depends on."""
+    print("  restarting engine at %s %d" % (flag, value), flush=True)
     sh("sudo %s %s stop" % (FRR_ENV, FRRINIT), check=False, capture=False)
     sh("sudo pkill -x bfd_tx", check=False)
     time.sleep(1)
     sh("sudo ip link set dev %s xdpdrv off" % IFACE, check=False)
     sh("sudo ip link set dev %s xdp off" % IFACE, check=False)
-    cmd = ("sudo nohup %s --dplane %s --kernel-tx %s %s --sweep-us %d"
+    cmd = ("sudo nohup %s --dplane %s --kernel-tx %s %s %s %d"
            " >/tmp/eng_ladder.log 2>&1 &"
-           % (ENGINE, DPLANE, IFACE, ENGINE_ARGS, sweep_us))
+           % (ENGINE, DPLANE, IFACE, ENGINE_ARGS, flag, value))
     sh(cmd, capture=False)
     time.sleep(2)
     sh("sudo %s %s start" % (FRR_ENV, FRRINIT), capture=False)
@@ -156,16 +161,16 @@ def one_sample(target, budget_s=3.0, stress_s=0):
         time.sleep(RECOVER)
 
 
-def arm(sweep_us, runs, stress_s=0):
-    start_engine(sweep_us)
+def arm(value, runs, stress_s=0, flag="--sweep-us"):
+    start_engine(value, flag)
     d = dump()
     live = up_sessions(d)
     if len(live) < runs:
         sys.exit("only %d single-hop v4 sessions up, need %d"
                  % (len(live), runs))
 
-    print("arm %dus: %d sessions up, %d samples"
-          % (sweep_us, d["sessions_up"], runs))
+    print("arm %s %d: %d sessions up, %d samples"
+          % (flag, value, d["sessions_up"], runs))
     out = []
     for i in range(runs):
         t = live[i % len(live)]
@@ -181,19 +186,26 @@ def arm(sweep_us, runs, stress_s=0):
 
 def main():
     p = argparse.ArgumentParser(
-        description="measure detection overshoot against the sweep interval")
+        description="measure detection overshoot against an engine knob")
     p.add_argument("--runs", type=int, default=RUNS)
-    p.add_argument("--arms", default=",".join(str(a) for a in ARMS))
+    p.add_argument("--knob", choices=sorted(KNOBS), default="sweep")
+    p.add_argument("--arms", default=None,
+                   help="comma-separated values; defaults per --knob")
     p.add_argument("--json", action="store_true")
     p.add_argument("--stress", type=int, default=0, metavar="SECONDS",
                    help="starve userspace for this long per sample")
     args = p.parse_args()
 
+    flag, defaults = KNOBS[args.knob]
+    arms = ([int(x) for x in args.arms.split(",")] if args.arms
+            else list(defaults))
+
     peer_sh("true")   # fail early and loudly if ssh is not set up
 
+    print("varying %s over %s\n" % (flag, arms))
     results = {}
-    for a in (int(x) for x in args.arms.split(",")):
-        results[a] = arm(a, args.runs, args.stress)
+    for a in arms:
+        results[a] = arm(a, args.runs, args.stress, flag)
 
     print()
     for a, vals in results.items():

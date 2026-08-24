@@ -41,7 +41,7 @@ right. But only from 2000us to 1000us.
 Inter-pass gap histograms, log2 buckets, 30s per arm, from the engine's own
 counters (`loop-gaps.json`):
 
-| tick | modal bucket | share | passes |
+| tick | modal bucket | share | gaps |
 |--------|-----------------|-------|--------|
 | 2000us | 2048-4095us | 98.9% | 10067 |
 | 1000us | 1024-2047us | 97.8% | 15041 |

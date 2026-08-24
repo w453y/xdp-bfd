@@ -63,6 +63,12 @@ static int rxm6_sock = -1;  /* v6 multihop RX, port 4784 */
 
 
 /* ---------- main ---------- */
+/* Main loop tick in microseconds, the SO_RCVTIMEO on the control
+ * socket. Overridable with --tick-us so the detection ladder can
+ * vary it without a rebuild. */
+#define TICK_US_DEFAULT 2000
+static unsigned tick_us = TICK_US_DEFAULT;
+
 int main(int argc, char **argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);
@@ -96,6 +102,26 @@ int main(int argc, char **argv)
 				return 1;
 			}
 			ktx_sweep_ns = v * 1000ull;
+		}
+		else if (!strcmp(argv[i], "--tick-us") && i + 1 < argc) {
+			const char *a = argv[++i];
+			char *end;
+			unsigned long long v = strtoull(a, &end, 10);
+
+			/* The main loop's tick. The control-socket recvmsg blocks with
+			 * this timeout, so it sets how often the per-session transmit
+			 * and detect pass runs, and with it the resolution of userspace
+			 * detection - which the sweep ladder showed is the only thing
+			 * that declares a session Down in engine mode. Bounded at 200us
+			 * because every pass walks all configured sessions, and at the
+			 * same 100ms ceiling as the sweep. */
+			if (end == a || *end || v < 200 || v > 100000) {
+				fprintf(stderr,
+					"--tick-us: expected 200-100000, got '%s'\n",
+					a);
+				return 1;
+			}
+			tick_us = (unsigned)v;
 		}
 		else if (!strcmp(argv[i], "--xdp-mode") && i + 1 < argc) {
 			const char *m = argv[++i];
@@ -137,7 +163,8 @@ int main(int argc, char **argv)
 			"       %s --dplane <port|sock-path> [--kernel-tx <if>] [--dp-hold <sec>]\n"
 			"       [--bpf-obj <path>] [--xdp-mode drv|generic]\n"
 			"       [--stats-dump <path>]   (SIGUSR1 writes it)\n"
-			"       [--sweep-us <500-100000>]\n",
+			"       [--sweep-us <500-100000>]\n"
+			"       [--tick-us <200-100000>]\n",
 			argv[0], argv[0]);
 		return 1;
 	}
@@ -154,7 +181,11 @@ int main(int argc, char **argv)
 		perror("bind 3784 (is another BFD daemon running?)");
 		return 1;
 	}
-	struct timeval tv = { .tv_usec = 2000 };
+	struct timeval tv = { .tv_sec  = tick_us / 1000000,
+			     .tv_usec = tick_us % 1000000 };
+	if (tick_us != TICK_US_DEFAULT)
+		printf("engine: main loop tick %uus (default %uus)\n",
+		       tick_us, TICK_US_DEFAULT);
 	setsockopt(rx_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 	int pi = 1;
 	setsockopt(rx_sock, IPPROTO_IP, IP_PKTINFO, &pi, sizeof(pi));
@@ -368,8 +399,9 @@ int main(int argc, char **argv)
 		 */
 		const int drain_budget = MAX_SESSIONS;
 
-		/* This recvmsg is the loop's clock: it blocks with the 2ms
-		 * SO_RCVTIMEO set above, which is what keeps main from spinning
+		/* This recvmsg is the loop's clock: it blocks with the
+		 * SO_RCVTIMEO set above, 2ms unless --tick-us says
+		 * otherwise, which is what keeps main from spinning
 		 * and what sets how often the per-session tick below runs. The
 		 * three drains that follow are MSG_DONTWAIT on purpose. The
 		 * asymmetry is deliberate - collapsing the four into one helper

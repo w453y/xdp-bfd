@@ -406,10 +406,18 @@ int main(int argc, char **argv)
 		if (n >= 0 && rttl == 255 &&
 		    bfd_ctrl_check(p.vers_diag, p.flags, p.detect_mult, p.len,
 				   p.my_disc, (__u32)n) == BFD_CTRL_ACCEPT) {
-			struct session *rs = sess_by_wire(ntohl(p.your_disc));
-			if (!rs)
-				{
+			/* Demux (RFC 5880 s6.8.6), the same rule XDP applies:
+			 * your_disc must name our session, or be zero with the
+			 * peer in Down or AdminDown - it has lost state, or is
+			 * starting. Falling back to the address pair on any miss
+			 * accepted packets naming a discriminator we never issued,
+			 * which is the divergence tests/netns_userspace.py found. */
+			uint32_t ydisc = ntohl(p.your_disc);
+			struct session *rs = sess_by_wire(ydisc);
+
+			if (!rs && ydisc == 0 && BFD_STATE(&p) <= ST_DOWN) {
 				struct bfd_addr fp, fl;
+
 				key_set_v4(&fp, from.sin_addr.s_addr);
 				key_set_v4(&fl, dst_ip);
 				rs = sess_by_addr(&fp, &fl);
@@ -458,9 +466,13 @@ int main(int argc, char **argv)
 					memcpy(&mttl, CMSG_DATA(c), sizeof(mttl));
 			}
 		
-			struct session *ms = sess_by_wire(ntohl(pm.your_disc));
-			if (!ms) {
+			/* Same demux rule as the single-hop path above. */
+			uint32_t mydisc = ntohl(pm.your_disc);
+			struct session *ms = sess_by_wire(mydisc);
+
+			if (!ms && mydisc == 0 && BFD_STATE(&pm) <= ST_DOWN) {
 				struct bfd_addr mp, ml;
+
 				key_set_v4(&mp, fromm.sin_addr.s_addr);
 				key_set_v4(&ml, mdst);
 				ms = sess_by_addr(&mp, &ml);
@@ -515,8 +527,11 @@ int main(int argc, char **argv)
 			/* Single-hop: exactly 255, same rule as v4 above. */
 			if (rhl6 != 255)
 				continue;
-			struct session *rs6 = sess_by_wire(ntohl(p6.your_disc));
-			if (!rs6)
+			/* Same demux rule as the v4 single-hop path above. */
+			uint32_t ydisc6 = ntohl(p6.your_disc);
+			struct session *rs6 = sess_by_wire(ydisc6);
+
+			if (!rs6 && ydisc6 == 0 && BFD_STATE(&p6) <= ST_DOWN)
 				rs6 = sess_by_addr(&fp6, &fl6);
 			if (rs6)
 				fsm_rx(rs6, &p6, t);
@@ -561,8 +576,11 @@ int main(int argc, char **argv)
 						CMSG_DATA(c))->ipi6_addr, 16);
 			}
 		
-			struct session *ms6 = sess_by_wire(ntohl(pm6.your_disc));
-			if (!ms6)
+			/* Same demux rule as the v4 single-hop path above. */
+			uint32_t mydisc6 = ntohl(pm6.your_disc);
+			struct session *ms6 = sess_by_wire(mydisc6);
+
+			if (!ms6 && mydisc6 == 0 && BFD_STATE(&pm6) <= ST_DOWN)
 				ms6 = sess_by_addr(&mp6, &ml6);
 			/* Same per-session GTSM as the v4 multihop path. */
 			if (ms6 && (mhl6 < 0 || mhl6 < (int)ms6->min_ttl))

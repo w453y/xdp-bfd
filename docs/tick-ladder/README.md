@@ -39,6 +39,15 @@ The engine's own inter-pass gap histogram said why:
 | 1000us | 1024-2047us | 97.8% |
 | 200us  | 1024-2047us | 98.3% |
 
+A caveat on the 2000us row, found later: a 2000us tick plus the pass's
+own work lands within a few percent of the 2048us bucket boundary, so
+which side the mode falls on is scheduling jitter rather than a property
+of the loop. Later readings on the timerfd build put the same
+tick in 1024-2047us while the pass rate held at 513 to 522/sec, which is
+the rate a 2000us period implies. Read the rate, not the bucket, at that
+tick. The 200us rows are unaffected: 128-255
+is nowhere near a boundary.
+
 A 200us request produced the same loop as a 1000us one. `SO_RCVTIMEO` sleeps on
 the jiffy timer wheel rather than an hrtimer, so anything under one jiffy is
 rounded up. This host is `CONFIG_HZ=1000`.

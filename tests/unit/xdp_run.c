@@ -817,6 +817,87 @@ static void run_malformed_matrix(void)
 	}
 }
 
+/* Demux, RFC 5880 s6.8.6. your_disc must name our session, or be zero
+ * with the peer in Down or AdminDown (it lost state, or is restarting).
+ *
+ * The reject must not refresh liveness: that is how spoofed traffic keeps
+ * a dead session up, and it is why each arm checks rx_pkts as well as the
+ * verdict. tests/netns_userspace.py found the userspace path falling back
+ * to the address pair on any miss; these arms pin the kernel side of the
+ * same rule. */
+static void case_demux(int v6, const char *name, uint32_t ydisc,
+		       uint8_t peer_state, int want_v, uint64_t want_rx)
+{
+	struct session_key k = v6 ? key_v6("fd00::2", "fd00::1")
+			  : key_v4("10.0.0.2", "10.0.0.1");
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct session_state after = {0};
+	unsigned long long before;
+	char full[80];
+	struct frame f;
+	int v, bad = 0;
+
+	snprintf(full, sizeof(full), "%s-%s", name, v6 ? "v6" : "v4");
+
+	if (v6) { map_reset_v6(); arm_session_v6(); }
+	else    { map_reset();    arm_session();    }
+
+	p.your_disc = htonl(ydisc);
+	p.flags = (peer_state << 6);
+
+	if (v6)
+		build_v6(&f, 255, BFD_PORT_1HOP, &p, 0);
+	else
+		build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+
+	before = stat_get(BFD_STAT_REJECTED);
+	v = run_frame(&f, NULL, NULL);
+
+	if (v != want_v) {
+		printf("     verdict %s, want %s\n",
+		       v < 0 ? "syscall-error" : verdict_str(v),
+		       verdict_str(want_v));
+		bad = 1;
+	}
+	if (want_v == XDP_DROP && stat_get(BFD_STAT_REJECTED) != before + 1) {
+		printf("     rejected counter did not increment\n");
+		bad = 1;
+	}
+	if (read_state(&k, &after) && after.rx_pkts != want_rx) {
+		printf("     rx_pkts is %llu, want %llu\n",
+		       (unsigned long long)after.rx_pkts,
+		       (unsigned long long)want_rx);
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL %-40s\n", full);
+		fails++;
+	} else {
+		printf("ok   %-40s %s, rx %llu\n", full, verdict_str(want_v),
+		       (unsigned long long)want_rx);
+	}
+
+	if (v6) map_reset_v6(); else map_reset();
+}
+
+static void run_demux_matrix(void)
+{
+	for (int v6 = 0; v6 < 2; v6++) {
+		/* names our session: accepted, and bounced since it is Up */
+		case_demux(v6, "demux-match", 0x22222222, ST_UP, XDP_TX, 1);
+		/* names something else: rejected even though the address
+		 * pair is in the map - no fallback on a miss */
+		case_demux(v6, "demux-wrong-disc", 0x99999999, ST_UP,
+			   XDP_DROP, 0);
+		/* zero with the peer Down: the restart case, accepted.
+		 * No bounce: rx_clocked_tx needs rstate >= Init. */
+		case_demux(v6, "demux-zero-peer-down", 0, ST_DOWN, XDP_PASS, 1);
+		/* zero with the peer Up: not the restart case, rejected */
+		case_demux(v6, "demux-zero-peer-up", 0, ST_UP, XDP_DROP, 0);
+	}
+}
+
 int main(void)
 {
 	const char *path = getenv("BFD_OBJ") ?: "bfd_xdp.o";
@@ -858,6 +939,7 @@ int main(void)
 	case_poll_final(BFD_F_FINAL, 0, 7, 0, "poll-final-no-poll-no-ack");
 	case_poll_final(0, 1, 7, 0, "poll-plain-packet-no-ack");
 	run_malformed_matrix();
+	run_demux_matrix();
 
 	printf("\n%d failure(s)\n", fails);
 	return fails ? 1 : 0;

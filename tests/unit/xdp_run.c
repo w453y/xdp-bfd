@@ -237,6 +237,12 @@ static void expect(const char *name, int got, int want)
 
 static int cfg_fd = -1, sess_fd = -1, stats_fd = -1;
 static int echo_peers_fd = -1, echo_disc_fd = -1;
+/* The sweep lives behind a bpf_timer, which does not fire under
+ * test_run, so tests/unit/bfd_xdp_test.o carries a second program that
+ * drives the same callback through the same helper at a time we choose.
+ * Separate object on purpose: no test entry point in shipped bytecode. */
+static struct bpf_object *sweep_obj;
+static int sweep_prog_fd = -1, sweep_sess_fd = -1, sweep_cfg_fd = -1;
 
 /* Keys are built from the arriving frame's point of view: peer is the
  * source, local is the destination. Getting this backwards produces a
@@ -366,6 +372,44 @@ static unsigned long long stat_get(int slot)
 			total += vals[i];
 	free(vals);
 	return total;
+}
+
+/* Run one sweep pass at a chosen nanosecond time. The frame is nothing
+ * but that timestamp. */
+static int sweep_at(unsigned long long now_ns)
+{
+	unsigned char in[sizeof(struct ethhdr) + sizeof(__u64)] = {0};
+	__u64 t = now_ns;
+	unsigned char out[64] = {0};
+
+	memcpy(in + sizeof(struct ethhdr), &t, sizeof(t));
+
+	LIBBPF_OPTS(bpf_test_run_opts, topts,
+		    .data_in = in, .data_size_in = sizeof(in),
+		    .data_out = out, .data_size_out = sizeof(out),
+		    .repeat = 1);
+
+	if (bpf_prog_test_run_opts(sweep_prog_fd, &topts)) {
+		printf("     sweep test_run failed: %s\n", strerror(errno));
+		return 0;
+	}
+	return 1;
+}
+
+/* The sweep object has its own maps, so state for these cases goes there
+ * rather than into the ones the packet cases use. */
+static int sweep_put(const struct session_key *k,
+		     const struct session_state *st, const struct tx_cfg *cfg)
+{
+	if (bpf_map_update_elem(sweep_sess_fd, k, st, BPF_ANY)) {
+		printf("     sweep session put failed: %s\n", strerror(errno));
+		return 0;
+	}
+	if (cfg && bpf_map_update_elem(sweep_cfg_fd, k, cfg, BPF_ANY)) {
+		printf("     sweep cfg put failed: %s\n", strerror(errno));
+		return 0;
+	}
+	return 1;
 }
 
 /* ---------- cases ---------- */
@@ -1157,6 +1201,66 @@ static void case_ip_options(const char *name, uint16_t dport)
 	map_reset();
 }
 
+/* The detection sweep. None of this has any coverage today: it runs from a
+ * bpf_timer, and a timer never fires under test_run.
+ *
+ * detect_ns is detect_mult * detect_iv_us, and a session is torn down only
+ * when the silence exceeds it AND the alive flag was still 1 - the
+ * compare-and-swap is what stops two sweeps both emitting a Down. */
+static void case_sweep(const char *name, unsigned int iv_us, unsigned int mult,
+		       unsigned long long silent_ns, unsigned int alive_in,
+		       unsigned int want_alive)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct session_state st = {0}, after = {0};
+	struct tx_cfg cfg = {0};
+	unsigned long long now = 1000ull * 1000 * 1000 * 60;   /* arbitrary */
+
+	st.last_seen_ns  = now - silent_ns;
+	st.detect_iv_us  = iv_us;
+	st.detect_mult   = mult;
+	st.alive         = alive_in;
+	cfg.min_rx_us    = 10000;
+
+	bpf_map_delete_elem(sweep_sess_fd, &k);
+	bpf_map_delete_elem(sweep_cfg_fd, &k);
+	if (!sweep_put(&k, &st, &cfg) || !sweep_at(now)) {
+		printf("FAIL %-40s setup\n", name);
+		fails++;
+		return;
+	}
+
+	if (bpf_map_lookup_elem(sweep_sess_fd, &k, &after)) {
+		printf("FAIL %-40s no state back\n", name);
+		fails++;
+		return;
+	}
+
+	if (after.alive != want_alive) {
+		printf("     alive is %u, want %u\n", after.alive, want_alive);
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s alive %u\n", name, after.alive);
+	}
+
+	bpf_map_delete_elem(sweep_sess_fd, &k);
+	bpf_map_delete_elem(sweep_cfg_fd, &k);
+}
+
+static void run_sweep_matrix(void)
+{
+	if (sweep_prog_fd < 0) {
+		printf("     sweep object not loaded, skipping\n");
+		return;
+	}
+	/* 10ms basis, mult 3: budget 30ms */
+	case_sweep("sweep-silent-past-budget", 10000, 3, 40000000ull, 1, 0);
+	case_sweep("sweep-silent-under-budget", 10000, 3, 20000000ull, 1, 1);
+	/* already down: the CAS must not fire a second time */
+	case_sweep("sweep-already-down-stays", 10000, 3, 40000000ull, 0, 0);
+}
+
 int main(void)
 {
 	const char *path = getenv("BFD_OBJ") ?: "bfd_xdp.o";
@@ -1186,6 +1290,22 @@ int main(void)
 		return 1;
 	}
 
+	sweep_obj = bpf_object__open_file("tests/unit/bfd_xdp_test.o", NULL);
+	if (sweep_obj && !bpf_object__load(sweep_obj)) {
+		struct bpf_program *sp =
+			bpf_object__find_program_by_name(sweep_obj, "sweep_once");
+
+		if (sp) {
+			sweep_prog_fd = bpf_program__fd(sp);
+			sweep_sess_fd = bpf_object__find_map_fd_by_name(sweep_obj,
+								"bfd_sessions");
+			sweep_cfg_fd = bpf_object__find_map_fd_by_name(sweep_obj,
+							       "tx_config");
+		}
+	} else {
+		fprintf(stderr, "sweep object not loaded: %s\n", strerror(errno));
+	}
+
 	case_not_bfd();
 	case_gtsm_v4();
 	case_bounce_v4();
@@ -1206,6 +1326,7 @@ int main(void)
 	case_echo_v6_return();
 	case_ip_options("ip-options-bfd-port", BFD_PORT_1HOP);
 	case_ip_options("ip-options-other-port", 1234);
+	run_sweep_matrix();
 
 	printf("\n%d failure(s)\n", fails);
 	return fails ? 1 : 0;

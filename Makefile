@@ -32,6 +32,13 @@ bfd_tx: $(ENGINE_OBJS)
 clean:
 	rm -f bfd_xdp.o bfd_loader bfd_tx $(ENGINE_OBJS)
 
+# Same flags as bfd_xdp.o, plus src/xdp on the include path so the
+# wrapper picks up the identical headers. Test-only: never shipped,
+# never loaded outside tests/unit/xdp_run.
+tests/unit/bfd_xdp_test.o: tests/unit/bfd_xdp_test.c include/bfd_shared.h \
+			   $(wildcard src/xdp/*.h)
+	$(CLANG) $(BPFFLAGS) -c $< -o $@
+
 tests/unit/xdp_run: tests/unit/xdp_run.c include/bfd_shared.h
 	$(CC) $(CFLAGS) $< -o $@ -lbpf
 

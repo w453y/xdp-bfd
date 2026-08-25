@@ -48,6 +48,14 @@ tests/unit/fsm_run: tests/unit/fsm_run.c src/engine/fsm.o \
 		    $(wildcard src/engine/*.h)
 	$(CC) $(CFLAGS) tests/unit/fsm_run.c src/engine/fsm.o -o $@
 
+tests/unit/dp_run: tests/unit/dp_run.c src/engine/dplane.o \
+		   src/engine/session.o src/engine/fsm.o $(wildcard src/engine/*.h)
+	$(CC) $(CFLAGS) tests/unit/dp_run.c src/engine/dplane.o \
+		src/engine/session.o src/engine/fsm.o -o $@
+
+test-dp: tests/unit/dp_run
+	./tests/unit/dp_run
+
 test-fsm: tests/unit/fsm_run
 	./tests/unit/fsm_run
 
@@ -55,4 +63,4 @@ test-fsm: tests/unit/fsm_run
 test-xdp: tests/unit/xdp_run bfd_xdp.o
 	sudo ./tests/unit/xdp_run
 
-.PHONY: all clean abi-check test-xdp test-fsm
+.PHONY: all clean abi-check test-xdp test-fsm test-dp

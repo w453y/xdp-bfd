@@ -10,3 +10,4 @@ observer.csv
 # unit test binary
 /tests/unit/xdp_run
 /tests/unit/fsm_run
+/tests/unit/dp_run

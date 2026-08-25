@@ -64,6 +64,15 @@ tests/unit/dp_run: tests/unit/dp_run.c src/engine/dplane.o src/engine/log.o \
 test-dp: tests/unit/dp_run
 	./tests/unit/dp_run
 
+# Everything that can run without a testbed, in one command.
+#
+# Ordered cheapest and least privileged first: abi-check is part of
+# `all`, fsm and dp need no root, and test-xdp needs it to load the
+# object. A developer without sudo still gets three suites and a
+# clear failure on the fourth rather than nothing at all.
+check: all test-fsm test-dp test-xdp
+	@echo "all suites passed"
+
 test-fsm: tests/unit/fsm_run
 	./tests/unit/fsm_run
 
@@ -71,4 +80,4 @@ test-fsm: tests/unit/fsm_run
 test-xdp: tests/unit/xdp_run bfd_xdp.o
 	sudo ./tests/unit/xdp_run
 
-.PHONY: all clean abi-check test-xdp test-fsm test-dp
+.PHONY: all clean abi-check check test-xdp test-fsm test-dp

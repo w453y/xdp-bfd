@@ -1,114 +1,129 @@
 # Tick ladder
 
-What the main loop's tick does to detection latency, and where it stops
-mattering.
+What the main loop's tick does to detection latency, measured twice: once
+against the `SO_RCVTIMEO` clock the engine used to have, and once against the
+timerfd that replaced it.
 
 ## What this measures
 
-`docs/sweep-ladder/` falsified the README's claim that detection overshoot
-comes from the 5ms kernel sweep: a 100ms sweep gave the same 1-2ms overshoot,
-and the code confirmed the sweep's output has no consumer in engine mode.
-Detection is `fsm_detect`, called once per pass of the userspace main loop.
+`docs/sweep-ladder/` falsified the README's claim that detection overshoot comes
+from the 5ms kernel sweep: a 100ms sweep gave the same 1-2ms overshoot, and the
+code confirmed the sweep's output has no consumer in engine mode. Detection is
+`fsm_detect`, called once per pass of the userspace main loop.
 
-That left the loop's own tick as the remaining candidate, named by elimination
-and never varied. `--tick-us` varies it. The tick is the `SO_RCVTIMEO` on the
-control socket: the `recvmsg` blocks on it, and each return runs the
-per-session pass.
+That left the loop's tick as the remaining candidate, named by elimination and
+never varied. `--tick-us` varies it.
 
-## Result 1: the tick quantizes detection, over one octave
+## Ladder 1: the SO_RCVTIMEO clock
 
-Detection overshoot, 15 samples per arm, one session silenced at a time
-(`tests/sweep_ladder.py --knob tick`):
+The loop's wait was a socket timeout. Detection overshoot, 15 samples per arm,
+one session silenced at a time:
 
-| tick | mean | sd | min | max |
-|--------|--------|--------|--------|--------|
-| 2000us | 2.07ms | 0.77ms | 0.93ms | 3.25ms |
-| 1000us | 0.83ms | 0.64ms | 0.03ms | 1.98ms |
-| 500us  | 1.16ms | 0.54ms | 0.41ms | 1.96ms |
-| 500us (rerun) | 0.82ms | 0.58ms | 0.11ms | 2.00ms |
-| 200us  | 0.94ms | 0.57ms | 0.02ms | 1.93ms |
+| tick | mean | sd |
+|--------|--------|--------|
+| 2000us | 2.07ms | 0.77ms |
+| 1000us | 0.83ms | 0.64ms |
+| 500us  | 1.16ms | 0.54ms |
+| 500us (rerun) | 0.82ms | 0.58ms |
+| 200us  | 0.94ms | 0.57ms |
 
-2000 to 1000 is the only real difference: 1.24ms against a pooled standard
-error near 0.26ms. Everything at or below 1000us is one population. The two
-500us arms differ from each other by more than 500us differs from 200us, which
-is the spread the ladder's own closing note warns about.
+Only 2000 to 1000 was a real difference. Everything at or below 1000us was one
+population, and the two 500us arms differed from each other by more than 500
+differed from 200.
 
-So the tick does quantize detection, and the sweep ladder's inference was
-right. But only from 2000us to 1000us.
+The engine's own inter-pass gap histogram said why:
 
-## Result 2: below one jiffy the flag does nothing
+| tick | modal bucket | share |
+|--------|-----------------|-------|
+| 2000us | 2048-4095us | 98.9% |
+| 1000us | 1024-2047us | 97.8% |
+| 200us  | 1024-2047us | 98.3% |
 
-Inter-pass gap histograms, log2 buckets, 30s per arm, from the engine's own
-counters (`loop-gaps.json`):
+A 200us request produced the same loop as a 1000us one. `SO_RCVTIMEO` sleeps on
+the jiffy timer wheel rather than an hrtimer, so anything under one jiffy is
+rounded up. This host is `CONFIG_HZ=1000`.
 
-| tick | modal bucket | share | gaps |
-|--------|-----------------|-------|--------|
-| 2000us | 2048-4095us | 98.9% | 10067 |
-| 1000us | 1024-2047us | 97.8% | 15041 |
-| 200us  | 1024-2047us | 98.3% | 15069 |
+The conclusion at the time was that `--tick-us` had exactly two useful settings.
+That conclusion is now wrong, which is the point of the second ladder.
 
-The 200us arm runs the same loop as the 1000us arm. A tenth of the requested
-period produced no change in the measured one.
+## Ladder 2: the timerfd clock
 
-`SO_RCVTIMEO` sleeps on the jiffy timer wheel rather than an hrtimer, so a
-request under one jiffy is rounded up. This host is `CONFIG_HZ=1000`, a 1ms
-jiffy, which matches both modes: 2000us is two jiffies plus wakeup overhead,
-and both 1000us and 200us are one.
+The wait became a `poll` over a timerfd armed at `--tick-us` plus all four RX
+sockets. Same test, same 15 samples per arm:
 
-`--tick-us` therefore has exactly two useful settings on this platform. The
-range is still 200-100000 and the engine warns rather than refusing below
-1000us, because the arm is worth being able to reproduce.
+| tick | mean | tick/2 | sd | min | max |
+|--------|--------|--------|--------|--------|--------|
+| 2000us | 1.20ms | 1.00ms | 0.56ms | 0.10ms | 1.99ms |
+| 1000us | 0.40ms | 0.50ms | 0.27ms | 0.03ms | 0.99ms |
+| 500us  | 0.22ms | 0.25ms | 0.10ms | 0.00ms | 0.36ms |
+| 200us  | 0.09ms | 0.10ms | 0.06ms | 0.01ms | 0.19ms |
 
-## What this means for making detection faster
+Every arm lands within a factor of 1.2 of tick/2, and the spread halves with
+each halving of the tick, which is what a uniform distribution over [0, tick)
+does. No floor appears down to 200us.
 
-Detection resolution in engine mode is bounded at one jiffy, and no tuning
-crosses that. Going finer needs the loop to stop being `SO_RCVTIMEO`-clocked:
-`ppoll` or `epoll_wait` with an hrtimer-backed timeout. That is
-`02-architecture` item 2.2, which was previously argued on structure alone and
-now has a measurement behind it.
+The gap histogram agrees: at 200us the modal bucket is 128-255us at 99.7%,
+against 1024-2047us for the same setting under the old clock.
 
-This also reverses the review's ordering. Item 2.4's second half, per-session
-or adaptive detection timers, cannot deliver sub-jiffy deadlines on the
-current loop no matter how the timers are computed, so 2.4 is downstream of
-2.2 rather than independent of it.
+The 2000us arm improved too, from 2.07ms to 1.20ms, because the old timeout
+restarted its countdown after each pass finished, making the real period the
+timeout plus the work. The timerfd is periodic, so the loop now runs at 513
+passes per second against a nominal 500 rather than the previous 400.
 
-## Incidental: userspace almost never sees a control packet
+Detection overshoot at 200us is 0.09ms. Under the old clock the same setting
+gave 0.94ms. Against the 5ms-sweep era's ~1.3ms it is about fifteen times
+better.
 
-The same counters show `loop_rx_wakeups` at roughly 4 per second across every
-arm, under 1% of passes, against a mesh of 62 sessions at 10ms. With
-`--kernel-tx` active, XDP consumes essentially all BFD traffic before the
-socket sees it. Consistent with the design, never measured before.
+## What it costs
 
-It also rules out an explanation worth recording as dead: arriving traffic is
-not what wakes the loop, so it is not what puts the floor under detection.
+Every pass walks all configured sessions, so CPU scales with the tick:
 
-## Method notes
+| tick | overshoot | CPU (one core) |
+|--------|-----------|----------------|
+| 2000us | 1.20ms | 3.0 to 3.5% |
+| 200us  | 0.09ms | 20 to 23.5% |
 
-- Detection arms use the existing ladder: one session silenced at a time by an
-  egress drop rule on the peer, because XDP runs before netfilter and a
-  DUT-side rule would never see the traffic. Silencing all 62 at once gives 60
-  numbers and roughly one independent sample.
-- Histogram arms are cumulative from engine start, so each covers that arm's
-  whole 30s life rather than a sampled window.
-- The engine is not CPU-bound in any arm: `top` shows about 2% of one core at
-  the default tick, state S.
+At 62 sessions, 1.1ms of detection accuracy costs about 19% of a core. Against a
+30ms budget that is a poor trade, so the default stays at 2000us. Against a 3ms
+budget it may not be, which is what the flag is for.
+
+Where the CPU goes is worth naming: each pass calls `ktx_poll_map` per session,
+one map lookup syscall each. At 2000us that is about 31k syscalls per second;
+at 200us about 310k. `02-architecture` item 2.2 flagged the first figure, and a
+faster tick multiplies it. Batching the lookups, or pushing changes through the
+ringbuf instead of polling for them, would remove most of it. That work is not
+done.
+
+## What this settles
+
+Detection resolution in engine mode is now bounded by the configured tick and
+nothing else, down to at least 200us.
+
+It also settles `02-architecture` item 2.4's second half. Adaptive or
+per-session detection timers were proposed to reduce this quantization; a fixed
+200us tick already puts overshoot at 0.3% of a 30ms budget, so the added
+complexity has nothing left to buy. The review listed 2.4 after 2.2; the
+measurement says 2.2 removes the need for 2.4 rather than preceding it.
 
 ## Limits
 
-- One host, one kernel, `CONFIG_HZ=1000`. On a 250Hz kernel the jiffy is 4ms
-  and the useful range of the flag would be different.
-- 62 sessions, single-hop v4, one interface.
-- 15 samples per detection arm. Enough to separate 2000 from 1000, not enough
-  to separate anything below that, which is the point.
-- The histogram is log2, so it locates a mode to within a factor of two and
-  nothing finer.
+- One host, `CONFIG_HZ=1000`. Ladder 1's floor would sit elsewhere on a 250Hz
+  kernel; ladder 2 should not care, but that is untested.
+- 62 sessions, single-hop v4 arms, one interface for the silenced session.
+- 15 samples per arm. Enough to separate adjacent arms in ladder 2, where the
+  spread is small; ladder 1's lower arms were never separable.
+- Nothing below 200us was measured. The flag's floor is 200us by argument, not
+  by evidence.
+- CPU figures are `top` samples over a few seconds at idle, not a profile.
 
 ## Files
 
-- `detection-2000-1000-500.txt`, the first ladder run
-- `detection-500-200.txt`, the floor check
-- `loop-gaps.json`, the three inter-pass gap histograms with pass and wakeup
-  counts
+- `detection-2000-1000-500.txt`, ladder 1 first run
+- `detection-500-200.txt`, ladder 1 floor check
+- `loop-gaps.json`, ladder 1 gap histograms
+- `detection-timerfd.txt`, ladder 2
+- `loop-gaps-timerfd.json`, ladder 2 gap histograms
 
-Reproduce with `python3 tests/sweep_ladder.py --knob tick --runs 15`.
+Reproduce with `python3 tests/sweep_ladder.py --knob tick --runs 15 --arms
+2000,1000,500,200`.
 

@@ -25,6 +25,7 @@
 #include "bfd_shared.h"
 #include "bffdp.h"
 #include "util.h"
+#include "log.h"
 #include "session.h"
 #include "dplane.h"
 #include "ktx.h"
@@ -80,12 +81,12 @@ static void dp_sessions_teardown(const char *why)
 			n++;
 		}
 	if (n)
-		printf("dplane: %s - tore down %d session(s)\n", why, n);
+		log_info("dplane: %s - tore down %d session(s)\n", why, n);
 }
 
 void sess_teardown_one(struct session *s, const char *why)
 {
-	printf("dplane: lid=%u %s - torn down\n", s->lid, why);
+	log_info("dplane: lid=%u %s - torn down\n", s->lid, why);
 	fsm_announce_down(s);
 	ktx_clear(s);
 	memset(s, 0, sizeof(*s));
@@ -109,7 +110,7 @@ static void dp_sessions_orphan(const char *why)
 			n++;
 		}
 	if (n)
-		printf("dplane: %s - holding %d session(s) up to %llus\n",
+		log_info("dplane: %s - holding %d session(s) up to %llus\n",
 		       why, n, (unsigned long long)(dp_hold_us / 1000000));
 }
 
@@ -164,7 +165,7 @@ void dp_flush(void)
 			continue;
 		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
 			return;   /* still backed up; retry next pass */
-		printf("dplane: send failed (%s), dropping connection\n",
+		log_err("dplane: send failed (%s), dropping connection\n",
 		       n < 0 ? strerror(errno) : "zero-length write");
 		dp_drop_conn("send failure");
 		return;
@@ -176,7 +177,7 @@ static void dp_send(const void *msg, size_t len)
 	if (dp_conn < 0)
 		return;
 	if (len > sizeof(dp_out) - dp_out_len) {
-		printf("dplane: output queue full (%zu bytes pending), "
+		log_err("dplane: output queue full (%zu bytes pending), "
 		       "dropping connection\n", dp_out_len);
 		dp_drop_conn("output queue overflow");
 		return;
@@ -221,7 +222,7 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	 * the ADD and the XDP parser enforces it per session. Demand mode
 	 * is not implemented, so it is still refused. */
 	if (flags & SESSION_DEMAND) {
-		printf("dplane: ADD lid=%u rejected (unsupported flags 0x%x)\n",
+		log_info("dplane: ADD lid=%u rejected (unsupported flags 0x%x)\n",
 		       lid, flags);
 		return;
 	}
@@ -240,13 +241,13 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 			 * pair under a new lid. Adopt the live session in
 			 * place; wire_disc, FSM state, kernel maps and
 			 * counters all survive. */
-			printf("dplane: ADD lid=%u adopts live session (old lid=%u)\n",
+			log_info("dplane: ADD lid=%u adopts live session (old lid=%u)\n",
 			       lid, stale->lid);
 			s = stale;
 			s->orphaned = 0;
 			adopted = 1;
 		} else if (stale) {
-			printf("dplane: ADD lid=%u replaces stale lid=%u\n",
+			log_info("dplane: ADD lid=%u replaces stale lid=%u\n",
 			       lid, stale->lid);
 			ktx_clear(stale);
 			memset(stale, 0, sizeof(*stale));
@@ -255,7 +256,7 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	if (!s) {
 		s = sess_alloc();
 		if (!s) {
-			printf("dplane: session table full\n");
+			log_err("dplane: session table full\n");
 			return;
 		}
 		fresh = 1;
@@ -275,7 +276,7 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	sm_addrs(sm, &s->local, &s->peer, &s->family);
 	if (!fresh && (memcmp(&old_peer, &s->peer, sizeof(old_peer)) ||
 		       memcmp(&old_local, &s->local, sizeof(old_local)))) {
-		printf("dplane: ADD lid=%u moved address pair, clearing the old\n",
+		log_info("dplane: ADD lid=%u moved address pair, clearing the old\n",
 		       lid);
 		ktx_clear_key(&old_peer, &old_local, s->wire_disc);
 		echo_peer_refresh(&old_peer, s);
@@ -329,7 +330,7 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 			    !ktx_covers((int)sif));
 	if (s->ktx_uncovered && !s->iface_warned) {
 		s->iface_warned = 1;
-		printf("dplane: lid=%u is on %.*s (ifindex %u) and could "
+		log_info("dplane: lid=%u is on %.*s (ifindex %u) and could "
 		       "not be attached - this session runs in userspace "
 		       "only\n",
 		       s->lid, (int)sizeof(sm->ifname), sm->ifname, sif);
@@ -376,7 +377,7 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 		inet_ntop(AF_INET, &s->local.b[12], a, sizeof(a));
 		inet_ntop(AF_INET, &s->peer.b[12], b, sizeof(b));
 	}
-	printf("dplane: %s session lid=%u %s -> %s tx=%uus rx=%uus mult=%u%s%s\n",
+	log_debug("dplane: %s session lid=%u %s -> %s tx=%uus rx=%uus mult=%u%s%s\n",
 	       fresh ? "ADD" : "UPDATE", lid, a, b,
 	       s->min_tx_us, s->min_rx_us, s->detect_mult,
 	       s->passive ? " passive" : "",
@@ -391,7 +392,7 @@ static void dp_handle_delete(const struct bfddp_session_msg *sm)
 	struct session *s = sess_by_lid(ntohl(sm->lid));
 	if (!s)
 		return;
-	printf("dplane: DELETE session lid=%u\n", s->lid);
+	log_info("dplane: DELETE session lid=%u\n", s->lid);
 	fsm_announce_down(s);
 	ktx_clear(s);
 	memset(s, 0, sizeof(*s));
@@ -519,7 +520,7 @@ static void dp_process(const uint8_t *buf, size_t len)
 			dp_handle_counters_req(h, (const void *)payload);
 		break;
 	default:
-		printf("dplane: unhandled message type %u\n", type);
+		log_err("dplane: unhandled message type %u\n", type);
 	}
 }
 
@@ -530,7 +531,7 @@ void dp_read(void)
 	ssize_t n = recv(dp_conn, dp_buf + dp_have,
 			 sizeof(dp_buf) - dp_have, 0);
 	if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
-		printf("dplane: bfdd disconnected\n");
+		log_info("dplane: bfdd disconnected\n");
 		dp_drop_conn("bfdd disconnected");
 		return;
 	}
@@ -550,7 +551,7 @@ void dp_read(void)
 			 * mid-stream bytes. Drop the connection instead and let
 			 * bfdd reconnect from a clean boundary. With --dp-hold
 			 * the sessions survive the reconnect. */
-			printf("dplane: bad frame length %u, dropping connection\n",
+			log_err("dplane: bad frame length %u, dropping connection\n",
 			       mlen);
 			dp_drop_conn("bad frame length");
 			return;
@@ -574,18 +575,18 @@ void dp_accept(void)
 	if (c < 0)
 		return;
 	if (dp_conn >= 0) {
-		printf("dplane: replacing existing bfdd connection\n");
+		log_info("dplane: replacing existing bfdd connection\n");
 		close(dp_conn);
 		dp_have = 0;
 		dp_sessions_orphan("connection replaced");
 	}
 	fcntl(c, F_SETFL, O_NONBLOCK);
 	dp_conn = c;
-	printf("dplane: bfdd connected\n");
+	log_info("dplane: bfdd connected\n");
 	for (int i = 0; i < MAX_SESSIONS; i++)
 		if (sessions[i].used && sessions[i].orphaned) {
 			dp_reconcile_us = now_us() + DP_RECONCILE_US;
-			printf("dplane: reconcile sweep armed (%llus)\n",
+			log_info("dplane: reconcile sweep armed (%llus)\n",
 			       (unsigned long long)(DP_RECONCILE_US / 1000000));
 			break;
 		}
@@ -608,7 +609,7 @@ int dp_listen_init(const char *arg)
 			return -1;
 		}
 		chmod(arg, 0666);
-		printf("dplane: listening on %s (bfdd: unixc:%s)\n",
+		log_info("dplane: listening on %s (bfdd: unixc:%s)\n",
 		       arg, arg);
 	} else {
 		int port = atoi(arg);
@@ -626,7 +627,7 @@ int dp_listen_init(const char *arg)
 			perror("dplane listen (tcp)");
 			return -1;
 		}
-		printf("dplane: listening on 127.0.0.1:%d (bfdd: ipv4c:127.0.0.1:%d)\n",
+		log_info("dplane: listening on 127.0.0.1:%d (bfdd: ipv4c:127.0.0.1:%d)\n",
 		       port, port);
 	}
 	fcntl(dp_listen, F_SETFL, O_NONBLOCK);

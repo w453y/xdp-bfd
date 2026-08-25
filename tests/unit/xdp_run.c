@@ -1248,6 +1248,43 @@ static void case_sweep(const char *name, unsigned int iv_us, unsigned int mult,
 	bpf_map_delete_elem(sweep_cfg_fd, &k);
 }
 
+/* now earlier than last_seen_ns. Without the signed guard the subtraction
+ * wraps and every session looks silent for ~584 years. */
+static void case_sweep_negative(void)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct session_state st = {0}, after = {0};
+	struct tx_cfg cfg = {0};
+	unsigned long long now = 1000ull * 1000 * 1000 * 60;
+
+	st.last_seen_ns = now + 5000000ull;   /* 5ms in the future */
+	st.detect_iv_us = 10000;
+	st.detect_mult  = 3;
+	st.alive        = 1;
+	cfg.min_rx_us   = 10000;
+
+	bpf_map_delete_elem(sweep_sess_fd, &k);
+	bpf_map_delete_elem(sweep_cfg_fd, &k);
+	if (!sweep_put(&k, &st, &cfg) || !sweep_at(now) ||
+	    bpf_map_lookup_elem(sweep_sess_fd, &k, &after)) {
+		printf("FAIL %-40s setup\n", "sweep-negative-delta");
+		fails++;
+		return;
+	}
+
+	if (after.alive != 1) {
+		printf("     alive is %u, want 1 - the delta wrapped\n",
+		       after.alive);
+		printf("FAIL %-40s\n", "sweep-negative-delta");
+		fails++;
+	} else {
+		printf("ok   %-40s alive 1\n", "sweep-negative-delta");
+	}
+
+	bpf_map_delete_elem(sweep_sess_fd, &k);
+	bpf_map_delete_elem(sweep_cfg_fd, &k);
+}
+
 static void run_sweep_matrix(void)
 {
 	if (sweep_prog_fd < 0) {
@@ -1259,6 +1296,15 @@ static void run_sweep_matrix(void)
 	case_sweep("sweep-silent-under-budget", 10000, 3, 20000000ull, 1, 1);
 	/* already down: the CAS must not fire a second time */
 	case_sweep("sweep-already-down-stays", 10000, 3, 40000000ull, 0, 0);
+	/* detect_iv_us unset: falls back to max(min_tx_us, cfg->min_rx_us),
+	 * which is 10000 here, so the budget is the same 30ms. An entry
+	 * predating the field must not be treated as a zero budget. */
+	case_sweep("sweep-iv-fallback-past", 0, 3, 40000000ull, 1, 0);
+	case_sweep("sweep-iv-fallback-under", 0, 3, 20000000ull, 1, 1);
+	/* now before last_seen_ns: a packet raced past the sweep's snapshot.
+	 * The guard returns early rather than letting the unsigned delta
+	 * wrap into an enormous silence. */
+	case_sweep_negative();
 }
 
 int main(void)

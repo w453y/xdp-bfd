@@ -486,6 +486,101 @@ static void case_bounce_v6_frame(void)
 	map_reset_v6();
 }
 
+/* A peer frame carrying more than 24 bytes of BFD (auth section, trailer)
+ * must not go back out with the extra bytes attached. tx.h trims with
+ * bpf_xdp_adjust_tail after rewriting.
+ *
+ * The v6 arm is the one worth having. The checksum fold runs BEFORE the
+ * trim, because adjust_tail invalidates the pointers it reads, so the
+ * fold's claim that it "never reads past payload byte 24, which survives
+ * the trim" is only true if the trim removes exactly the excess. This is
+ * the only input that can tell. */
+static void case_trim(int v6, unsigned int extra)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	unsigned char out[FRAME_MAX];
+	unsigned int out_len = 0;
+	char name[64];
+	struct frame f;
+	int v, bad = 0;
+
+	snprintf(name, sizeof(name), "trim-%s-plus-%u", v6 ? "v6" : "v4", extra);
+
+	if (v6) {
+		map_reset_v6();
+		arm_session_v6();
+		build_v6(&f, 255, BFD_PORT_1HOP, &p, extra);
+	} else {
+		map_reset();
+		arm_session();
+		build_v4(&f, 255, BFD_PORT_1HOP, &p, extra);
+	}
+
+	v = run_frame(&f, out, &out_len);
+	if (v != XDP_TX) {
+		printf("FAIL %-40s want TX got %s\n", name,
+		       v < 0 ? "syscall-error" : verdict_str(v));
+		fails++;
+		goto out;
+	}
+
+	unsigned int l3 = v6 ? sizeof(struct ipv6hdr) : sizeof(struct iphdr);
+	unsigned int want_len = sizeof(struct ethhdr) + l3 +
+				sizeof(struct udphdr) + 24;
+	const struct udphdr *ou =
+		(const void *)(out + sizeof(struct ethhdr) + l3);
+
+	if (out_len != want_len) {
+		printf("     frame is %u bytes, want %u (not trimmed)\n",
+		       out_len, want_len);
+		bad = 1;
+	}
+	if (ntohs(ou->len) != (int)(sizeof(*ou) + 24)) {
+		printf("     udp len is %u, want %zu\n", ntohs(ou->len),
+		       sizeof(*ou) + 24);
+		bad = 1;
+	}
+	if (v6) {
+		const struct ipv6hdr *oi =
+			(const void *)(out + sizeof(struct ethhdr));
+
+		if (ntohs(oi->payload_len) != (int)(sizeof(*ou) + 24)) {
+			printf("     payload_len is %u, want %zu\n",
+			       ntohs(oi->payload_len), sizeof(*ou) + 24);
+			bad = 1;
+		}
+		if (!v6_udp_csum_ok(out, out_len)) {
+			printf("     UDP checksum does not verify after trim\n");
+			bad = 1;
+		}
+	} else {
+		const struct iphdr *oi =
+			(const void *)(out + sizeof(struct ethhdr));
+
+		if (ntohs(oi->tot_len) != (int)(l3 + sizeof(*ou) + 24)) {
+			printf("     tot_len is %u, want %zu\n", ntohs(oi->tot_len),
+			       l3 + sizeof(*ou) + 24);
+			bad = 1;
+		}
+		if (csum16(oi, sizeof(*oi), 0) != 0) {
+			printf("     IP checksum does not verify after trim\n");
+			bad = 1;
+		}
+	}
+
+	if (bad) {
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s %u bytes\n", name, out_len);
+	}
+out:
+	if (v6)
+		map_reset_v6();
+	else
+		map_reset();
+}
+
 int main(void)
 {
 	const char *path = getenv("BFD_OBJ") ?: "bfd_xdp.o";
@@ -517,6 +612,10 @@ int main(void)
 	case_bounce_v4();
 	case_bounce_v4_frame();
 	case_bounce_v6_frame();
+	case_trim(0, 8);
+	case_trim(1, 8);
+	case_trim(0, 64);
+	case_trim(1, 64);
 
 	printf("\n%d failure(s)\n", fails);
 	return fails ? 1 : 0;

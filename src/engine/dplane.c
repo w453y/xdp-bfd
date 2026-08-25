@@ -299,6 +299,8 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	 */
 	uint32_t sif = ntohl(sm->ifindex);
 
+	s->ktx_uncovered = (use_ktx && !s->is_mhop && sif && ktx_ifindex &&
+			    sif != (uint32_t)ktx_ifindex);
 	if (use_ktx && !s->is_mhop && sif && ktx_ifindex &&
 	    sif != (uint32_t)ktx_ifindex && !s->iface_warned) {
 		s->iface_warned = 1;

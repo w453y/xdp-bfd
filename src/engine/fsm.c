@@ -311,7 +311,8 @@ void fsm_tx(struct session *s, uint64_t t)
 	}
 
 	int due = (t >= s->next_tx_us) || s->send_final;
-	if (use_ktx && s->state == ST_UP && !s->send_final && !s->just_up) {
+	if (use_ktx && !s->ktx_uncovered && s->state == ST_UP &&
+	    !s->send_final && !s->just_up) {
 		/* Kernel echo covers TX only at the peer's pace. If the
 		 * peer paces slower than our required rate (its detect
 		 * budget for us), transmit from here at the required

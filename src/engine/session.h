@@ -87,6 +87,13 @@ struct session {
 	uint8_t  iface_warned;        /* the off-interface notice is once per
 	                               * session, not once per ADD - bfdd
 	                               * re-sends one on every config touch */
+	uint8_t  ktx_uncovered;       /* single-hop session on an
+	                              * interface the fast path is not
+	                              * attached to. --kernel-tx is
+	                              * global but coverage is not, and
+	                              * fsm_tx must not stay silent
+	                              * waiting for a bounce that no
+	                              * XDP program will make. */
 	uint8_t  peer_mac[6];         /* synced from the map, learned by XDP */
 	int      mac_valid;
 	uint64_t next_echo_tx_us;

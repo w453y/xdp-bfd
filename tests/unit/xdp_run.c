@@ -23,6 +23,7 @@
 #include <linux/if_ether.h>
 #include <linux/ip.h>
 #include <linux/udp.h>
+#include <linux/ipv6.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 
@@ -109,6 +110,73 @@ static struct bfd_ctrl_pkt ctrl_up(void)
 	p.min_rx      = htonl(10000);
 	p.min_echo_rx = 0;
 	return p;
+}
+
+/* A single-hop IPv6 BFD control packet. */
+static void build_v6(struct frame *f, uint8_t hlim, uint16_t dport,
+		     const struct bfd_ctrl_pkt *bfd, unsigned int extra)
+{
+	static const unsigned char dmac[6] = { 0x02, 0, 0, 0, 0, 1 };
+	static const unsigned char smac[6] = { 0x02, 0, 0, 0, 0, 2 };
+	unsigned int payload = sizeof(*bfd) + extra;
+
+	memset(f, 0, sizeof(*f));
+
+	struct ethhdr *eth = (void *)f->b;
+	memcpy(eth->h_dest, dmac, 6);
+	memcpy(eth->h_source, smac, 6);
+	eth->h_proto = htons(ETH_P_IPV6);
+
+	struct ipv6hdr *ip6 = (void *)(eth + 1);
+	ip6->version     = 6;
+	ip6->payload_len = htons(sizeof(struct udphdr) + payload);
+	ip6->nexthdr     = IPPROTO_UDP;
+	ip6->hop_limit   = hlim;
+	inet_pton(AF_INET6, "fd00::2", &ip6->saddr);
+	inet_pton(AF_INET6, "fd00::1", &ip6->daddr);
+
+	struct udphdr *udp = (void *)(ip6 + 1);
+	udp->source = htons(49152);
+	udp->dest   = htons(dport);
+	udp->len    = htons(sizeof(*udp) + payload);
+	udp->check  = 0xffff;   /* v6 requires one; the program rewrites it */
+
+	memcpy(udp + 1, bfd, sizeof(*bfd));
+
+	f->len = sizeof(*eth) + sizeof(*ip6) + sizeof(*udp) + payload;
+}
+
+/* Verify rather than recompute. Summing the pseudo-header, the UDP header
+ * with its checksum field in place, and the payload must fold to 0xffff.
+ * That property is independent of how tx.h produced the value, which is
+ * the point: reimplementing the same 34-word fold here would only prove
+ * the test agrees with itself. */
+static int v6_udp_csum_ok(const unsigned char *frm, unsigned int len)
+{
+	const struct ethhdr *eth = (const void *)frm;
+	const struct ipv6hdr *ip6 = (const void *)(eth + 1);
+	const struct udphdr *udp = (const void *)(ip6 + 1);
+	unsigned int ulen = ntohs(udp->len);
+	uint32_t sum = 0;
+
+	if (len < sizeof(*eth) + sizeof(*ip6) + ulen)
+		return 0;
+
+	const uint16_t *w = (const uint16_t *)&ip6->saddr;
+	for (int i = 0; i < 16; i++)
+		sum += w[i];
+	sum += udp->len;
+	sum += htons(IPPROTO_UDP);
+
+	w = (const uint16_t *)udp;
+	for (unsigned int i = 0; i < ulen / 2; i++)
+		sum += w[i];
+	if (ulen & 1)
+		sum += ((const unsigned char *)udp)[ulen - 1];
+
+	while (sum >> 16)
+		sum = (sum & 0xffff) + (sum >> 16);
+	return sum == 0xffff;
 }
 
 /* ---------- running ---------- */
@@ -216,6 +284,49 @@ static void arm_session(void)
 	}
 }
 
+/* v6 keys carry the address as-is; only v4 goes through the mapped
+ * encoder. Same orientation: peer is the frame source. */
+static struct session_key key_v6(const char *peer, const char *local)
+{
+	struct session_key k = {0};
+
+	inet_pton(AF_INET6, peer, k.peer.b);
+	inet_pton(AF_INET6, local, k.local.b);
+	return k;
+}
+
+static void map_reset_v6(void)
+{
+	struct session_key k = key_v6("fd00::2", "fd00::1");
+
+	bpf_map_delete_elem(cfg_fd, &k);
+	bpf_map_delete_elem(sess_fd, &k);
+}
+
+static void arm_session_v6(void)
+{
+	struct session_key k = key_v6("fd00::2", "fd00::1");
+	struct tx_cfg cfg = {0};
+	struct session_state st = {0};
+
+	cfg.enable    = 1;
+	cfg.my_disc   = 0x22222222;
+	cfg.your_disc = 0x11111111;
+	cfg.min_tx_us = 10000;
+	cfg.min_rx_us = 10000;
+	cfg.state     = ST_UP;
+	cfg.mult      = 3;
+	cfg.min_ttl   = 255;
+
+	st.remote_state = ST_UP;
+
+	if (bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY) ||
+	    bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
+		fprintf(stderr, "  v6 map update failed: %s\n", strerror(errno));
+		fails++;
+	}
+}
+
 /* ---------- cases ---------- */
 
 /* Nothing to do with BFD. The program must not claim it. */
@@ -316,6 +427,65 @@ static void case_bounce_v4_frame(void)
 	map_reset();
 }
 
+/* The v6 bounce, and the only independent check the hand-rolled fold in
+ * tx.h has ever had. */
+static void case_bounce_v6_frame(void)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	unsigned char out[FRAME_MAX];
+	unsigned int out_len = 0;
+	struct frame f;
+	int v;
+
+	map_reset_v6();
+	arm_session_v6();
+	build_v6(&f, 255, BFD_PORT_1HOP, &p, 0);
+	v = run_frame(&f, out, &out_len);
+	if (v != XDP_TX) {
+		printf("FAIL %-40s want TX got %s\n", "bounce-v6-frame",
+		       v < 0 ? "syscall-error" : verdict_str(v));
+		fails++;
+		map_reset_v6();
+		return;
+	}
+
+	const struct ipv6hdr *oi = (const void *)(out + sizeof(struct ethhdr));
+	const struct udphdr *ou = (const void *)(oi + 1);
+	unsigned int want_len = sizeof(struct ethhdr) + sizeof(*oi) +
+				sizeof(*ou) + 24;
+	int bad = 0;
+
+	if (out_len != want_len) {
+		printf("     frame is %u bytes, want %u\n", out_len, want_len);
+		bad = 1;
+	}
+	if (oi->hop_limit != 255) {
+		printf("     hop limit is not 255\n");
+		bad = 1;
+	}
+	if (ntohs(oi->payload_len) != (int)(sizeof(*ou) + 24)) {
+		printf("     payload_len not updated\n");
+		bad = 1;
+	}
+	if (ou->check == 0) {
+		printf("     UDP checksum is zero, illegal in v6\n");
+		bad = 1;
+	}
+	if (!v6_udp_csum_ok(out, out_len)) {
+		printf("     UDP checksum does not verify\n");
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL %-40s\n", "bounce-v6-frame");
+		fails++;
+	} else {
+		printf("ok   %-40s %u bytes, csum 0x%04x\n", "bounce-v6-frame",
+		       out_len, ntohs(ou->check));
+	}
+	map_reset_v6();
+}
+
 int main(void)
 {
 	const char *path = getenv("BFD_OBJ") ?: "bfd_xdp.o";
@@ -346,6 +516,7 @@ int main(void)
 	case_gtsm_v4();
 	case_bounce_v4();
 	case_bounce_v4_frame();
+	case_bounce_v6_frame();
 
 	printf("\n%d failure(s)\n", fails);
 	return fails ? 1 : 0;

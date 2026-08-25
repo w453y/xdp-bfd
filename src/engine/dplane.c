@@ -299,16 +299,30 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	 */
 	uint32_t sif = ntohl(sm->ifindex);
 
-	s->ktx_uncovered = (use_ktx && !s->is_mhop && sif && ktx_ifindex &&
-			    sif != (uint32_t)ktx_ifindex);
-	if (use_ktx && !s->is_mhop && sif && ktx_ifindex &&
-	    sif != (uint32_t)ktx_ifindex && !s->iface_warned) {
+	/* Follow the sessions: bfdd places them by routing, not by where
+	 * --kernel-tx pointed. Attach the same loaded program to this
+	 * interface too rather than letting the session fall off the
+	 * fast path. Multihop is excluded because a routed session can
+	 * ingress anywhere, so its ADD ifindex does not name the one
+	 * interface that would need covering. */
+	if (use_ktx && !s->is_mhop && sif && !ktx_covers((int)sif)) {
+		char ifn[sizeof(sm->ifname) + 1];
+
+		/* bfddp's ifname is a fixed field and need not be
+		 * terminated; the warning below uses %.*s for the same
+		 * reason. */
+		snprintf(ifn, sizeof(ifn), "%.*s",
+			 (int)sizeof(sm->ifname), sm->ifname);
+		ktx_attach_if((int)sif, ifn);
+	}
+	s->ktx_uncovered = (use_ktx && !s->is_mhop && sif &&
+			    !ktx_covers((int)sif));
+	if (s->ktx_uncovered && !s->iface_warned) {
 		s->iface_warned = 1;
-		printf("dplane: lid=%u is on %.*s (ifindex %u), not the attached "
-		       "interface (ifindex %d) - this session runs in userspace "
+		printf("dplane: lid=%u is on %.*s (ifindex %u) and could "
+		       "not be attached - this session runs in userspace "
 		       "only\n",
-		       s->lid, (int)sizeof(sm->ifname), sm->ifname, sif,
-		       ktx_ifindex);
+		       s->lid, (int)sizeof(sm->ifname), sm->ifname, sif);
 	}
 	/* echo policy: track peers of echo-active sessions so the reflector
 	 * returns only their echoes, not arbitrary 3785 traffic. The map is

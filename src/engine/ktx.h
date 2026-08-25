@@ -19,7 +19,10 @@ void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip);
 void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local,
 		   uint32_t wire_disc);
 
+int ktx_load(void);
 int ktx_attach(const char *ifname);
+int ktx_attach_if(int ifindex, const char *ifname);
+int ktx_covers(int ifindex);
 void ktx_update_mhop_flag(void);
 void ktx_mirror(struct session *s);
 void ktx_clear(struct session *s);

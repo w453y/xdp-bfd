@@ -40,14 +40,22 @@ const char *ktx_obj_path;   /* --bpf-obj, or NULL for the default search */
 unsigned int ktx_xdp_flags = XDP_FLAGS_DRV_MODE;
 /* --sweep-us, in nanoseconds; 0 leaves the compiled default. */
 __u64 ktx_sweep_ns;
-/* Held for the life of the process. Closing it detaches the program,
- * which is the whole point: we never close it deliberately. -1 means
- * we fell back to the flags-based attach and the program will outlive
- * us. */
-static int xdp_link_fd = -1;
-/* The one interface the fast path lives on. Sessions on any other
- * interface run entirely in userspace; dp_handle_add says so. */
+/* One entry per attached interface. The link fd is held for the life of
+ * the process: closing it detaches the program, which is the whole point,
+ * so we never close one deliberately. link_fd -1 means that interface fell
+ * back to the flags-based attach and its program will outlive us. */
+#define KTX_MAX_IFACES 8
+struct ktx_iface {
+	int ifindex;
+	int link_fd;
+	const char *mode;
+};
+static struct ktx_iface ktx_ifaces[KTX_MAX_IFACES];
+static int ktx_niface;
+/* The interface named by --kernel-tx. Others are attached on demand as
+ * sessions arrive; ktx_covers() is the question worth asking, not this. */
 int ktx_ifindex;
+static struct bpf_program *ktx_prog;
 static int cfg_fd = -1;
 int sess_fd = -1, echo_peers_fd = -1;
 int echo_disc_fd = -1;
@@ -57,17 +65,17 @@ static int flags_fd = -1;
 static struct bpf_object *bpf_obj;
 
 /* ---------- BPF plumbing ---------- */
-int ktx_attach(const char *ifname)
+int ktx_load(void)
 {
-	int ifindex = if_nametoindex(ifname);
-	if (!ifindex) { perror("ifname"); return -1; }
-	ktx_ifindex = ifindex;
+	if (bpf_obj)
+		return 0;
 
 	const char *obj = bfd_obj_path(ktx_obj_path);
 
 	bpf_obj = bpf_object__open_file(obj, NULL);
 	if (!bpf_obj || bpf_object__load(bpf_obj)) {
 		fprintf(stderr, "%s load failed\n", obj);
+		bpf_obj = NULL;
 		return -1;
 	}
 	/* Tunables go in after load and before attach, so the first packet
@@ -86,14 +94,55 @@ int ktx_attach(const char *ifname)
 		}
 	}
 
-	struct bpf_program *pr =
-		bpf_object__find_program_by_name(bpf_obj, "bfd_observer");
-	if (!pr) {
+	ktx_prog = bpf_object__find_program_by_name(bpf_obj, "bfd_observer");
+	if (!ktx_prog) {
 		fprintf(stderr, "bfd_observer not found in %s\n", obj);
 		return -1;
 	}
-	const char *mode = (ktx_xdp_flags & XDP_FLAGS_SKB_MODE) ? "generic"
-								: "native";
+
+	/* The maps come from the object, not from any one link, which is
+	 * what lets every attached interface share one set. */
+	cfg_fd  = bpf_object__find_map_fd_by_name(bpf_obj, "tx_config");
+	sess_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_sessions");
+	echo_peers_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_peers");
+	echo_disc_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_disc");
+	flags_fd = bpf_object__find_map_fd_by_name(bpf_obj, "prog_flags");
+	stats_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_stats");
+
+	if (ktx_sweep_ns)
+		printf("kernel-tx: sweep interval %lluus (default %lluus)\n",
+		       (unsigned long long)(ktx_sweep_ns / 1000),
+		       (unsigned long long)(BFD_SWEEP_NS_DEFAULT / 1000));
+
+	return 0;
+}
+
+int ktx_covers(int ifindex)
+{
+	for (int i = 0; i < ktx_niface; i++)
+		if (ktx_ifaces[i].ifindex == ifindex)
+			return 1;
+	return 0;
+}
+
+/* Attach the one loaded program to one more interface. Idempotent, so
+ * the caller does not have to track what is already covered. */
+int ktx_attach_if(int ifindex, const char *ifname)
+{
+	if (ktx_covers(ifindex))
+		return 0;
+	if (ktx_load())
+		return -1;
+	if (ktx_niface == KTX_MAX_IFACES) {
+		fprintf(stderr,
+			"kernel-tx: %s not attached, already on %d interfaces\n",
+			ifname, ktx_niface);
+		return -1;
+	}
+
+	unsigned int flags = ktx_xdp_flags;
+	const char *mode = (flags & XDP_FLAGS_SKB_MODE) ? "generic" : "native";
+
 	/* Attach through a bpf_link, so the kernel detaches the program
 	 * when this process dies - including on SIGKILL, where we get no
 	 * chance to clean up. With the plain attach the fast path kept
@@ -101,17 +150,24 @@ int ktx_attach(const char *ifname)
 	 * engine was gone, so the peer saw a session that nothing was
 	 * driving.
 	 *
-	 * A driver or an older kernel can still refuse link mode, so fall
-	 * back rather than failing to start - but say so, because the
-	 * fallback silently restores the old behaviour.
+	 * The mode is per interface rather than per process: a veth or a
+	 * driver without native XDP refuses drv mode, and an on-demand
+	 * attach cannot choose the interface it is handed.
 	 */
-	LIBBPF_OPTS(bpf_link_create_opts, lopts, .flags = ktx_xdp_flags);
+	LIBBPF_OPTS(bpf_link_create_opts, lopts, .flags = flags);
+	int fd = bpf_link_create(bpf_program__fd(ktx_prog), ifindex,
+				 BPF_XDP, &lopts);
 
-	xdp_link_fd = bpf_link_create(bpf_program__fd(pr), ifindex, BPF_XDP,
-				      &lopts);
-	if (xdp_link_fd < 0) {
-		if (bpf_xdp_attach(ifindex, bpf_program__fd(pr),
-				   ktx_xdp_flags, NULL)) {
+	if (fd < 0 && !(flags & XDP_FLAGS_SKB_MODE)) {
+		flags = XDP_FLAGS_SKB_MODE;
+		mode = "generic";
+		lopts.flags = flags;
+		fd = bpf_link_create(bpf_program__fd(ktx_prog), ifindex,
+				     BPF_XDP, &lopts);
+	}
+	if (fd < 0) {
+		if (bpf_xdp_attach(ifindex, bpf_program__fd(ktx_prog),
+				   flags, NULL)) {
 			fprintf(stderr, "%s XDP attach failed on %s\n", mode,
 				ifname);
 			return -1;
@@ -119,21 +175,27 @@ int ktx_attach(const char *ifname)
 		fprintf(stderr,
 			"kernel-tx: bpf_link unavailable (%s), attached with "
 			"flags - the program will OUTLIVE this process\n",
-			strerror(-xdp_link_fd));
+			strerror(-fd));
 	}
-	cfg_fd  = bpf_object__find_map_fd_by_name(bpf_obj, "tx_config");
-	sess_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_sessions");
-	echo_peers_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_peers");
-	echo_disc_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_disc");
-	flags_fd = bpf_object__find_map_fd_by_name(bpf_obj, "prog_flags");
-	stats_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_stats");
-	printf("kernel-tx: XDP attached to %s (%s mode, %s)\n", ifname, mode,
-	       xdp_link_fd >= 0 ? "link" : "flags");
-	if (ktx_sweep_ns)
-		printf("kernel-tx: sweep interval %lluus (default %lluus)\n",
-		       (unsigned long long)(ktx_sweep_ns / 1000),
-		       (unsigned long long)(BFD_SWEEP_NS_DEFAULT / 1000));
 
+	ktx_ifaces[ktx_niface].ifindex = ifindex;
+	ktx_ifaces[ktx_niface].link_fd = fd;
+	ktx_ifaces[ktx_niface].mode    = mode;
+	ktx_niface++;
+
+	printf("kernel-tx: XDP attached to %s (%s mode, %s)\n", ifname, mode,
+	       fd >= 0 ? "link" : "flags");
+	return 0;
+}
+
+int ktx_attach(const char *ifname)
+{
+	int ifindex = if_nametoindex(ifname);
+	if (!ifindex) { perror("ifname"); return -1; }
+
+	if (ktx_attach_if(ifindex, ifname))
+		return -1;
+	ktx_ifindex = ifindex;
 	return 0;
 }
 

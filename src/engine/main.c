@@ -195,6 +195,16 @@ int main(int argc, char **argv)
 		else if (!static_peer)
 			static_peer = argv[i];
 	}
+	/* One address without the other. The guard below only demands a
+	 * pair when --dplane is absent, so `--dplane <p> <one-address>`
+	 * used to reach the static setup and strchr() a NULL peer.
+	 * scan-build found it; validated here so nothing is opened
+	 * before the arguments are known to be usable. */
+	if (static_local && !static_peer) {
+		log_err("static: %s given without a peer address\n",
+			static_local);
+		return 1;
+	}
 	if (!dplane_path && (!static_local || !static_peer)) {
 		log_err(
 			"usage: %s <local-ip> <peer-ip> [--kernel-tx <if>]\n"

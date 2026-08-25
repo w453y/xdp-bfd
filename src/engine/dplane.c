@@ -600,6 +600,10 @@ int dp_listen_init(const char *arg)
 	 * TCP with those versions. */
 	if (arg[0] == '/') {
 		dp_listen = socket(AF_UNIX, SOCK_STREAM, 0);
+		if (dp_listen < 0) {
+			perror("dplane socket (unix)");
+			return -1;
+		}
 		struct sockaddr_un su = { .sun_family = AF_UNIX };
 		strncpy(su.sun_path, arg, sizeof(su.sun_path) - 1);
 		unlink(arg);
@@ -614,6 +618,10 @@ int dp_listen_init(const char *arg)
 	} else {
 		int port = atoi(arg);
 		dp_listen = socket(AF_INET, SOCK_STREAM, 0);
+		if (dp_listen < 0) {
+			perror("dplane socket (tcp)");
+			return -1;
+		}
 		int one = 1;
 		setsockopt(dp_listen, SOL_SOCKET, SO_REUSEADDR, &one,
 			   sizeof(one));

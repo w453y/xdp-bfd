@@ -1,10 +1,18 @@
 CLANG     ?= clang
 CC        ?= gcc
 CFLAGS    := -O2 -g -Wall -Iinclude -Isrc/engine
-# The BPF target has no multiarch include path of its own, so the host
-# compiler's triple supplies it. Hardcoding x86_64-linux-gnu broke any
+# The BPF target has no multiarch include path of its own, so the
+# system's triple supplies it. Hardcoding x86_64-linux-gnu broke any
 # other architecture.
-TRIPLE    := $(shell $(CC) -dumpmachine)
+#
+# Not $(CC) -dumpmachine: the multiarch directory is a property of the
+# system, not of whichever compiler is building. gcc says
+# x86_64-linux-gnu and clang says x86_64-pc-linux-gnu for the same box,
+# so CC=clang pointed -I at a directory that does not exist and every
+# build failed on <asm/types.h>. dpkg-architecture is authoritative
+# where it exists; gcc's answer is the fallback.
+TRIPLE    := $(shell dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null \
+		     || gcc -dumpmachine)
 BPFFLAGS  := -O2 -g -Wall -target bpf -Iinclude -Isrc/xdp -I/usr/include/$(TRIPLE)
 
 ENGINE_OBJS := src/engine/log.o src/engine/main.o src/engine/session.o src/engine/dplane.o src/engine/ktx.o src/engine/echo_tx.o src/engine/fsm.o src/engine/stats.o

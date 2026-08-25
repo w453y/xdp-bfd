@@ -39,7 +39,13 @@ static __always_inline int parse_l3(struct ethhdr *eth, void *data_end,
 		 * socket unvalidated - the same bypass class as an XDP_PASS
 		 * reject. Drop it. */
 		if (c->iph->ihl != 5) {
-			count(BFD_STAT_REJECTED);
+			/* Its own slot, not REJECTED: this fires on any UDP
+			 * packet carrying options, including traffic that has
+			 * nothing to do with BFD, because the port cannot be
+			 * read until the header length is known to be 20.
+			 * Counting it as a BFD reject tells an operator the
+			 * wrong thing. */
+			count(BFD_STAT_IP_OPTIONS);
 			return XDP_DROP;
 		}
 		c->udp = (void *)(c->iph + 1);

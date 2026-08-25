@@ -99,7 +99,8 @@ struct bfd_ctrl_pkt {
 	X(NOT_SELF,          "not-self")           /* echo, not self-addr */\
 	X(ECHO_TTL,          "echo-ttl")           /* echo GTSM */         \
 	X(UNSUPPORTED_FLAGS, "unsupported-flags")  /* A or M bit */        \
-	X(SWEEP_INIT_FAIL,   "sweep-init-fail")    /* sweeper never armed */
+	X(SWEEP_INIT_FAIL,   "sweep-init-fail")    /* sweeper never armed */ \
+	X(IP_OPTIONS,        "ip-options")         /* any UDP with options */
 
 /* Load-time tunables, written by userspace between load and attach and
  * treated as read-only by the program thereafter. Kept in their own map

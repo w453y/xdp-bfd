@@ -1135,7 +1135,7 @@ static void case_ip_options(const char *name, uint16_t dport)
 	ip->check = 0;
 	ip->check = csum16(ip, sizeof(*ip), 0);
 
-	before = stat_get(BFD_STAT_REJECTED);
+	before = stat_get(BFD_STAT_IP_OPTIONS);
 	v = run_frame(&f, NULL, NULL);
 
 	if (v != XDP_DROP) {
@@ -1143,8 +1143,8 @@ static void case_ip_options(const char *name, uint16_t dport)
 		       v < 0 ? "syscall-error" : verdict_str(v));
 		bad = 1;
 	}
-	if (stat_get(BFD_STAT_REJECTED) != before + 1) {
-		printf("     rejected counter did not increment\n");
+	if (stat_get(BFD_STAT_IP_OPTIONS) != before + 1) {
+		printf("     ip-options counter did not increment\n");
 		bad = 1;
 	}
 

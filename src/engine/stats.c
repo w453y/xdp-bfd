@@ -87,18 +87,33 @@ static void one_session(FILE *f, const struct session *s, int first)
 	fprintf(f, " \"rx_pkts\": %llu, \"tx_pkts\": %llu,",
 		(unsigned long long)s->rx_pkts,
 		(unsigned long long)s->tx_pkts);
-	fprintf(f, " \"echo\": {\"on\": %s, \"tx\": %llu, \"rx\": %llu,"
+	/* "on" is what bfdd asked for (SESSION_ECHO in the ADD); "active"
+	 * is what this engine will actually do. They differ for a v6
+	 * session, where echo_tx_maybe returns early - a reader seeing
+	 * on=true with tx stuck at 0 would otherwise conclude echo was
+	 * failing rather than unimplemented.
+	 *
+	 * "alive" is the kernel's advisory verdict and is null when there
+	 * is none: check_session only forms one once an echo has actually
+	 * returned, so a plain false conflated "the echo path is dead"
+	 * with "no echo has ever come back". echo_rx_pkts is the
+	 * userspace-visible witness for that; the kernel's own timestamp
+	 * stays in the map. */
+	fprintf(f, " \"echo\": {\"on\": %s, \"active\": %s,"
+		   " \"tx\": %llu, \"rx\": %llu,"
 		   " \"lost\": %llu, \"rtt_last_us\": %llu,"
 		   " \"rtt_min_us\": %llu, \"rtt_max_us\": %llu,"
 		   " \"alive\": %s}}",
 		s->echo_on ? "true" : "false",
+		(s->echo_on && s->family == AF_INET) ? "true" : "false",
 		(unsigned long long)s->echo_tx_pkts,
 		(unsigned long long)s->echo_rx_pkts,
 		(unsigned long long)s->echo_lost,
 		(unsigned long long)s->echo_rtt_last_us,
 		(unsigned long long)s->echo_rtt_min_us,
 		(unsigned long long)s->echo_rtt_max_us,
-		s->echo_alive_k ? "true" : "false");
+		!s->echo_rx_pkts ? "null"
+				 : (s->echo_alive_k ? "true" : "false"));
 }
 
 void stats_dump(void)

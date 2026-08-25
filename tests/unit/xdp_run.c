@@ -1285,6 +1285,68 @@ static void case_sweep_negative(void)
 	bpf_map_delete_elem(sweep_cfg_fd, &k);
 }
 
+/* The echo advisory verdict.
+ *
+ * sweep.h computes echo_alive from echo_iv_us * detect_mult against
+ * echo_last_seen_ns, and the comment there is emphatic that it is advisory
+ * only: with userspace echo TX a local stall looks exactly like a path
+ * fault, so this must never tear a session down. Every arm below therefore
+ * checks alive as well as echo_alive - a stale echo on a session that is
+ * receiving control packets must leave alive at 1. */
+static void case_echo_advisory(const char *name, unsigned int echo_iv_us,
+			       unsigned long long echo_silent_ns,
+			       int set_last_seen, unsigned int want_echo_alive)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct session_state st = {0}, after = {0};
+	struct tx_cfg cfg = {0};
+	unsigned long long now = 1000ull * 1000 * 1000 * 60;
+	int bad = 0;
+
+	/* Control traffic is fresh throughout: the session is healthy by the
+	 * only measure that is allowed to matter. */
+	st.last_seen_ns = now - 1000000ull;
+	st.detect_iv_us = 10000;
+	st.detect_mult  = 3;
+	st.alive        = 1;
+	if (set_last_seen)
+		st.echo_last_seen_ns = now - echo_silent_ns;
+
+	cfg.min_rx_us  = 10000;
+	cfg.echo_iv_us = echo_iv_us;
+
+	bpf_map_delete_elem(sweep_sess_fd, &k);
+	bpf_map_delete_elem(sweep_cfg_fd, &k);
+	if (!sweep_put(&k, &st, &cfg) || !sweep_at(now) ||
+	    bpf_map_lookup_elem(sweep_sess_fd, &k, &after)) {
+		printf("FAIL %-40s setup\n", name);
+		fails++;
+		return;
+	}
+
+	if (after.echo_alive != want_echo_alive) {
+		printf("     echo_alive is %u, want %u\n", after.echo_alive,
+		       want_echo_alive);
+		bad = 1;
+	}
+	if (after.alive != 1) {
+		printf("     alive is %u - the echo verdict tore the session down\n",
+		       after.alive);
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s echo_alive %u, alive 1\n", name,
+		       after.echo_alive);
+	}
+
+	bpf_map_delete_elem(sweep_sess_fd, &k);
+	bpf_map_delete_elem(sweep_cfg_fd, &k);
+}
+
 static void run_sweep_matrix(void)
 {
 	if (sweep_prog_fd < 0) {
@@ -1305,6 +1367,14 @@ static void run_sweep_matrix(void)
 	 * The guard returns early rather than letting the unsigned delta
 	 * wrap into an enormous silence. */
 	case_sweep_negative();
+	/* 50ms echo interval, mult 3: budget 150ms */
+	case_echo_advisory("echo-advisory-fresh", 50000, 100000000ull, 1, 1);
+	case_echo_advisory("echo-advisory-stale", 50000, 200000000ull, 1, 0);
+	/* echo never seen: the branch needs echo_last_seen_ns set, so the
+	 * verdict is left untouched rather than reported as dead */
+	case_echo_advisory("echo-advisory-never-seen", 50000, 0, 0, 0);
+	/* echo not configured: same, no verdict to make */
+	case_echo_advisory("echo-advisory-off", 0, 100000000ull, 1, 0);
 }
 
 int main(void)

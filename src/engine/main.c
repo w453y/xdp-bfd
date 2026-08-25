@@ -61,20 +61,19 @@
 static int rx_sock = -1, rx6_sock = -1;
 static int rxm_sock = -1;   /* v4 multihop RX, port 4784 */
 static int rxm6_sock = -1;  /* v6 multihop RX, port 4784 */
-/* The loop's clock. SO_RCVTIMEO sleeps on the jiffy timer wheel, so a
- * sub-millisecond tick was rounded up and the loop ran no faster;
- * docs/tick-ladder/ measures that. A timerfd is hrtimer-backed and is
- * also readable by poll, so the wait covers every socket rather than
- * blocking on the v4 one and leaving v6 to wait out its timeout. */
+/* The loop's clock. Hrtimer-backed and readable by poll, so the wait
+ * covers every socket at once and a sub-millisecond tick is honoured.
+ * The SO_RCVTIMEO this replaced slept on the jiffy timer wheel and
+ * rounded anything under 1ms up; docs/tick-ladder/ measures both. */
 static int tick_fd = -1;
 
 
 
 
 /* ---------- main ---------- */
-/* Main loop tick in microseconds, the SO_RCVTIMEO on the control
- * socket. Overridable with --tick-us so the detection ladder can
- * vary it without a rebuild. */
+/* Main loop tick in microseconds: the interval of the timerfd the
+ * poll waits on. Overridable with --tick-us so the detection ladder
+ * can vary it without a rebuild. */
 #define TICK_US_DEFAULT 2000
 static unsigned tick_us = TICK_US_DEFAULT;
 
@@ -161,17 +160,6 @@ int main(int argc, char **argv)
 				return 1;
 			}
 			tick_us = (unsigned)v;
-			/* SO_RCVTIMEO sleeps on the jiffy timer wheel, not an hrtimer,
-			 * so a request under one jiffy is rounded up and the loop runs
-			 * no faster. There is no portable way to read CONFIG_HZ from
-			 * userspace (_SC_CLK_TCK is USER_HZ, fixed at 100), so this is
-			 * the common 1000Hz value. On this testbed a 200us tick gave a
-			 * measured 1024-2047us loop period; see docs/tick-ladder/.
-			 * Warned rather than rejected: the arm is worth reproducing. */
-			if (tick_us < 1000)
-				log_err(
-					"--tick-us: %uus is likely below one jiffy; "
-					"SO_RCVTIMEO will round it up\n", tick_us);
 		}
 		else if (!strcmp(argv[i], "--xdp-mode") && i + 1 < argc) {
 			const char *m = argv[++i];
@@ -232,11 +220,14 @@ int main(int argc, char **argv)
 		perror("bind 3784 (is another BFD daemon running?)");
 		return 1;
 	}
-	struct timeval tv = { .tv_usec = 1000 };   /* drains only */
 	if (tick_us != TICK_US_DEFAULT)
 		log_info("engine: main loop tick %uus (default %uus)\n",
 		       tick_us, TICK_US_DEFAULT);
-	setsockopt(rx_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	/* No SO_RCVTIMEO: the poll below is the only wait and every drain
+	 * is MSG_DONTWAIT. A timeout here would be dead code that looks
+	 * protective - if a drain ever loses MSG_DONTWAIT the loop blocks
+	 * on an idle socket, and a stale timeout would only make that
+	 * stall periodic rather than permanent. */
 	tick_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
 	if (tick_fd < 0) {
 		perror("timerfd_create");

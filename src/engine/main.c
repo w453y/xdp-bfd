@@ -516,6 +516,12 @@ int main(int argc, char **argv)
 			dp_accept();
 		if (rdc)
 			dp_read();
+		/* scan-build flags rx_sock as possibly -1 here. It cannot see
+		 * that rd4 is only set from a pollfd built when rx_sock >= 0,
+		 * so the call is unreachable with a bad fd. The invariant is
+		 * the loop's, not the compiler's: if the poll-set build and
+		 * this ever disagree about which sockets exist, the checker
+		 * would be right. */
 		ssize_t n = rd4 ? recvmsg(rx_sock, &mh, MSG_DONTWAIT | MSG_TRUNC)
 				  : -1;
 		uint64_t t = now_us();

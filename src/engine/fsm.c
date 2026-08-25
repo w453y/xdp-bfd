@@ -73,7 +73,7 @@ static int slot_sock(int slot, const struct session *s)
 		rc = bind(fd, (void *)&sa, sizeof(sa));
 	}
 	if (rc) {
-		fprintf(stderr,
+		log_err(
 			"slot %d: bind port %d: %s - using fallback socket "
 			"(ephemeral src port) for this session\n",
 			slot, SRC_PORT + slot, strerror(errno));

@@ -23,6 +23,7 @@
 #include "bfd_shared.h"
 #include "objpath.h"
 #include "util.h"
+#include "log.h"
 #include "session.h"
 #include "ktx.h"
 #include "dplane.h"
@@ -88,7 +89,7 @@ void ktx_poll_all(void)
 				 &count, &bopts) && errno != ENOENT) {
 		if (errno == EINVAL || errno == EOPNOTSUPP) {
 			poll_batch_unsupported = 1;
-			fprintf(stderr,
+			log_err(
 				"kernel-tx: batch map lookup unavailable (%s), "
 				"falling back to one lookup per session\n",
 				strerror(errno));
@@ -127,7 +128,7 @@ int ktx_load(void)
 
 	bpf_obj = bpf_object__open_file(obj, NULL);
 	if (!bpf_obj || bpf_object__load(bpf_obj)) {
-		fprintf(stderr, "%s load failed\n", obj);
+		log_err("%s load failed\n", obj);
 		bpf_obj = NULL;
 		return -1;
 	}
@@ -140,7 +141,7 @@ int ktx_load(void)
 
 		if (tune_fd < 0 ||
 		    bpf_map_update_elem(tune_fd, &k, &ktx_sweep_ns, 0)) {
-			fprintf(stderr,
+			log_err(
 				"kernel-tx: sweep interval NOT applied, "
 				"running the compiled default\n");
 			ktx_sweep_ns = 0;
@@ -149,7 +150,7 @@ int ktx_load(void)
 
 	ktx_prog = bpf_object__find_program_by_name(bpf_obj, "bfd_observer");
 	if (!ktx_prog) {
-		fprintf(stderr, "bfd_observer not found in %s\n", obj);
+		log_err("bfd_observer not found in %s\n", obj);
 		return -1;
 	}
 
@@ -163,7 +164,7 @@ int ktx_load(void)
 	stats_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_stats");
 
 	if (ktx_sweep_ns)
-		printf("kernel-tx: sweep interval %lluus (default %lluus)\n",
+		log_info("kernel-tx: sweep interval %lluus (default %lluus)\n",
 		       (unsigned long long)(ktx_sweep_ns / 1000),
 		       (unsigned long long)(BFD_SWEEP_NS_DEFAULT / 1000));
 
@@ -187,7 +188,7 @@ int ktx_attach_if(int ifindex, const char *ifname)
 	if (ktx_load())
 		return -1;
 	if (ktx_niface == KTX_MAX_IFACES) {
-		fprintf(stderr,
+		log_err(
 			"kernel-tx: %s not attached, already on %d interfaces\n",
 			ifname, ktx_niface);
 		return -1;
@@ -221,11 +222,11 @@ int ktx_attach_if(int ifindex, const char *ifname)
 	if (fd < 0) {
 		if (bpf_xdp_attach(ifindex, bpf_program__fd(ktx_prog),
 				   flags, NULL)) {
-			fprintf(stderr, "%s XDP attach failed on %s\n", mode,
+			log_err("%s XDP attach failed on %s\n", mode,
 				ifname);
 			return -1;
 		}
-		fprintf(stderr,
+		log_err(
 			"kernel-tx: bpf_link unavailable (%s), attached with "
 			"flags - the program will OUTLIVE this process\n",
 			strerror(-fd));
@@ -236,7 +237,7 @@ int ktx_attach_if(int ifindex, const char *ifname)
 	ktx_ifaces[ktx_niface].mode    = mode;
 	ktx_niface++;
 
-	printf("kernel-tx: XDP attached to %s (%s mode, %s)\n", ifname, mode,
+	log_info("kernel-tx: XDP attached to %s (%s mode, %s)\n", ifname, mode,
 	       fd >= 0 ? "link" : "flags");
 	return 0;
 }

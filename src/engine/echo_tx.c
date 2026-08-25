@@ -23,6 +23,7 @@
 
 #include "bfd_shared.h"
 #include "util.h"
+#include "log.h"
 #include "session.h"
 #include <net/if.h>
 #include <sys/ioctl.h>
@@ -67,7 +68,7 @@ void echo_tx_init(const char *ifname)
         	echo_sock = socket(AF_PACKET, SOCK_RAW, 0);
         	if (echo_sock < 0)
         		perror("echo raw socket");
-        	printf("echo-tx: ifindex %d src-mac %02x:%02x:%02x:%02x:%02x:%02x sock %d\n",
+        	log_info("echo-tx: ifindex %d src-mac %02x:%02x:%02x:%02x:%02x:%02x sock %d\n",
         	       echo_ifindex, echo_src_mac[0], echo_src_mac[1], echo_src_mac[2],
         	       echo_src_mac[3], echo_src_mac[4], echo_src_mac[5], echo_sock);
 }
@@ -177,7 +178,7 @@ void echo_tx_maybe(struct session *s, uint64_t t)
 	if (s->echo_tx_pkts % 100 == 0) {
 		const uint8_t *lo = s->local.b + 12, *pe = s->peer.b + 12;
 		uint64_t avg = s->echo_rtt_n ? s->echo_rtt_sum_us / s->echo_rtt_n : 0;
-		printf("echo %u.%u.%u.%u->%u.%u.%u.%u tx=%llu rx=%llu lost=%llu "
+		log_debug("echo %u.%u.%u.%u->%u.%u.%u.%u tx=%llu rx=%llu lost=%llu "
 		       "rtt last/min/avg/max %llu/%llu/%llu/%llu us win-max %llu gap-max %lluus echo-alive=%d\n",
 		       lo[0], lo[1], lo[2], lo[3], pe[0], pe[1], pe[2], pe[3],
 		       (unsigned long long)s->echo_tx_pkts,

@@ -119,7 +119,7 @@ int main(int argc, char **argv)
 			 * above 100ms the sweep is slower than any detection
 			 * budget it is meant to serve. */
 			if (end == a || *end || v < 500 || v > 100000) {
-				fprintf(stderr,
+				log_err(
 					"--sweep-us: expected 500-100000, got '%s'\n",
 					a);
 				return 1;
@@ -136,7 +136,7 @@ int main(int argc, char **argv)
 			else if (!strcmp(a, "debug"))
 				bfd_log_level = BFD_LOG_DEBUG;
 			else {
-				fprintf(stderr,
+				log_err(
 					"--log-level: expected error|info|debug, got '%s'\n",
 					a);
 				return 1;
@@ -155,7 +155,7 @@ int main(int argc, char **argv)
 			 * because every pass walks all configured sessions, and at the
 			 * same 100ms ceiling as the sweep. */
 			if (end == a || *end || v < 200 || v > 100000) {
-				fprintf(stderr,
+				log_err(
 					"--tick-us: expected 200-100000, got '%s'\n",
 					a);
 				return 1;
@@ -169,7 +169,7 @@ int main(int argc, char **argv)
 			 * measured 1024-2047us loop period; see docs/tick-ladder/.
 			 * Warned rather than rejected: the arm is worth reproducing. */
 			if (tick_us < 1000)
-				fprintf(stderr,
+				log_err(
 					"--tick-us: %uus is likely below one jiffy; "
 					"SO_RCVTIMEO will round it up\n", tick_us);
 		}
@@ -180,7 +180,7 @@ int main(int argc, char **argv)
 			else if (!strcmp(m, "drv") || !strcmp(m, "native"))
 				ktx_xdp_flags = XDP_FLAGS_DRV_MODE;
 			else {
-				fprintf(stderr,
+				log_err(
 					"--xdp-mode: expected drv or generic, got '%s'\n",
 					m);
 				return 1;
@@ -195,7 +195,7 @@ int main(int argc, char **argv)
 			 * hold and "10s" a silent 10 - both look like the
 			 * flag worked. */
 			if (end == a || *end || v > 86400) {
-				fprintf(stderr,
+				log_err(
 					"--dp-hold: expected seconds (0-86400), got '%s'\n",
 					a);
 				return 1;
@@ -208,7 +208,7 @@ int main(int argc, char **argv)
 			static_peer = argv[i];
 	}
 	if (!dplane_path && (!static_local || !static_peer)) {
-		fprintf(stderr,
+		log_err(
 			"usage: %s <local-ip> <peer-ip> [--kernel-tx <if>]\n"
 			"       %s --dplane <port|sock-path> [--kernel-tx <if>] [--dp-hold <sec>]\n"
 			"       [--bpf-obj <path>] [--xdp-mode drv|generic]\n"
@@ -234,7 +234,7 @@ int main(int argc, char **argv)
 	}
 	struct timeval tv = { .tv_usec = 1000 };   /* drains only */
 	if (tick_us != TICK_US_DEFAULT)
-		printf("engine: main loop tick %uus (default %uus)\n",
+		log_info("engine: main loop tick %uus (default %uus)\n",
 		       tick_us, TICK_US_DEFAULT);
 	setsockopt(rx_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 	tick_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
@@ -386,7 +386,7 @@ int main(int argc, char **argv)
 		int fam = strchr(static_local, ':') ? AF_INET6 : AF_INET;
 
 		if ((strchr(static_peer, ':') != NULL) != (fam == AF_INET6)) {
-			fprintf(stderr,
+			log_err(
 				"static: %s and %s are different families\n",
 				static_local, static_peer);
 			return 1;
@@ -398,7 +398,7 @@ int main(int argc, char **argv)
 			 * zero address and a session that could never match. */
 			if (inet_pton(AF_INET6, static_local, &sl6) != 1 ||
 			    inet_pton(AF_INET6, static_peer, &sp6) != 1) {
-				fprintf(stderr, "static: bad IPv6 address\n");
+				log_err("static: bad IPv6 address\n");
 				return 1;
 			}
 			key_set_v6(&s->local, &sl6);
@@ -408,7 +408,7 @@ int main(int argc, char **argv)
 
 			if (inet_pton(AF_INET, static_local, &sl) != 1 ||
 			    inet_pton(AF_INET, static_peer, &sp) != 1) {
-				fprintf(stderr, "static: bad IPv4 address\n");
+				log_err("static: bad IPv4 address\n");
 				return 1;
 			}
 			key_set_v4(&s->local, sl);
@@ -424,7 +424,7 @@ int main(int argc, char **argv)
 		s->state       = ST_DOWN;
 		s->pushed_valid = 0;
 		s->next_tx_us  = now_us();
-		printf("bfd_tx: static session lid=%u %s -> %s%s\n",
+		log_info("bfd_tx: static session lid=%u %s -> %s%s\n",
 		       s->lid, static_local, static_peer,
 		       use_ktx ? " (kernel-tx)" : "");
 	}

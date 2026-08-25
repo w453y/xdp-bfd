@@ -80,19 +80,29 @@ Every pass walks all configured sessions, so CPU scales with the tick:
 
 | tick | overshoot | CPU (one core) |
 |--------|-----------|----------------|
-| 2000us | 1.20ms | 3.0 to 3.5% |
-| 200us  | 0.09ms | 20 to 23.5% |
+| 2000us | 1.20ms | 2.0 to 2.5% |
+| 200us  | 0.09ms | 10 to 11% |
 
-At 62 sessions, 1.1ms of detection accuracy costs about 19% of a core. Against a
-30ms budget that is a poor trade, so the default stays at 2000us. Against a 3ms
-budget it may not be, which is what the flag is for.
+At 62 sessions, 1.1ms of detection accuracy costs about 8% of a core. Against a
+30ms budget that is still a poor trade, so the default stays at 2000us. Against
+a 3ms budget it may not be, which is what the flag is for.
 
-Where the CPU goes is worth naming: each pass calls `ktx_poll_map` per session,
-one map lookup syscall each. At 2000us that is about 31k syscalls per second;
-at 200us about 310k. `02-architecture` item 2.2 flagged the first figure, and a
-faster tick multiplies it. Batching the lookups, or pushing changes through the
-ringbuf instead of polling for them, would remove most of it. That work is not
-done.
+Those figures are after the batch fetch below. Before it they were 3.0 to 3.5%
+and 20 to 23.5%, so the same accuracy now costs about half what it did.
+
+Where the CPU went: each pass called `ktx_poll_map` per session, one map lookup
+syscall each. At 2000us that was about 31k syscalls per second; at 200us about
+310k, and 67% of the engine's syscall time. `02-architecture` item 2.2 flagged
+the first figure. One `BPF_MAP_LOOKUP_BATCH` per pass replaced all of them:
+`bpf` calls fell from 76953 to 2523 over the same window, and CPU at 200us
+halved.
+
+Two smaller reductions landed alongside it and are worth separating from that
+result, because neither moved CPU measurably: the four RX drains now run only
+when poll reports the socket readable (about 5150 failing syscalls removed per
+1300 passes), and the dplane listen and connection fds are polled rather than
+called blind (another 5000). Both remove real waste; neither was where the time
+was going.
 
 ## What this settles
 
@@ -115,6 +125,10 @@ measurement says 2.2 removes the need for 2.4 rather than preceding it.
 - Nothing below 200us was measured. The flag's floor is 200us by argument, not
   by evidence.
 - CPU figures are `top` samples over a few seconds at idle, not a profile.
+- Ladder 2 was measured before the batch fetch and the two poll-gating
+  commits. The 200us arm was rerun afterwards and gave the same 0.09ms
+  mean and 0.06ms sd from a different set of samples, so the arms carry
+  over; the other three were not rerun.
 
 ## Files
 

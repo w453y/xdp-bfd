@@ -18,6 +18,8 @@
  */
 #define _GNU_SOURCE
 #include <stdio.h>
+#include <poll.h>
+#include <sys/timerfd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -58,6 +60,12 @@
 static int rx_sock = -1, rx6_sock = -1;
 static int rxm_sock = -1;   /* v4 multihop RX, port 4784 */
 static int rxm6_sock = -1;  /* v6 multihop RX, port 4784 */
+/* The loop's clock. SO_RCVTIMEO sleeps on the jiffy timer wheel, so a
+ * sub-millisecond tick was rounded up and the loop ran no faster;
+ * docs/tick-ladder/ measures that. A timerfd is hrtimer-backed and is
+ * also readable by poll, so the wait covers every socket rather than
+ * blocking on the v4 one and leaving v6 to wait out its timeout. */
+static int tick_fd = -1;
 
 
 
@@ -205,12 +213,27 @@ int main(int argc, char **argv)
 		perror("bind 3784 (is another BFD daemon running?)");
 		return 1;
 	}
-	struct timeval tv = { .tv_sec  = tick_us / 1000000,
-			     .tv_usec = tick_us % 1000000 };
+	struct timeval tv = { .tv_usec = 1000 };   /* drains only */
 	if (tick_us != TICK_US_DEFAULT)
 		printf("engine: main loop tick %uus (default %uus)\n",
 		       tick_us, TICK_US_DEFAULT);
 	setsockopt(rx_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	tick_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+	if (tick_fd < 0) {
+		perror("timerfd_create");
+		return 1;
+	}
+	{
+		struct itimerspec its = {
+			.it_interval = { .tv_sec  = tick_us / 1000000,
+					 .tv_nsec = (tick_us % 1000000) * 1000 },
+		};
+		its.it_value = its.it_interval;
+		if (timerfd_settime(tick_fd, 0, &its, NULL)) {
+			perror("timerfd_settime");
+			return 1;
+		}
+	}
 	int pi = 1;
 	setsockopt(rx_sock, IPPROTO_IP, IP_PKTINFO, &pi, sizeof(pi));
 	/* GTSM (RFC 5881 s5) by reading the arriving TTL, not by asking
@@ -423,15 +446,34 @@ int main(int argc, char **argv)
 		 */
 		const int drain_budget = MAX_SESSIONS;
 
-		/* This recvmsg is the loop's clock: it blocks with the
-		 * SO_RCVTIMEO set above, 2ms unless --tick-us says
-		 * otherwise, which is what keeps main from spinning
-		 * and what sets how often the per-session tick below runs. The
-		 * three drains that follow are MSG_DONTWAIT on purpose. The
-		 * asymmetry is deliberate - collapsing the four into one helper
-		 * means choosing one blocking discipline for all of them, which
-		 * changes transmit and detect pacing. */
-		ssize_t n = recvmsg(rx_sock, &mh, MSG_TRUNC);
+		/* This poll is the loop's clock. It waits on a timerfd armed at
+		 * --tick-us and on every RX socket at once, so a v6 packet no
+		 * longer waits out the v4 socket's timeout, and the tick is not
+		 * rounded up to a jiffy the way SO_RCVTIMEO was (docs/tick-ladder/).
+		 *
+		 * All four drains below are now non-blocking. The drain budget is
+		 * what bounds a pass, not the blocking discipline: a sustained
+		 * flood still spreads across ticks instead of monopolising one. */
+		{
+			struct pollfd pfd[5];
+			int np = 0;
+			uint64_t exp;
+
+			pfd[np].fd = tick_fd; pfd[np++].events = POLLIN;
+			if (rx_sock >= 0)
+				{ pfd[np].fd = rx_sock; pfd[np++].events = POLLIN; }
+			if (rx6_sock >= 0)
+				{ pfd[np].fd = rx6_sock; pfd[np++].events = POLLIN; }
+			if (rxm_sock >= 0)
+				{ pfd[np].fd = rxm_sock; pfd[np++].events = POLLIN; }
+			if (rxm6_sock >= 0)
+				{ pfd[np].fd = rxm6_sock; pfd[np++].events = POLLIN; }
+			poll(pfd, np, -1);
+			/* Drain the timer so it does not stay readable. */
+			if (pfd[0].revents & POLLIN)
+				(void)!read(tick_fd, &exp, sizeof(exp));
+		}
+		ssize_t n = recvmsg(rx_sock, &mh, MSG_DONTWAIT | MSG_TRUNC);
 		uint64_t t = now_us();
 		loop_passes++;
 		{

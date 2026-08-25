@@ -454,9 +454,9 @@ int main(int argc, char **argv)
 		 * All four drains below are now non-blocking. The drain budget is
 		 * what bounds a pass, not the blocking discipline: a sustained
 		 * flood still spreads across ticks instead of monopolising one. */
+		struct pollfd pfd[5] = {0};
+		int np = 0;
 		{
-			struct pollfd pfd[5];
-			int np = 0;
 			uint64_t exp;
 
 			pfd[np].fd = tick_fd; pfd[np++].events = POLLIN;
@@ -473,7 +473,20 @@ int main(int argc, char **argv)
 			if (pfd[0].revents & POLLIN)
 				(void)!read(tick_fd, &exp, sizeof(exp));
 		}
-		ssize_t n = recvmsg(rx_sock, &mh, MSG_DONTWAIT | MSG_TRUNC);
+		/* Only touch a socket poll said is readable. Four blind
+		 * MSG_DONTWAIT drains per pass cost four EAGAIN syscalls
+		 * every tick, which at a 200us tick is 20k/s of nothing. */
+		int rd4 = 0, rd6 = 0, rdm4 = 0, rdm6 = 0;
+		for (int k = 0; k < np; k++) {
+			if (!(pfd[k].revents & POLLIN))
+				continue;
+			if (pfd[k].fd == rx_sock)   rd4 = 1;
+			if (pfd[k].fd == rx6_sock)  rd6 = 1;
+			if (pfd[k].fd == rxm_sock)  rdm4 = 1;
+			if (pfd[k].fd == rxm6_sock) rdm6 = 1;
+		}
+		ssize_t n = rd4 ? recvmsg(rx_sock, &mh, MSG_DONTWAIT | MSG_TRUNC)
+				  : -1;
 		uint64_t t = now_us();
 		loop_passes++;
 		{
@@ -540,7 +553,7 @@ int main(int argc, char **argv)
 
 		/* RFC 5883 multihop control packets, port 4784. Same demux as
 		 * single-hop: your_disc first, address pair as fallback. */
-		for (int d = 0; rxm_sock >= 0 && d < drain_budget; d++) {
+		for (int d = 0; rdm4 && rxm_sock >= 0 && d < drain_budget; d++) {
 			struct bfd_ctrl_pkt pm;
 			struct sockaddr_in fromm;
 			struct iovec iovm = { .iov_base = &pm,
@@ -600,7 +613,7 @@ int main(int argc, char **argv)
 				fsm_rx(ms, &pm, now_us());
 		}
 
-		for (int d = 0; d < drain_budget; d++) {
+		for (int d = 0; rd6 && d < drain_budget; d++) {
 			struct bfd_ctrl_pkt p6;
 			struct sockaddr_in6 from6;
 			struct iovec iov6 = { .iov_base = &p6,
@@ -650,7 +663,7 @@ int main(int argc, char **argv)
 		}
 
 		/* v6 multihop control packets, port 4784. */
-		for (int d = 0; rxm6_sock >= 0 && d < drain_budget; d++) {
+		for (int d = 0; rdm6 && rxm6_sock >= 0 && d < drain_budget; d++) {
 			struct bfd_ctrl_pkt pm6;
 			struct sockaddr_in6 fromm6;
 			struct iovec iovm6 = { .iov_base = &pm6,

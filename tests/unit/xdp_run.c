@@ -1076,6 +1076,36 @@ static void run_echo_matrix(void)
 		  XDP_TX, BFD_STAT_REFLECTED);
 }
 
+/* Does a returning v6 echo survive the parser?
+ *
+ * parse.h's v4 GTSM has a narrow exception for our own echo at TTL 254 and
+ * self-addressed. The v6 path has no equivalent: any hop_limit != 255 is
+ * dropped unless a multihop session exists. If a v6 echo returns at 254 the
+ * way a v4 one does, echo_reflect_v6's return branch is unreachable and v6
+ * echo RTT never updates. This asserts nothing yet - it reports. */
+static void case_echo_v6_return(void)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct frame f;
+
+	for (int hl = 255; hl >= 254; hl--) {
+		map_reset_v6();
+		arm_session_v6();
+		build_v6(&f, hl, BFD_ECHO_PORT, &p, 0);
+
+		struct ipv6hdr *ip6 = (void *)(f.b + sizeof(struct ethhdr));
+		inet_pton(AF_INET6, "fd00::1", &ip6->saddr);
+		inet_pton(AF_INET6, "fd00::1", &ip6->daddr);
+
+		int v = run_frame(&f, NULL, NULL);
+
+		printf("     v6 echo self-addressed hop_limit %d -> %s\n", hl,
+		       v < 0 ? "syscall-error" : verdict_str(v));
+		map_reset_v6();
+	}
+	printf("ok   %-40s reported\n", "echo-v6-return-probe");
+}
+
 int main(void)
 {
 	const char *path = getenv("BFD_OBJ") ?: "bfd_xdp.o";
@@ -1122,6 +1152,7 @@ int main(void)
 	run_demux_matrix();
 	run_frag_matrix();
 	run_echo_matrix();
+	case_echo_v6_return();
 
 	printf("\n%d failure(s)\n", fails);
 	return fails ? 1 : 0;

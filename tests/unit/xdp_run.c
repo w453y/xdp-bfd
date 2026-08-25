@@ -254,6 +254,68 @@ static void case_bounce_v4(void)
 	map_reset();
 }
 
+/* The verdict says the program chose to bounce. This says the frame it
+ * produced is the one tx.h describes. Checked field by field rather than
+ * memcmp against a whole expected frame, so a failure names what moved. */
+static void case_bounce_v4_frame(void)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	unsigned char out[FRAME_MAX];
+	unsigned int out_len = 0;
+	struct frame f;
+	int v;
+
+	map_reset();
+	arm_session();
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+	v = run_frame(&f, out, &out_len);
+	if (v != XDP_TX) {
+		printf("FAIL %-40s no bounce to inspect\n", "bounce-v4-frame");
+		fails++;
+		map_reset();
+		return;
+	}
+
+	const struct ethhdr *ie = (const void *)f.b;
+	const struct ethhdr *oe = (const void *)out;
+	const struct iphdr *ii = (const void *)(ie + 1);
+	const struct iphdr *oi = (const void *)(oe + 1);
+	const struct udphdr *ou = (const void *)(oi + 1);
+	const struct bfd_ctrl_pkt *ob = (const void *)(ou + 1);
+	unsigned int want_len = sizeof(*oe) + sizeof(*oi) + sizeof(*ou) + 24;
+	int bad = 0;
+
+#define CHK(cond, what) do { if (!(cond)) { \
+	printf("     %s\n", what); bad = 1; } } while (0)
+
+	CHK(out_len == want_len, "frame length not eth+ip+udp+24");
+	CHK(!memcmp(oe->h_dest, ie->h_source, 6), "dest MAC is not the arriving source");
+	CHK(!memcmp(oe->h_source, ie->h_dest, 6), "source MAC is not the arriving dest");
+	CHK(oi->saddr == ii->daddr, "source IP is not the arriving dest");
+	CHK(oi->daddr == ii->saddr, "dest IP is not the arriving source");
+	CHK(oi->ttl == 255, "TTL is not 255");
+	CHK(ntohs(oi->tot_len) == want_len - sizeof(*oe), "tot_len not updated");
+	CHK(csum16(oi, sizeof(*oi), 0) == 0, "IP checksum does not verify");
+	CHK(ntohs(ou->source) == BFD_SRC_PORT, "source port is not BFD_SRC_PORT");
+	CHK(ntohs(ou->dest) == BFD_PORT_1HOP, "dest port is not the arriving port");
+	CHK(ntohs(ou->len) == (int)(sizeof(*ou) + 24), "udp len not updated");
+	CHK(ob->len == 24, "bfd len field is not 24");
+	CHK((ob->flags >> 6) == ST_UP, "state is not Up");
+	CHK(!(ob->flags & (BFD_F_POLL | BFD_F_FINAL)), "P or F set on a plain reply");
+	CHK(ntohl(ob->my_disc) == 0x22222222, "my_disc not from tx_cfg");
+	CHK(ntohl(ob->your_disc) == 0x11111111, "your_disc not from tx_cfg");
+	CHK(ob->detect_mult == 3, "detect_mult not from tx_cfg");
+#undef CHK
+
+	if (bad) {
+		printf("FAIL %-40s\n", "bounce-v4-frame");
+		fails++;
+	} else {
+		printf("ok   %-40s %u bytes\n", "bounce-v4-frame", out_len);
+	}
+	map_reset();
+}
+
 int main(void)
 {
 	const char *path = getenv("BFD_OBJ") ?: "bfd_xdp.o";
@@ -283,6 +345,7 @@ int main(void)
 	case_not_bfd();
 	case_gtsm_v4();
 	case_bounce_v4();
+	case_bounce_v4_frame();
 
 	printf("\n%d failure(s)\n", fails);
 	return fails ? 1 : 0;

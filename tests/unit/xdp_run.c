@@ -1106,6 +1106,57 @@ static void case_echo_v6_return(void)
 	printf("ok   %-40s reported\n", "echo-v6-return-probe");
 }
 
+/* IP options. A single-hop BFD control packet never carries them, and
+ * passing one would leave the UDP header at a variable offset, skipping
+ * GTSM and demux and leaking the packet to the userspace socket
+ * unvalidated - the same bypass class as an XDP_PASS reject.
+ *
+ * The check sits before the port test, so this drops any UDP packet with
+ * options, not only BFD-bound ones. That is broader than the fragment
+ * rule, which only drops fragments aimed at a BFD port, and the
+ * other-port arm below pins the difference. */
+static void case_ip_options(const char *name, uint16_t dport)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	unsigned long long before;
+	struct frame f;
+	int v, bad = 0;
+
+	map_reset();
+	arm_session();
+	build_v4(&f, 255, dport, &p, 4);   /* 4 spare bytes to hold the option */
+
+	struct iphdr *ip = (void *)(f.b + sizeof(struct ethhdr));
+
+	/* Claim a 24-byte header. The frame already carries the extra 4
+	 * bytes; their content does not matter, only that ihl says the UDP
+	 * header is not where a 20-byte header would put it. */
+	ip->ihl = 6;
+	ip->check = 0;
+	ip->check = csum16(ip, sizeof(*ip), 0);
+
+	before = stat_get(BFD_STAT_REJECTED);
+	v = run_frame(&f, NULL, NULL);
+
+	if (v != XDP_DROP) {
+		printf("     verdict %s, want DROP\n",
+		       v < 0 ? "syscall-error" : verdict_str(v));
+		bad = 1;
+	}
+	if (stat_get(BFD_STAT_REJECTED) != before + 1) {
+		printf("     rejected counter did not increment\n");
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s DROP\n", name);
+	}
+	map_reset();
+}
+
 int main(void)
 {
 	const char *path = getenv("BFD_OBJ") ?: "bfd_xdp.o";
@@ -1153,6 +1204,8 @@ int main(void)
 	run_frag_matrix();
 	run_echo_matrix();
 	case_echo_v6_return();
+	case_ip_options("ip-options-bfd-port", BFD_PORT_1HOP);
+	case_ip_options("ip-options-other-port", 1234);
 
 	printf("\n%d failure(s)\n", fails);
 	return fails ? 1 : 0;

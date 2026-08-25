@@ -7,3 +7,5 @@ observer.csv
 
 # review patch scripts
 /[0-9][0-9]-*.py
+# unit test binary
+/tests/unit/xdp_run

@@ -32,4 +32,11 @@ bfd_tx: $(ENGINE_OBJS)
 clean:
 	rm -f bfd_xdp.o bfd_loader bfd_tx $(ENGINE_OBJS)
 
-.PHONY: all clean abi-check
+tests/unit/xdp_run: tests/unit/xdp_run.c include/bfd_shared.h
+	$(CC) $(CFLAGS) $< -o $@ -lbpf
+
+# Needs root and the loaded object; not part of `all`.
+test-xdp: tests/unit/xdp_run bfd_xdp.o
+	sudo ./tests/unit/xdp_run
+
+.PHONY: all clean abi-check test-xdp

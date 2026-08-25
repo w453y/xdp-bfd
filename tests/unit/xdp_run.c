@@ -62,6 +62,7 @@ static uint16_t csum16(const void *p, int len, uint32_t seed)
  * the first thing worth asserting and the whole point is to vary it. */
 static void build_v4(struct frame *f, uint8_t ttl, uint16_t dport,
 		     const struct bfd_ctrl_pkt *bfd, unsigned int extra)
+/* frag_off is set by the caller after building, see case_frag */
 {
 	static const unsigned char dmac[6] = { 0x02, 0, 0, 0, 0, 1 };
 	static const unsigned char smac[6] = { 0x02, 0, 0, 0, 0, 2 };
@@ -898,6 +899,77 @@ static void run_demux_matrix(void)
 	}
 }
 
+/* IPv4 fragmentation, code-review finding 4.
+ *
+ * The rule in parse.h is narrower than "drop fragments": only a FIRST
+ * fragment (offset 0, MF set) aimed at a BFD port is dropped. A non-first
+ * fragment PASSes, because at that point the bytes where the UDP header
+ * would be are payload, so the port comparison would be meaningless - the
+ * offset is checked first for exactly that reason.
+ *
+ * IPv6 needs no equivalent: a fragment header makes nexthdr != UDP and the
+ * frame falls out of dispatch before any of this. */
+static void case_frag(const char *name, uint16_t frag_off, uint16_t dport,
+		      int want_v, uint64_t want_rx)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct session_state after = {0};
+	unsigned long long before;
+	struct frame f;
+	int v, bad = 0;
+
+	map_reset();
+	arm_session();
+	build_v4(&f, 255, dport, &p, 0);
+
+	struct iphdr *ip = (void *)(f.b + sizeof(struct ethhdr));
+	ip->frag_off = htons(frag_off);
+	ip->check = 0;
+	ip->check = csum16(ip, sizeof(*ip), 0);
+
+	before = stat_get(BFD_STAT_REJECTED);
+	v = run_frame(&f, NULL, NULL);
+
+	if (v != want_v) {
+		printf("     verdict %s, want %s\n",
+		       v < 0 ? "syscall-error" : verdict_str(v),
+		       verdict_str(want_v));
+		bad = 1;
+	}
+	if (want_v == XDP_DROP && stat_get(BFD_STAT_REJECTED) != before + 1) {
+		printf("     rejected counter did not increment\n");
+		bad = 1;
+	}
+	if (read_state(&k, &after) && after.rx_pkts != want_rx) {
+		printf("     rx_pkts is %llu, want %llu\n",
+		       (unsigned long long)after.rx_pkts,
+		       (unsigned long long)want_rx);
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s %s, rx %llu\n", name, verdict_str(want_v),
+		       (unsigned long long)want_rx);
+	}
+	map_reset();
+}
+
+static void run_frag_matrix(void)
+{
+	/* first fragment (MF, offset 0) at a BFD port: dropped */
+	case_frag("frag-first-bfd-port", 0x2000, BFD_PORT_1HOP, XDP_DROP, 0);
+	/* non-first fragment: passed, the port bytes are not a UDP header */
+	case_frag("frag-nonfirst-passes", 0x0064, BFD_PORT_1HOP, XDP_PASS, 0);
+	/* first fragment at a port we do not serve: passed */
+	case_frag("frag-first-other-port", 0x2000, 1234, XDP_PASS, 0);
+	/* DF set is not a fragment at all: normal handling, so a bounce */
+	case_frag("frag-df-not-a-fragment", 0x4000, BFD_PORT_1HOP, XDP_TX, 1);
+}
+
 int main(void)
 {
 	const char *path = getenv("BFD_OBJ") ?: "bfd_xdp.o";
@@ -940,6 +1012,7 @@ int main(void)
 	case_poll_final(0, 1, 7, 0, "poll-plain-packet-no-ack");
 	run_malformed_matrix();
 	run_demux_matrix();
+	run_frag_matrix();
 
 	printf("\n%d failure(s)\n", fails);
 	return fails ? 1 : 0;

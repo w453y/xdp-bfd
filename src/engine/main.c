@@ -722,6 +722,9 @@ int main(int argc, char **argv)
 						"not re-added by bfdd");
 		}
 
+		/* One map fetch for the whole pass; each session reads its own
+		 * entry out of it below. */
+		ktx_poll_all();
 		for (int i = 0; i < MAX_SESSIONS; i++) {
 			struct session *cs = &sessions[i];
 			if (!cs->used)

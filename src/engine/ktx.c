@@ -56,6 +56,59 @@ static int ktx_niface;
  * sessions arrive; ktx_covers() is the question worth asking, not this. */
 int ktx_ifindex;
 static struct bpf_program *ktx_prog;
+
+/* One batch fetch of bfd_sessions per main-loop pass, refreshed by
+ * ktx_poll_all() before the per-session tick runs. Each session used
+ * to do its own bpf_map_lookup_elem: at 62 sessions and a 200us tick
+ * that was ~310k syscalls a second and 67% of the engine's syscall
+ * time. The data is no less fresh - the batch is taken in the same
+ * pass the sessions read it. */
+static struct session_key   poll_keys[MAX_SESSIONS];
+static struct session_state poll_vals[MAX_SESSIONS];
+static __u32 poll_n;
+/* Set when the batch syscall is unavailable. Without it every session
+ * would silently stop syncing from the map while the engine looked
+ * healthy, which is the failure mode the per-session kernel-TX gate
+ * already taught us to distrust. */
+static int poll_batch_unsupported;
+
+void ktx_poll_all(void)
+{
+	poll_n = 0;
+	if (!use_ktx || sess_fd < 0)
+		return;
+
+	__u32 count = MAX_SESSIONS;
+	void *in = NULL, *out = NULL;
+	LIBBPF_OPTS(bpf_map_batch_opts, bopts);
+
+	if (poll_batch_unsupported)
+		return;
+	if (bpf_map_lookup_batch(sess_fd, &in, &out, poll_keys, poll_vals,
+				 &count, &bopts) && errno != ENOENT) {
+		if (errno == EINVAL || errno == EOPNOTSUPP) {
+			poll_batch_unsupported = 1;
+			fprintf(stderr,
+				"kernel-tx: batch map lookup unavailable (%s), "
+				"falling back to one lookup per session\n",
+				strerror(errno));
+		}
+		return;
+	}
+	poll_n = count;
+}
+
+/* The batch is unordered, so find this session's entry in it. A linear
+ * scan of at most MAX_SESSIONS keys costs far less than the syscall it
+ * replaces, and matches how the session table is searched elsewhere. */
+static const struct session_state *poll_find(const struct session *s)
+{
+	for (__u32 i = 0; i < poll_n; i++)
+		if (!memcmp(&poll_keys[i].peer, &s->peer, sizeof(s->peer)) &&
+		    !memcmp(&poll_keys[i].local, &s->local, sizeof(s->local)))
+			return &poll_vals[i];
+	return NULL;
+}
 static int cfg_fd = -1;
 int sess_fd = -1, echo_peers_fd = -1;
 int echo_disc_fd = -1;
@@ -323,12 +376,21 @@ void ktx_poll_map(struct session *s, uint64_t t)
 {
 	if (!use_ktx || s->state != ST_UP)
 		return;
-	struct session_key k = {};
-	k.peer  = s->peer;
-	k.local = s->local;
 	struct session_state ms;
-	if (bpf_map_lookup_elem(sess_fd, &k, &ms))
-		return;
+	if (poll_batch_unsupported) {
+		struct session_key k = {};
+
+		k.peer  = s->peer;
+		k.local = s->local;
+		if (bpf_map_lookup_elem(sess_fd, &k, &ms))
+			return;
+	} else {
+		const struct session_state *msp = poll_find(s);
+
+		if (!msp)
+			return;
+		ms = *msp;
+	}
 	if (ms.last_seen_ns / 1000 > s->last_rx_us)
 		s->last_rx_us = ms.last_seen_ns / 1000;
 	if (ms.detect_iv_us)

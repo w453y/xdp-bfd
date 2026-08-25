@@ -236,6 +236,7 @@ static void expect(const char *name, int got, int want)
 /* ---------- map state ---------- */
 
 static int cfg_fd = -1, sess_fd = -1, stats_fd = -1;
+static int echo_peers_fd = -1, echo_disc_fd = -1;
 
 /* Keys are built from the arriving frame's point of view: peer is the
  * source, local is the destination. Getting this backwards produces a
@@ -970,6 +971,111 @@ static void run_frag_matrix(void)
 	case_frag("frag-df-not-a-fragment", 0x4000, BFD_PORT_1HOP, XDP_TX, 1);
 }
 
+/* The v4 echo reflector. Five dispositions, five counters.
+ *
+ * Ordering is the thing worth pinning. The "our own echo coming back" check
+ * runs before GTSM and accepts TTL 254, which is what a neighbour's
+ * forwarding plane leaves. It is guarded by self-addressing as well, so a
+ * 254 frame that is not self-addressed must fall through to the GTSM check
+ * rather than through the exception - otherwise the exception is a general
+ * TTL bypass. The not-self-at-254 arm below is that test. */
+static void build_echo(struct frame *f, uint8_t ttl, const char *src,
+		       const char *dst, uint32_t my_disc, uint32_t nonce)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+
+	p.my_disc     = htonl(my_disc);
+	p.min_echo_rx = htonl(nonce);
+	build_v4(f, ttl, BFD_ECHO_PORT, &p, 0);
+
+	struct iphdr *ip = (void *)(f->b + sizeof(struct ethhdr));
+	ip->saddr = inet_addr(src);
+	ip->daddr = inet_addr(dst);
+	ip->check = 0;
+	ip->check = csum16(ip, sizeof(*ip), 0);
+}
+
+static void case_echo(const char *name, uint8_t ttl, const char *src,
+		      const char *dst, int arm_peer, int arm_disc,
+		      int want_v, int slot)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct bfd_addr peer = {0};
+	unsigned long long before;
+	struct frame f;
+	int v, bad = 0;
+	__u32 one = 1, disc = 0x33333333;
+
+	map_reset();
+	arm_session();
+
+	if (arm_peer) {
+		__u32 a = inet_addr(src);
+
+		peer.b[10] = 0xff; peer.b[11] = 0xff;
+		memcpy(&peer.b[12], &a, 4);
+		bpf_map_update_elem(echo_peers_fd, &peer, &one, BPF_ANY);
+	}
+	if (arm_disc)
+		bpf_map_update_elem(echo_disc_fd, &disc, &k, BPF_ANY);
+
+	build_echo(&f, ttl, src, dst, disc, 0xa5a5a5a5);
+
+	before = stat_get(slot);
+	v = run_frame(&f, NULL, NULL);
+
+	if (v != want_v) {
+		printf("     verdict %s, want %s\n",
+		       v < 0 ? "syscall-error" : verdict_str(v),
+		       verdict_str(want_v));
+		bad = 1;
+	}
+	if (stat_get(slot) != before + 1) {
+		printf("     stat slot %d did not increment\n", slot);
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s %s\n", name, verdict_str(want_v));
+	}
+
+	if (arm_peer)
+		bpf_map_delete_elem(echo_peers_fd, &peer);
+	if (arm_disc)
+		bpf_map_delete_elem(echo_disc_fd, &disc);
+	map_reset();
+}
+
+static void run_echo_matrix(void)
+{
+	/* our own echo returning: 254 and self-addressed, consumed */
+	case_echo("echo-returns", 254, "10.0.0.1", "10.0.0.1", 0, 1,
+		  XDP_DROP, BFD_STAT_ECHO_RETURNS);
+	/* 254 but not self-addressed: the exception in parse.h requires
+	 * BOTH, so this is rejected by the parser's GTSM before the echo
+	 * path runs. The exception is not a general TTL bypass, which is
+	 * what this arm exists to prove. */
+	case_echo("echo-254-not-self-rejected", 254, "10.0.0.2", "10.0.0.1",
+		  1, 0, XDP_DROP, BFD_STAT_REJECTED);
+	/* Off-link echo: same parser GTSM, same disposition. echo.h has its
+	 * own ECHO_TTL check, but no v4 frame reaches it while the parser
+	 * drops everything that is neither 255 nor the 254 exception. */
+	case_echo("echo-off-link-rejected", 200, "10.0.0.2", "10.0.0.2", 1, 0,
+		  XDP_DROP, BFD_STAT_REJECTED);
+	/* not self-addressed at 255 */
+	case_echo("echo-not-self", 255, "10.0.0.2", "10.0.0.1", 1, 0,
+		  XDP_PASS, BFD_STAT_NOT_SELF);
+	/* self-addressed but the peer is not echo-active: no amplifier */
+	case_echo("echo-declined", 255, "10.0.0.2", "10.0.0.2", 0, 0,
+		  XDP_PASS, BFD_STAT_DECLINED);
+	/* self-addressed and echo-active: reflected */
+	case_echo("echo-reflect", 255, "10.0.0.2", "10.0.0.2", 1, 0,
+		  XDP_TX, BFD_STAT_REFLECTED);
+}
+
 int main(void)
 {
 	const char *path = getenv("BFD_OBJ") ?: "bfd_xdp.o";
@@ -992,6 +1098,8 @@ int main(void)
 	cfg_fd  = bpf_object__find_map_fd_by_name(obj, "tx_config");
 	sess_fd = bpf_object__find_map_fd_by_name(obj, "bfd_sessions");
 	stats_fd = bpf_object__find_map_fd_by_name(obj, "bfd_stats");
+	echo_peers_fd = bpf_object__find_map_fd_by_name(obj, "echo_peers");
+	echo_disc_fd = bpf_object__find_map_fd_by_name(obj, "echo_disc");
 	if (cfg_fd < 0 || sess_fd < 0) {
 		fprintf(stderr, "maps not found in %s\n", path);
 		return 1;
@@ -1013,6 +1121,7 @@ int main(void)
 	run_malformed_matrix();
 	run_demux_matrix();
 	run_frag_matrix();
+	run_echo_matrix();
 
 	printf("\n%d failure(s)\n", fails);
 	return fails ? 1 : 0;

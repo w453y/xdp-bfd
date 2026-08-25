@@ -73,6 +73,11 @@ test-dp: tests/unit/dp_run
 check: all test-fsm test-dp test-xdp
 	@echo "all suites passed"
 
+# Layer 3 end-to-end on veth + netns. Needs root and pytest, and
+# runs in seconds rather than milliseconds, so it is NOT in `check`.
+check-netns:
+	python3 -m pytest tests/e2e -v
+
 test-fsm: tests/unit/fsm_run
 	./tests/unit/fsm_run
 
@@ -80,4 +85,4 @@ test-fsm: tests/unit/fsm_run
 test-xdp: tests/unit/xdp_run bfd_xdp.o
 	sudo ./tests/unit/xdp_run
 
-.PHONY: all clean abi-check check test-xdp test-fsm test-dp
+.PHONY: all clean abi-check check test-xdp test-fsm test-dp check-netns

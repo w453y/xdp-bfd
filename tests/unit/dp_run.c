@@ -167,6 +167,32 @@ static size_t build_add(unsigned char *buf, uint32_t lid, const char *local,
 	return len;
 }
 
+/* Same message, IPv6. sm_addrs takes a straight 16-byte copy for v6 and
+ * runs the v4 branch through key_set_v4, so the two families reach the
+ * session table by different code and only one of them was covered. */
+static size_t build_add6(unsigned char *buf, uint32_t lid, const char *local,
+			 const char *peer)
+{
+	struct bfddp_message_header *h = (void *)buf;
+	struct bfddp_session_msg *s = (void *)(h + 1);
+	size_t len = sizeof(*h) + sizeof(*s);
+
+	memset(buf, 0, len);
+	h->version = 1;
+	h->type    = htons(DP_ADD_SESSION);
+	h->length  = htons((uint16_t)len);
+
+	s->lid   = htonl(lid);
+	s->flags = htonl(SESSION_IPV6);
+	inet_pton(AF_INET6, local, &s->src);
+	inet_pton(AF_INET6, peer, &s->dst);
+	s->min_tx      = htonl(10000);
+	s->min_rx      = htonl(10000);
+	s->ttl         = 255;
+	s->detect_mult = 3;
+	return len;
+}
+
 static void feed(const void *p, size_t n)
 {
 	if (write(cli, p, n) != (ssize_t)n)
@@ -297,6 +323,194 @@ static void case_bad_length(uint16_t mlen, const char *name)
 		printf("     rig rebuild failed\n");
 }
 
+/* Session lifecycle. bfdd re-sends an ADD for every config touch, so the
+ * same message type has to mean create, update and adopt depending on what
+ * is already in the table. */
+
+/* A fresh ADD builds a session whose wire discriminator is its lid. */
+static void case_fresh(void)
+{
+	unsigned char buf[256];
+	size_t n = build_add(buf, 0x4001, "10.0.0.1", "10.0.0.31");
+	struct session *s;
+	int bad = 0;
+
+	sessions_clear();
+	feed(buf, n);
+	dp_read();
+
+	s = sess_by_lid(0x4001);
+	if (!s) {
+		printf("     no session for the lid\n");
+		bad = 1;
+	} else {
+		if (s->wire_disc != 0x4001) {
+			printf("     wire_disc %u, want the lid\n", s->wire_disc);
+			bad = 1;
+		}
+		if (s->family != AF_INET) {
+			printf("     family %d, want v4\n", s->family);
+			bad = 1;
+		}
+	}
+	report("add-fresh-v4", bad, "wire_disc = lid");
+}
+
+/* The v6 branch of sm_addrs: a straight 16-byte copy, no v4-mapping. */
+static void case_fresh_v6(void)
+{
+	unsigned char buf[256];
+	size_t n = build_add6(buf, 0x4002, "fd00::1", "fd00::2");
+	struct bfd_addr want = {0};
+	struct session *s;
+	int bad = 0;
+
+	sessions_clear();
+	feed(buf, n);
+	dp_read();
+
+	inet_pton(AF_INET6, "fd00::2", want.b);
+
+	s = sess_by_lid(0x4002);
+	if (!s) {
+		printf("     no session for the lid\n");
+		bad = 1;
+	} else {
+		if (s->family != AF_INET6) {
+			printf("     family %d, want v6\n", s->family);
+			bad = 1;
+		}
+		if (memcmp(&s->peer, &want, sizeof(want))) {
+			printf("     peer address not preserved\n");
+			bad = 1;
+		}
+	}
+	report("add-fresh-v6", bad, "16 bytes preserved");
+}
+
+/* A second ADD for the same lid updates in place and keeps wire_disc:
+ * RFC 5880 requires the discriminator to stay constant while Up, so an
+ * adopted session must not get a new one. */
+static void case_update_keeps_disc(void)
+{
+	unsigned char buf[256];
+	size_t n;
+	struct session *s;
+	int bad = 0;
+
+	sessions_clear();
+	n = build_add(buf, 0x4003, "10.0.0.1", "10.0.0.32");
+	feed(buf, n);
+	dp_read();
+
+	s = sess_by_lid(0x4003);
+	if (s)
+		s->wire_disc = 0xdeadbeef;   /* stand in for one already Up */
+
+	n = build_add(buf, 0x4003, "10.0.0.1", "10.0.0.32");
+	((struct bfddp_session_msg *)(buf + sizeof(struct bfddp_message_header)))
+		->min_tx = htonl(50000);
+	feed(buf, n);
+	dp_read();
+
+	s = sess_by_lid(0x4003);
+	if (!s) {
+		printf("     session gone after the update\n");
+		bad = 1;
+	} else {
+		if (s->wire_disc != 0xdeadbeef) {
+			printf("     wire_disc changed to %u on update\n",
+			       s->wire_disc);
+			bad = 1;
+		}
+		if (s->min_tx_us != 50000) {
+			printf("     min_tx_us %u, the update did not apply\n",
+			       s->min_tx_us);
+			bad = 1;
+		}
+	}
+	if (used_sessions() != 1) {
+		printf("     %d sessions, the update allocated a new one\n",
+		       used_sessions());
+		bad = 1;
+	}
+	report("add-update-keeps-wire-disc", bad, "1 session");
+}
+
+/* Code-review finding 6: an ADD for an existing lid may move the address
+ * pair. The old pair's map entries would otherwise stay behind with
+ * enable=1 and keep being answered by the fast path. */
+static void case_address_move(void)
+{
+	unsigned char buf[256];
+	struct bfd_addr want = {0};
+	uint32_t a = inet_addr("10.0.0.42");
+	struct session *s;
+	size_t n;
+	int bad = 0;
+
+	sessions_clear();
+	n = build_add(buf, 0x4004, "10.0.0.1", "10.0.0.41");
+	feed(buf, n);
+	dp_read();
+
+	n = build_add(buf, 0x4004, "10.0.0.1", "10.0.0.42");
+	feed(buf, n);
+	dp_read();
+
+	want.b[10] = 0xff;
+	want.b[11] = 0xff;
+	memcpy(&want.b[12], &a, 4);
+
+	s = sess_by_lid(0x4004);
+	if (!s) {
+		printf("     session gone after the move\n");
+		bad = 1;
+	} else if (memcmp(&s->peer, &want, sizeof(want))) {
+		printf("     peer address did not move\n");
+		bad = 1;
+	}
+	if (used_sessions() != 1) {
+		printf("     %d sessions after an address move\n",
+		       used_sessions());
+		bad = 1;
+	}
+	report("add-moves-address-pair", bad, "1 session, new pair");
+}
+
+/* Flags map straight through: passive, shutdown and multihop each land in
+ * their own field rather than being conflated. */
+static void case_flags(void)
+{
+	unsigned char buf[256];
+	size_t n = build_add(buf, 0x4005, "10.0.0.1", "10.0.0.51");
+	struct bfddp_session_msg *m =
+		(void *)(buf + sizeof(struct bfddp_message_header));
+	struct session *s;
+	int bad = 0;
+
+	sessions_clear();
+	m->flags = htonl(SESSION_PASSIVE | SESSION_SHUTDOWN);
+	feed(buf, n);
+	dp_read();
+
+	s = sess_by_lid(0x4005);
+	if (!s) {
+		printf("     no session\n");
+		bad = 1;
+	} else {
+		if (!s->passive) {
+			printf("     passive flag lost\n");
+			bad = 1;
+		}
+		if (!s->admin_down) {
+			printf("     shutdown flag lost\n");
+			bad = 1;
+		}
+	}
+	report("add-flags-map-through", bad, "passive + shutdown");
+}
+
 int main(void)
 {
 	if (!rig_up()) {
@@ -307,6 +521,12 @@ int main(void)
 	case_whole();
 	case_torn();
 	case_batched();
+
+	case_fresh();
+	case_fresh_v6();
+	case_update_keeps_disc();
+	case_address_move();
+	case_flags();
 
 	/* Below the header, and above the buffer. */
 	case_bad_length(sizeof(struct bfddp_message_header) - 1,

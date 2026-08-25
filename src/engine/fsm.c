@@ -19,6 +19,7 @@
 
 #include "bfd_shared.h"
 #include "util.h"
+#include "log.h"
 #include "session.h"
 #include "fsm.h"
 #include "dplane.h"
@@ -90,7 +91,7 @@ void state_transition(struct session *s, int newstate, int diag,
 {
 	if (s->state == newstate)
 		return;
-	printf("[%llu] lid=%u %s -> %s (%s)\n", (unsigned long long)t,
+	log_info("[%llu] lid=%u %s -> %s (%s)\n", (unsigned long long)t,
 	       s->lid, bfd_state_str(s->state), bfd_state_str(newstate), why);
 	s->state = newstate;
 	s->diag  = diag;
@@ -221,7 +222,9 @@ void fsm_detect(struct session *s, uint64_t t)
 		sd = 0;
 	uint8_t mult = s->r_mult ? s->r_mult : s->detect_mult;
 	if ((uint64_t)sd > (uint64_t)mult * iv) {
-		printf("[%llu] lid=%u DETECT TIMEOUT (silent %.1fms)\n",
+		/* The transition below carries "detect timeout" as its
+		 * reason, so this line is a duplicate at INFO. */
+		log_debug("[%llu] lid=%u DETECT TIMEOUT (silent %.1fms)\n",
 		       (unsigned long long)t, s->lid, sd / 1000.0);
 		s->rdisc = 0;
 		state_transition(s, ST_DOWN, 1, t, "detect timeout");

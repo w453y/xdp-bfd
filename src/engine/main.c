@@ -40,6 +40,7 @@
 
 #include "bfd_shared.h"
 #include "util.h"
+#include "log.h"
 #include "session.h"
 #include "dplane.h"
 #include "ktx.h"
@@ -76,6 +77,7 @@ static int tick_fd = -1;
  * vary it without a rebuild. */
 #define TICK_US_DEFAULT 2000
 static unsigned tick_us = TICK_US_DEFAULT;
+
 
 /* How often the loop actually runs, and how often the control-socket
  * recvmsg returned a packet rather than timing out. Below roughly a
@@ -123,6 +125,22 @@ int main(int argc, char **argv)
 				return 1;
 			}
 			ktx_sweep_ns = v * 1000ull;
+		}
+		else if (!strcmp(argv[i], "--log-level") && i + 1 < argc) {
+			const char *a = argv[++i];
+
+			if (!strcmp(a, "error"))
+				bfd_log_level = BFD_LOG_ERROR;
+			else if (!strcmp(a, "info"))
+				bfd_log_level = BFD_LOG_INFO;
+			else if (!strcmp(a, "debug"))
+				bfd_log_level = BFD_LOG_DEBUG;
+			else {
+				fprintf(stderr,
+					"--log-level: expected error|info|debug, got '%s'\n",
+					a);
+				return 1;
+			}
 		}
 		else if (!strcmp(argv[i], "--tick-us") && i + 1 < argc) {
 			const char *a = argv[++i];
@@ -196,7 +214,8 @@ int main(int argc, char **argv)
 			"       [--bpf-obj <path>] [--xdp-mode drv|generic]\n"
 			"       [--stats-dump <path>]   (SIGUSR1 writes it)\n"
 			"       [--sweep-us <500-100000>]\n"
-			"       [--tick-us <200-100000>]\n",
+			"       [--tick-us <200-100000>]\n"
+			"       [--log-level error|info|debug]\n",
 			argv[0], argv[0]);
 		return 1;
 	}

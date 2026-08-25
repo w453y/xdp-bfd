@@ -7,7 +7,7 @@ CFLAGS    := -O2 -g -Wall -Iinclude -Isrc/engine
 TRIPLE    := $(shell $(CC) -dumpmachine)
 BPFFLAGS  := -O2 -g -Wall -target bpf -Iinclude -Isrc/xdp -I/usr/include/$(TRIPLE)
 
-ENGINE_OBJS := src/engine/main.o src/engine/session.o src/engine/dplane.o src/engine/ktx.o src/engine/echo_tx.o src/engine/fsm.o src/engine/stats.o
+ENGINE_OBJS := src/engine/log.o src/engine/main.o src/engine/session.o src/engine/dplane.o src/engine/ktx.o src/engine/echo_tx.o src/engine/fsm.o src/engine/stats.o
 
 all: abi-check bfd_xdp.o bfd_loader bfd_tx
 
@@ -44,14 +44,14 @@ tests/unit/xdp_run: tests/unit/xdp_run.c include/bfd_shared.h
 
 # The FSM table links against the real fsm.o with three stubs; no
 # root, no BPF, no testbed.
-tests/unit/fsm_run: tests/unit/fsm_run.c src/engine/fsm.o \
+tests/unit/fsm_run: tests/unit/fsm_run.c src/engine/fsm.o src/engine/log.o \
 		    $(wildcard src/engine/*.h)
-	$(CC) $(CFLAGS) tests/unit/fsm_run.c src/engine/fsm.o -o $@
+	$(CC) $(CFLAGS) tests/unit/fsm_run.c src/engine/fsm.o src/engine/log.o -o $@
 
-tests/unit/dp_run: tests/unit/dp_run.c src/engine/dplane.o \
+tests/unit/dp_run: tests/unit/dp_run.c src/engine/dplane.o src/engine/log.o \
 		   src/engine/session.o src/engine/fsm.o $(wildcard src/engine/*.h)
 	$(CC) $(CFLAGS) tests/unit/dp_run.c src/engine/dplane.o \
-		src/engine/session.o src/engine/fsm.o -o $@
+		src/engine/session.o src/engine/fsm.o src/engine/log.o -o $@
 
 test-dp: tests/unit/dp_run
 	./tests/unit/dp_run

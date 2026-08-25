@@ -521,11 +521,11 @@ static void case_trim(int v6, unsigned int extra)
 	if (v6) {
 		map_reset_v6();
 		arm_session_v6();
-		build_v6(&f, 255, BFD_PORT_1HOP, &p, extra);
+		build_v6(&f, 255, BFD_PORT_1HOP, &p, 0);
 	} else {
 		map_reset();
 		arm_session();
-		build_v4(&f, 255, BFD_PORT_1HOP, &p, extra);
+		build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
 	}
 
 	v = run_frame(&f, out, &out_len);
@@ -701,6 +701,81 @@ static void case_rx_state(void)
 	map_reset();
 }
 
+/* bfd_ctrl_check's reject conditions, one case each, both families.
+ *
+ * Two assertions per case, not one. The verdict must be XDP_DROP
+ * specifically: a reject that returns XDP_PASS leaks the packet to the
+ * userspace socket, which is the class the lab suite's m5 run found and
+ * this pins permanently. And the session's rx_pkts must not move, because
+ * a rejected packet must not refresh liveness - a peer sending garbage
+ * would otherwise hold the session up forever. */
+static void case_malformed(int v6, const char *name,
+			   void (*mutate)(struct bfd_ctrl_pkt *), int want_v)
+{
+	struct session_key k = v6 ? key_v6("fd00::2", "fd00::1")
+			  : key_v4("10.0.0.2", "10.0.0.1");
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct session_state after = {0};
+	char full[80];
+	struct frame f;
+	int v, bad = 0;
+
+	snprintf(full, sizeof(full), "%s-%s", name, v6 ? "v6" : "v4");
+
+	if (v6) { map_reset_v6(); arm_session_v6(); }
+	else    { map_reset();    arm_session();    }
+
+	mutate(&p);
+	if (v6)
+		build_v6(&f, 255, BFD_PORT_1HOP, &p, 0);
+	else
+		build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+
+	v = run_frame(&f, NULL, NULL);
+	if (v != want_v) {
+		printf("     verdict %s, want %s\n",
+		       v < 0 ? "syscall-error" : verdict_str(v),
+		       verdict_str(want_v));
+		bad = 1;
+	}
+	if (read_state(&k, &after) && after.rx_pkts != 0) {
+		printf("     rx_pkts is %llu, a reject refreshed liveness\n",
+		       (unsigned long long)after.rx_pkts);
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL %-40s\n", full);
+		fails++;
+	} else {
+		printf("ok   %-40s %s, no state write\n", full,
+		       verdict_str(want_v));
+	}
+
+	if (v6) map_reset_v6(); else map_reset();
+}
+
+static void mut_version(struct bfd_ctrl_pkt *p)  { p->vers_diag = (2 << 5); }
+static void mut_len_short(struct bfd_ctrl_pkt *p){ p->len = 23; }
+static void mut_len_long(struct bfd_ctrl_pkt *p) { p->len = 200; }
+static void mut_mult_zero(struct bfd_ctrl_pkt *p){ p->detect_mult = 0; }
+static void mut_disc_zero(struct bfd_ctrl_pkt *p){ p->my_disc = 0; }
+static void mut_auth(struct bfd_ctrl_pkt *p)     { p->flags |= BFD_F_AUTH; }
+static void mut_mp(struct bfd_ctrl_pkt *p)       { p->flags |= BFD_F_MP; }
+
+static void run_malformed_matrix(void)
+{
+	for (int v6 = 0; v6 < 2; v6++) {
+		case_malformed(v6, "malformed-version",   mut_version, XDP_PASS);
+		case_malformed(v6, "malformed-len-short", mut_len_short, XDP_PASS);
+		case_malformed(v6, "malformed-len-long",  mut_len_long, XDP_PASS);
+		case_malformed(v6, "malformed-mult-zero", mut_mult_zero, XDP_PASS);
+		case_malformed(v6, "malformed-disc-zero", mut_disc_zero, XDP_PASS);
+		case_malformed(v6, "unsupported-auth",    mut_auth, XDP_DROP);
+		case_malformed(v6, "unsupported-mp",      mut_mp, XDP_DROP);
+	}
+}
+
 int main(void)
 {
 	const char *path = getenv("BFD_OBJ") ?: "bfd_xdp.o";
@@ -740,6 +815,7 @@ int main(void)
 	case_poll_final(BFD_F_FINAL, 1, 7, 7, "poll-final-acks");
 	case_poll_final(BFD_F_FINAL, 0, 7, 0, "poll-final-no-poll-no-ack");
 	case_poll_final(0, 1, 7, 0, "poll-plain-packet-no-ack");
+	run_malformed_matrix();
 
 	printf("\n%d failure(s)\n", fails);
 	return fails ? 1 : 0;

@@ -164,6 +164,58 @@ static void expect(const char *name, int got, int want)
 	fails++;
 }
 
+/* ---------- map state ---------- */
+
+static int cfg_fd = -1, sess_fd = -1;
+
+/* Keys are built from the arriving frame's point of view: peer is the
+ * source, local is the destination. Getting this backwards produces a
+ * silent XDP_PASS rather than an error, so it is worth stating. */
+static struct session_key key_v4(const char *peer, const char *local)
+{
+	struct session_key k = {0};
+	__u32 p = inet_addr(peer), l = inet_addr(local);
+
+	k.peer.b[10] = 0xff;  k.peer.b[11] = 0xff;
+	k.local.b[10] = 0xff; k.local.b[11] = 0xff;
+	memcpy(&k.peer.b[12], &p, 4);
+	memcpy(&k.local.b[12], &l, 4);
+	return k;
+}
+
+static void map_reset(void)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+
+	bpf_map_delete_elem(cfg_fd, &k);
+	bpf_map_delete_elem(sess_fd, &k);
+}
+
+/* A session the kernel is allowed to answer for. */
+static void arm_session(void)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct tx_cfg cfg = {0};
+	struct session_state st = {0};
+
+	cfg.enable    = 1;
+	cfg.my_disc   = 0x22222222;
+	cfg.your_disc = 0x11111111;
+	cfg.min_tx_us = 10000;
+	cfg.min_rx_us = 10000;
+	cfg.state     = ST_UP;
+	cfg.mult      = 3;
+	cfg.min_ttl   = 255;
+
+	st.remote_state = ST_UP;
+
+	if (bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY) ||
+	    bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
+		fprintf(stderr, "  map update failed: %s\n", strerror(errno));
+		fails++;
+	}
+}
+
 /* ---------- cases ---------- */
 
 /* Nothing to do with BFD. The program must not claim it. */
@@ -188,6 +240,20 @@ static void case_gtsm_v4(void)
 	expect("gtsm-v4-low-ttl-drops", run_frame(&f, NULL, NULL), XDP_DROP);
 }
 
+/* An Up packet from an armed peer must be bounced, not passed. This is
+ * the gate in bfd_xdp.c: cfg->enable and the peer at Init or better. */
+static void case_bounce_v4(void)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct frame f;
+
+	map_reset();
+	arm_session();
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+	expect("bounce-v4-up", run_frame(&f, NULL, NULL), XDP_TX);
+	map_reset();
+}
+
 int main(void)
 {
 	const char *path = getenv("BFD_OBJ") ?: "bfd_xdp.o";
@@ -207,8 +273,16 @@ int main(void)
 	}
 	prog_fd = bpf_program__fd(pr);
 
+	cfg_fd  = bpf_object__find_map_fd_by_name(obj, "tx_config");
+	sess_fd = bpf_object__find_map_fd_by_name(obj, "bfd_sessions");
+	if (cfg_fd < 0 || sess_fd < 0) {
+		fprintf(stderr, "maps not found in %s\n", path);
+		return 1;
+	}
+
 	case_not_bfd();
 	case_gtsm_v4();
+	case_bounce_v4();
 
 	printf("\n%d failure(s)\n", fails);
 	return fails ? 1 : 0;

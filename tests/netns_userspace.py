@@ -30,13 +30,6 @@ import subprocess
 import sys
 import time
 
-NS_A = "bfdrig-a"          # engine
-NS_B = "bfdrig-b"          # injector
-IP_A = "10.77.0.1"
-IP_B = "10.77.0.2"
-IP_A6 = "fd77::1"
-IP_B6 = "fd77::2"
-STATS = "/tmp/bfd_rig_stats.json"
 COUNT = 10
 SETTLE = 0.6
 
@@ -45,85 +38,10 @@ F_AUTH = 0x04
 F_MP = 0x01
 
 
-def sh(cmd, check=True, capture=True):
-    """capture=False for anything that leaves a process behind: a captured
-    pipe is not closed until every inheritor exits."""
-    kw = dict(shell=True, text=True)
-    if capture:
-        kw["capture_output"] = True
-    else:
-        kw["stdout"] = subprocess.DEVNULL
-        kw["stderr"] = subprocess.DEVNULL
-    r = subprocess.run(cmd, **kw)
-    if check and r.returncode:
-        sys.exit("failed: %s\n%s%s" % (cmd, r.stdout or "", r.stderr or ""))
-    return r.stdout or ""
-
-
-def teardown():
-    for ns in (NS_A, NS_B):
-        sh("sudo ip netns pids %s 2>/dev/null | xargs -r sudo kill" % ns,
-           check=False)
-    sh("sudo ip netns del %s" % NS_A, check=False)
-    sh("sudo ip netns del %s" % NS_B, check=False)
-
-
-def setup():
-    teardown()
-    sh("sudo ip netns add %s" % NS_A)
-    sh("sudo ip netns add %s" % NS_B)
-    sh("sudo ip link add rig-a netns %s type veth peer name rig-b netns %s"
-       % (NS_A, NS_B))
-    for ns, dev, ip, ip6 in ((NS_A, "rig-a", IP_A, IP_A6),
-                             (NS_B, "rig-b", IP_B, IP_B6)):
-        sh("sudo ip netns exec %s ip addr add %s/24 dev %s" % (ns, ip, dev))
-        # nodad: a fresh v6 address is tentative for about a second and
-        # unusable as a source, so the engine's bind to its local
-        # address would fail and fall back to an ephemeral socket - a
-        # different path from the one under test.
-        sh("sudo ip netns exec %s ip addr add %s/64 dev %s nodad"
-           % (ns, ip6, dev))
-        sh("sudo ip netns exec %s ip link set %s up" % (ns, dev))
-        sh("sudo ip netns exec %s ip link set lo up" % ns)
-
-
-def engine_pids():
-    """Processes actually inside the engine namespace.
-
-    NOT pkill -f on the command line: -f matches the full argv, so the
-    sudo and `ip netns exec` wrappers match the same pattern, and
-    SIGUSR1 terminates by default - the first dump killed the wrappers
-    and the engine went with them. sudo runs before `ip netns exec`, so
-    it is never inside the namespace and this cannot pick it up.
-    """
-    out = sh("sudo ip netns pids %s" % NS_A, check=False)
-    return [int(x) for x in out.split()]
-
-
-def start_engine(binary, fam):
-    # The engine runs under sudo, so the snapshot is root-owned and
-    # os.unlink from this process cannot touch it. The .tmp sibling
-    # goes too, or a stale one could be renamed over a fresh run.
-    sh("sudo rm -f %s %s.tmp" % (STATS, STATS))
-    la, pa = (IP_A6, IP_B6) if fam == 6 else (IP_A, IP_B)
-    sh("sudo ip netns exec %s nohup %s %s %s --stats-dump %s"
-       " >>/tmp/bfd_rig_engine.log 2>&1 &" % (NS_A, binary, la, pa, STATS),
-       capture=False)
-    for _ in range(50):
-        time.sleep(0.2)
-        if engine_pids():
-            return
-    sys.exit("engine did not start; see /tmp/bfd_rig_engine.log")
-
-
-def dump():
-    pids = engine_pids()
-    if not pids:
-        sys.exit("engine is gone; see /tmp/bfd_rig_engine.log")
-    sh("sudo kill -USR1 %s" % " ".join(str(x) for x in pids))
-    time.sleep(0.3)
-    with open(STATS) as f:
-        return json.load(f)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from lib.netns import (NS_A, NS_B, IP_A, IP_B, IP_A6, IP_B6, STATS,
+                       sh, setup, teardown, ns_pids, start_engine,
+                       dump, engine_log)
 
 
 def rx_pkts():

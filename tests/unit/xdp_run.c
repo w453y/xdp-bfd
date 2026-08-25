@@ -327,6 +327,18 @@ static void arm_session_v6(void)
 	}
 }
 
+/* Read a session's kernel-owned state back after a run. Everything above
+ * asserts on the returned frame; the map side is the other half of what
+ * the program does, and nothing has checked it yet. */
+static int read_state(const struct session_key *k, struct session_state *out)
+{
+	if (bpf_map_lookup_elem(sess_fd, k, out)) {
+		printf("     no session_state for that key: %s\n", strerror(errno));
+		return 0;
+	}
+	return 1;
+}
+
 /* ---------- cases ---------- */
 
 /* Nothing to do with BFD. The program must not claim it. */
@@ -581,6 +593,114 @@ out:
 		map_reset();
 }
 
+/* RFC 5880 s6.8.4 poll termination. tx_cfg is userspace-owned, so the
+ * kernel acks the peer's F by writing the sequence into kernel-owned
+ * final_seq rather than clearing cfg->poll in place. Guard is
+ * cfg->poll && incoming F, so all three arms below are reachable. */
+static void case_poll_final(uint8_t in_flags, uint32_t cfg_poll,
+			    uint32_t poll_seq, uint32_t want_seq,
+			    const char *name)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct session_state st = {0};
+	struct tx_cfg cfg = {0};
+	struct frame f;
+
+	map_reset();
+
+	cfg.enable    = 1;
+	cfg.my_disc   = 0x22222222;
+	cfg.your_disc = 0x11111111;
+	cfg.min_tx_us = 10000;
+	cfg.min_rx_us = 10000;
+	cfg.state     = ST_UP;
+	cfg.mult      = 3;
+	cfg.min_ttl   = 255;
+	cfg.poll      = cfg_poll;
+	cfg.poll_seq  = poll_seq;
+
+	st.remote_state = ST_UP;
+
+	if (bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY) ||
+	    bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
+		printf("FAIL %-40s map setup: %s\n", name, strerror(errno));
+		fails++;
+		return;
+	}
+
+	p.flags |= in_flags;
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+	run_frame(&f, NULL, NULL);
+
+	struct session_state after = {0};
+	if (!read_state(&k, &after)) {
+		printf("FAIL %-40s\n", name);
+		fails++;
+		map_reset();
+		return;
+	}
+
+	if (after.final_seq != want_seq) {
+		printf("     final_seq is %u, want %u\n", after.final_seq,
+		       want_seq);
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s final_seq %u\n", name, after.final_seq);
+	}
+	map_reset();
+}
+
+/* Liveness and the RX counter are map-side effects nothing has checked. */
+static void case_rx_state(void)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct session_state after = {0};
+	struct frame f;
+	int bad = 0;
+
+	map_reset();
+	arm_session();
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+	run_frame(&f, NULL, NULL);
+
+	if (!read_state(&k, &after)) {
+		printf("FAIL %-40s\n", "rx-updates-state");
+		fails++;
+		map_reset();
+		return;
+	}
+
+	if (!after.last_seen_ns) {
+		printf("     last_seen_ns not set\n");
+		bad = 1;
+	}
+	if (after.rx_pkts != 1) {
+		printf("     rx_pkts is %llu, want 1\n",
+		       (unsigned long long)after.rx_pkts);
+		bad = 1;
+	}
+	if (after.alive != 1) {
+		printf("     alive is %u, want 1\n", after.alive);
+		bad = 1;
+	}
+	if (after.remote_disc != 0x11111111) {
+		printf("     remote_disc is %08x\n", after.remote_disc);
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL %-40s\n", "rx-updates-state");
+		fails++;
+	} else {
+		printf("ok   %-40s rx %llu alive %u\n", "rx-updates-state",
+		       (unsigned long long)after.rx_pkts, after.alive);
+	}
+	map_reset();
+}
+
 int main(void)
 {
 	const char *path = getenv("BFD_OBJ") ?: "bfd_xdp.o";
@@ -616,6 +736,10 @@ int main(void)
 	case_trim(1, 8);
 	case_trim(0, 64);
 	case_trim(1, 64);
+	case_rx_state();
+	case_poll_final(BFD_F_FINAL, 1, 7, 7, "poll-final-acks");
+	case_poll_final(BFD_F_FINAL, 0, 7, 0, "poll-final-no-poll-no-ack");
+	case_poll_final(0, 1, 7, 0, "poll-plain-packet-no-ack");
 
 	printf("\n%d failure(s)\n", fails);
 	return fails ? 1 : 0;

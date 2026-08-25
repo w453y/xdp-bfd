@@ -234,7 +234,7 @@ static void expect(const char *name, int got, int want)
 
 /* ---------- map state ---------- */
 
-static int cfg_fd = -1, sess_fd = -1;
+static int cfg_fd = -1, sess_fd = -1, stats_fd = -1;
 
 /* Keys are built from the arriving frame's point of view: peer is the
  * source, local is the destination. Getting this backwards produces a
@@ -337,6 +337,33 @@ static int read_state(const struct session_key *k, struct session_state *out)
 		return 0;
 	}
 	return 1;
+}
+
+/* bfd_stats is a per-CPU array of __u64; sum the slots the way
+ * stats_dump does. This is what makes the malformed cases real
+ * assertions: those return XDP_PASS, which an unmatched packet
+ * also returns, so the verdict alone would still pass if the
+ * header check were deleted. The counter is the witness. */
+static unsigned long long stat_get(int slot)
+{
+	static int ncpu;
+	__u32 k = slot;
+
+	if (!ncpu)
+		ncpu = libbpf_num_possible_cpus();
+	if (stats_fd < 0 || ncpu <= 0)
+		return 0;
+
+	__u64 *vals = calloc(ncpu, sizeof(__u64));
+	unsigned long long total = 0;
+
+	if (!vals)
+		return 0;
+	if (!bpf_map_lookup_elem(stats_fd, &k, vals))
+		for (int i = 0; i < ncpu; i++)
+			total += vals[i];
+	free(vals);
+	return total;
 }
 
 /* ---------- cases ---------- */
@@ -710,7 +737,8 @@ static void case_rx_state(void)
  * a rejected packet must not refresh liveness - a peer sending garbage
  * would otherwise hold the session up forever. */
 static void case_malformed(int v6, const char *name,
-			   void (*mutate)(struct bfd_ctrl_pkt *), int want_v)
+			   void (*mutate)(struct bfd_ctrl_pkt *), int want_v,
+			   int slot)
 {
 	struct session_key k = v6 ? key_v6("fd00::2", "fd00::1")
 			  : key_v4("10.0.0.2", "10.0.0.1");
@@ -731,7 +759,13 @@ static void case_malformed(int v6, const char *name,
 	else
 		build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
 
+	unsigned long long before = stat_get(slot);
+
 	v = run_frame(&f, NULL, NULL);
+	if (stat_get(slot) != before + 1) {
+		printf("     stat slot %d did not increment\n", slot);
+		bad = 1;
+	}
 	if (v != want_v) {
 		printf("     verdict %s, want %s\n",
 		       v < 0 ? "syscall-error" : verdict_str(v),
@@ -766,13 +800,20 @@ static void mut_mp(struct bfd_ctrl_pkt *p)       { p->flags |= BFD_F_MP; }
 static void run_malformed_matrix(void)
 {
 	for (int v6 = 0; v6 < 2; v6++) {
-		case_malformed(v6, "malformed-version",   mut_version, XDP_PASS);
-		case_malformed(v6, "malformed-len-short", mut_len_short, XDP_PASS);
-		case_malformed(v6, "malformed-len-long",  mut_len_long, XDP_PASS);
-		case_malformed(v6, "malformed-mult-zero", mut_mult_zero, XDP_PASS);
-		case_malformed(v6, "malformed-disc-zero", mut_disc_zero, XDP_PASS);
-		case_malformed(v6, "unsupported-auth",    mut_auth, XDP_DROP);
-		case_malformed(v6, "unsupported-mp",      mut_mp, XDP_DROP);
+		case_malformed(v6, "malformed-version",   mut_version, XDP_PASS,
+			       BFD_STAT_MALFORMED);
+		case_malformed(v6, "malformed-len-short", mut_len_short, XDP_PASS,
+			       BFD_STAT_MALFORMED);
+		case_malformed(v6, "malformed-len-long",  mut_len_long, XDP_PASS,
+			       BFD_STAT_MALFORMED);
+		case_malformed(v6, "malformed-mult-zero", mut_mult_zero, XDP_PASS,
+			       BFD_STAT_MALFORMED);
+		case_malformed(v6, "malformed-disc-zero", mut_disc_zero, XDP_PASS,
+			       BFD_STAT_MALFORMED);
+		case_malformed(v6, "unsupported-auth",    mut_auth, XDP_DROP,
+			       BFD_STAT_UNSUPPORTED_FLAGS);
+		case_malformed(v6, "unsupported-mp",      mut_mp, XDP_DROP,
+			       BFD_STAT_UNSUPPORTED_FLAGS);
 	}
 }
 
@@ -797,6 +838,7 @@ int main(void)
 
 	cfg_fd  = bpf_object__find_map_fd_by_name(obj, "tx_config");
 	sess_fd = bpf_object__find_map_fd_by_name(obj, "bfd_sessions");
+	stats_fd = bpf_object__find_map_fd_by_name(obj, "bfd_stats");
 	if (cfg_fd < 0 || sess_fd < 0) {
 		fprintf(stderr, "maps not found in %s\n", path);
 		return 1;

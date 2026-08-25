@@ -15,6 +15,7 @@ void sess_teardown_one(struct session *s, const char *why);
 void dp_read(void);
 void dp_flush(void);
 void dp_accept(void);
+void dp_fds(int *listen_fd, int *conn_fd);
 int dp_listen_init(const char *arg);
 
 #endif /* BFD_ENGINE_DPLANE_H */

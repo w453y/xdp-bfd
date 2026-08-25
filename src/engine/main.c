@@ -411,8 +411,6 @@ int main(int argc, char **argv)
 	}
 
 	for (;;) {
-		dp_accept();
-		dp_read();
 		/* Anything that did not fit the socket last pass. Cheap when
 		 * the queue is empty, which is the normal case. */
 		dp_flush();
@@ -454,7 +452,10 @@ int main(int argc, char **argv)
 		 * All four drains below are now non-blocking. The drain budget is
 		 * what bounds a pass, not the blocking discipline: a sustained
 		 * flood still spreads across ticks instead of monopolising one. */
-		struct pollfd pfd[5] = {0};
+		struct pollfd pfd[7] = {0};
+		int dp_l = -1, dp_c = -1;
+
+		dp_fds(&dp_l, &dp_c);
 		int np = 0;
 		{
 			uint64_t exp;
@@ -468,6 +469,10 @@ int main(int argc, char **argv)
 				{ pfd[np].fd = rxm_sock; pfd[np++].events = POLLIN; }
 			if (rxm6_sock >= 0)
 				{ pfd[np].fd = rxm6_sock; pfd[np++].events = POLLIN; }
+			if (dp_l >= 0)
+				{ pfd[np].fd = dp_l; pfd[np++].events = POLLIN; }
+			if (dp_c >= 0)
+				{ pfd[np].fd = dp_c; pfd[np++].events = POLLIN; }
 			poll(pfd, np, -1);
 			/* Drain the timer so it does not stay readable. */
 			if (pfd[0].revents & POLLIN)
@@ -476,7 +481,7 @@ int main(int argc, char **argv)
 		/* Only touch a socket poll said is readable. Four blind
 		 * MSG_DONTWAIT drains per pass cost four EAGAIN syscalls
 		 * every tick, which at a 200us tick is 20k/s of nothing. */
-		int rd4 = 0, rd6 = 0, rdm4 = 0, rdm6 = 0;
+		int rd4 = 0, rd6 = 0, rdm4 = 0, rdm6 = 0, rdl = 0, rdc = 0;
 		for (int k = 0; k < np; k++) {
 			if (!(pfd[k].revents & POLLIN))
 				continue;
@@ -484,7 +489,13 @@ int main(int argc, char **argv)
 			if (pfd[k].fd == rx6_sock)  rd6 = 1;
 			if (pfd[k].fd == rxm_sock)  rdm4 = 1;
 			if (pfd[k].fd == rxm6_sock) rdm6 = 1;
+			if (dp_l >= 0 && pfd[k].fd == dp_l) rdl = 1;
+			if (dp_c >= 0 && pfd[k].fd == dp_c) rdc = 1;
 		}
+		if (rdl)
+			dp_accept();
+		if (rdc)
+			dp_read();
 		ssize_t n = rd4 ? recvmsg(rx_sock, &mh, MSG_DONTWAIT | MSG_TRUNC)
 				  : -1;
 		uint64_t t = now_us();

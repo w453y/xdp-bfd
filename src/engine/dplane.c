@@ -31,6 +31,16 @@
 #include "fsm.h"
 
 static int dp_listen = -1, dp_conn = -1;
+
+/* Hand the loop the current pair so it can poll them instead of
+ * calling accept() and recv() blind every pass. Asked for fresh each
+ * time rather than cached: dp_conn is replaced on reconnect and
+ * closed on drop, and a cached fd would outlive both. */
+void dp_fds(int *listen_fd, int *conn_fd)
+{
+	*listen_fd = dp_listen;
+	*conn_fd   = dp_conn;
+}
 static uint8_t dp_buf[4096];
 static size_t dp_have;
 uint64_t dp_hold_us;              /* --dp-hold: keep sessions

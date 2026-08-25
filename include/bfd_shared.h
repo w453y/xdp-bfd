@@ -97,7 +97,7 @@ struct bfd_ctrl_pkt {
 	X(ECHO_RETURNS,      "echo-returns")       /* our echo came back */\
 	X(DECLINED,          "declined")           /* echo, peer unknown */\
 	X(NOT_SELF,          "not-self")           /* echo, not self-addr */\
-	X(ECHO_TTL,          "echo-ttl")           /* echo GTSM */         \
+	X(ECHO_TTL,          "echo-ttl")           /* unreachable: see below */         \
 	X(UNSUPPORTED_FLAGS, "unsupported-flags")  /* A or M bit */        \
 	X(SWEEP_INIT_FAIL,   "sweep-init-fail")    /* sweeper never armed */ \
 	X(IP_OPTIONS,        "ip-options")         /* any UDP with options */
@@ -111,6 +111,15 @@ enum bfd_tunable {
 	BFD_TUNE_SWEEP_NS,   /* 0 means use the compiled default */
 	BFD_TUNE_MAX
 };
+
+/* ECHO_TTL always reads zero. echo.h has its own GTSM check, but no
+ * frame reaches it: parse.h rejects anything that is neither TTL 255
+ * nor the 254-and-self-addressed echo exception, and counts those as
+ * REJECTED. The slot is kept rather than removed because deleting it
+ * renumbers every stat below it on both planes at once, which is the
+ * drift the ABI pins in tests/unit/abi_check.c exist to prevent. If
+ * the parser ever gains a path that defers the TTL verdict to the
+ * echo reflector, this becomes live again. */
 
 /* The compiled sweep interval. Shared rather than kernel-side only
  * because the engine reports what it overrode and against what. */

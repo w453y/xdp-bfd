@@ -42,8 +42,17 @@ tests/unit/bfd_xdp_test.o: tests/unit/bfd_xdp_test.c include/bfd_shared.h \
 tests/unit/xdp_run: tests/unit/xdp_run.c include/bfd_shared.h
 	$(CC) $(CFLAGS) $< -o $@ -lbpf
 
+# The FSM table links against the real fsm.o with three stubs; no
+# root, no BPF, no testbed.
+tests/unit/fsm_run: tests/unit/fsm_run.c src/engine/fsm.o \
+		    $(wildcard src/engine/*.h)
+	$(CC) $(CFLAGS) tests/unit/fsm_run.c src/engine/fsm.o -o $@
+
+test-fsm: tests/unit/fsm_run
+	./tests/unit/fsm_run
+
 # Needs root and the loaded object; not part of `all`.
 test-xdp: tests/unit/xdp_run bfd_xdp.o
 	sudo ./tests/unit/xdp_run
 
-.PHONY: all clean abi-check test-xdp
+.PHONY: all clean abi-check test-xdp test-fsm

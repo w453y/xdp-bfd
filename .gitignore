@@ -9,3 +9,4 @@ observer.csv
 /[0-9][0-9]-*.py
 # unit test binary
 /tests/unit/xdp_run
+/tests/unit/fsm_run

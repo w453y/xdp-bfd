@@ -67,6 +67,21 @@ tests/unit/dp_run: tests/unit/dp_run.c src/engine/dplane.o src/engine/log.o \
 	$(CC) $(CFLAGS) tests/unit/dp_run.c src/engine/dplane.o \
 		src/engine/session.o src/engine/fsm.o src/engine/log.o -o $@
 
+# The bffdp parser under libFuzzer. Needs clang, not $(CC): -fsanitize=
+# fuzzer is not in gcc. Deliberately NOT part of `check` - a fuzz run is
+# open-ended, and the enumerable edges are already dp_run's 11 cases.
+#
+#     make tests/unit/dp_fuzz
+#     ./tests/unit/dp_fuzz -runs=100000 tests/unit/corpus/
+FUZZ_CC ?= clang
+FUZZ_FLAGS ?= -g -O1 -fsanitize=fuzzer,address,undefined
+
+tests/unit/dp_fuzz: tests/unit/dp_fuzz.c $(wildcard src/engine/*.c) \
+		    $(wildcard src/engine/*.h) $(TEST_HDRS)
+	$(FUZZ_CC) $(FUZZ_FLAGS) -Iinclude -Isrc/engine \
+		tests/unit/dp_fuzz.c src/engine/dplane.c src/engine/session.c \
+		src/engine/fsm.c src/engine/log.c -o $@ -lbpf
+
 test-dp: tests/unit/dp_run
 	./tests/unit/dp_run
 

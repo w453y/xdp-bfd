@@ -11,3 +11,10 @@ observer.csv
 /tests/unit/xdp_run
 /tests/unit/fsm_run
 /tests/unit/dp_run
+/tests/unit/dp_fuzz
+# libFuzzer writes findings into the working directory, and a live
+# corpus is regenerable in 90 seconds - neither belongs in the repo.
+/crash-*
+/leak-*
+/timeout-*
+/tests/unit/corpus/

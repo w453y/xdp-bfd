@@ -84,7 +84,7 @@ int bfd_observer(struct xdp_md *ctx)
 	 * acceptable only if it names a configured session whose minimum
 	 * admits it. An unconfigured pair must still drop, which is why
 	 * this runs BEFORE the promiscuous PASS below rather than after
-	 * it: with a multihop session configured, prog_flags bit 1 tells
+	 * it: with a multihop session configured, prog_flags bit value 2 tells
 	 * parse_l3 to defer the TTL verdict, so an off-link packet naming
 	 * an address pair we do not have reached the stack instead of
 	 * dying here. The promiscuous PASS exists for observation, not to

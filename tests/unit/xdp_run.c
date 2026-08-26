@@ -236,6 +236,7 @@ static void expect(const char *name, int got, int want)
 /* ---------- map state ---------- */
 
 static int cfg_fd = -1, sess_fd = -1, stats_fd = -1;
+static int flags_fd = -1;
 static int echo_peers_fd = -1, echo_disc_fd = -1;
 /* The sweep lives behind a bpf_timer, which does not fire under
  * test_run, so tests/unit/bfd_xdp_test.o carries a second program that
@@ -259,12 +260,38 @@ static struct session_key key_v4(const char *peer, const char *local)
 	return k;
 }
 
+/* prog_flags carries two independent bits and they are NOT the same bit:
+ * value 1 is the promiscuous PASS in bfd_xdp.c, value 2 is the multihop
+ * deferral parse.h reads. The comment in bfd_xdp.c calls the latter
+ * "bit 1", meaning index 1, which reads as the same bit as the & 1
+ * below it. Nothing here opened this map before, so every earlier case
+ * ran at whatever the object's default was; map_reset now clears it. */
+#define FLAG_PROMISC	1u
+#define FLAG_MHOP	2u
+
+static void set_flags(__u32 v)
+{
+	__u32 zero = 0;
+
+	if (flags_fd < 0) {
+		fprintf(stderr, "  no prog_flags fd\n");
+		fails++;
+		return;
+	}
+	if (bpf_map_update_elem(flags_fd, &zero, &v, BPF_ANY)) {
+		fprintf(stderr, "  prog_flags update failed: %s\n",
+		        strerror(errno));
+		fails++;
+	}
+}
+
 static void map_reset(void)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
 
 	bpf_map_delete_elem(cfg_fd, &k);
 	bpf_map_delete_elem(sess_fd, &k);
+	set_flags(0);
 }
 
 /* A session the kernel is allowed to answer for. */
@@ -292,6 +319,85 @@ static void arm_session(void)
 	}
 }
 
+/* Same as arm_session but with a caller-chosen min_ttl. ktx_mirror
+ * pushes min_ttl for EVERY session it mirrors - ktx.c never consults
+ * is_mhop - so a sub-255 value does reach tx_config and the deferred
+ * GTSM branch is live, not dead code. */
+static void arm_session_ttl(__u32 min_ttl)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct tx_cfg cfg = {0};
+	struct session_state st = {0};
+
+	cfg.enable    = 1;
+	cfg.my_disc   = 0x22222222;
+	cfg.your_disc = 0x11111111;
+	cfg.min_tx_us = 10000;
+	cfg.min_rx_us = 10000;
+	cfg.state     = ST_UP;
+	cfg.mult      = 3;
+	cfg.min_ttl   = min_ttl;
+
+	st.remote_state = ST_UP;
+
+	if (bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY) ||
+	    bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
+		fprintf(stderr, "  mhop map update failed: %s\n", strerror(errno));
+		fails++;
+	}
+}
+
+
+/* Deferred GTSM (087c9af). A packet below 255 is acceptable only if it
+ * names a configured session whose min_ttl admits it. Four arms: above
+ * the minimum, exactly at it (pttl < mt is strict), below it, and the
+ * null-cfg arm that must drop even with the multihop flag set - which is
+ * why the gate sits ABOVE the promiscuous PASS rather than after it.
+ *
+ * Not written: 03-testing's mhop-does-not-leak. The session key is
+ * address-only, so a single-hop and a multihop session on one pair are
+ * the same tx_config entry and there is no per-port state to leak. */
+static void case_deferred_gtsm(void)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct frame f;
+
+	map_reset();
+	set_flags(FLAG_MHOP);
+	arm_session_ttl(32);
+
+	build_v4(&f, 64, BFD_PORT_MHOP, &p, 0);
+	expect("deferred-gtsm-low-ttl-accepted", run_frame(&f, NULL, NULL),
+	       XDP_TX);
+
+	build_v4(&f, 32, BFD_PORT_MHOP, &p, 0);
+	expect("deferred-gtsm-exact-min-accepted", run_frame(&f, NULL, NULL),
+	       XDP_TX);
+
+	build_v4(&f, 16, BFD_PORT_MHOP, &p, 0);
+	expect("deferred-gtsm-below-min-drops", run_frame(&f, NULL, NULL),
+	       XDP_DROP);
+
+	/* Nothing configured, multihop flag set: parse_l3 deferred the
+	 * verdict, so only the cfg check can catch this one. */
+	map_reset();
+	set_flags(FLAG_MHOP);
+	build_v4(&f, 64, BFD_PORT_MHOP, &p, 0);
+	expect("deferred-gtsm-unconfigured-drops", run_frame(&f, NULL, NULL),
+	       XDP_DROP);
+	map_reset();
+
+	/* Negative arm for the flag itself. With FLAG_MHOP clear, parse_l3
+	 * rejects a sub-255 packet before the deferred gate is reached, so
+	 * the first case's frame must DROP. Without this, a set_flags that
+	 * silently wrote nothing would leave both DROP arms vacuous. */
+	map_reset();
+	set_flags(0);
+	arm_session_ttl(32);
+	build_v4(&f, 64, BFD_PORT_MHOP, &p, 0);
+	expect("deferred-gtsm-flag-clear-drops", run_frame(&f, NULL, NULL),
+	       XDP_DROP);
+}
 /* v6 keys carry the address as-is; only v4 goes through the mapped
  * encoder. Same orientation: peer is the frame source. */
 static struct session_key key_v6(const char *peer, const char *local)
@@ -1399,6 +1505,7 @@ int main(void)
 	cfg_fd  = bpf_object__find_map_fd_by_name(obj, "tx_config");
 	sess_fd = bpf_object__find_map_fd_by_name(obj, "bfd_sessions");
 	stats_fd = bpf_object__find_map_fd_by_name(obj, "bfd_stats");
+	flags_fd = bpf_object__find_map_fd_by_name(obj, "prog_flags");
 	echo_peers_fd = bpf_object__find_map_fd_by_name(obj, "echo_peers");
 	echo_disc_fd = bpf_object__find_map_fd_by_name(obj, "echo_disc");
 	if (cfg_fd < 0 || sess_fd < 0) {
@@ -1424,6 +1531,7 @@ int main(void)
 
 	case_not_bfd();
 	case_gtsm_v4();
+	case_deferred_gtsm();
 	case_bounce_v4();
 	case_bounce_v4_frame();
 	case_bounce_v6_frame();

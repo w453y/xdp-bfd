@@ -559,7 +559,7 @@ void dp_read(void)
 
 	/* Frame: header.length = total message size including header. */
 	size_t off = 0;
-	while (dp_have - off >= sizeof(struct bfddp_message_header)) {
+	while (off + sizeof(struct bfddp_message_header) <= dp_have) {
 		const struct bfddp_message_header *h =
 			(const void *)(dp_buf + off);
 		uint16_t mlen = ntohs(h->length);
@@ -578,6 +578,16 @@ void dp_read(void)
 			break;
 		dp_process(dp_buf + off, mlen);
 		off += mlen;
+		/* dp_process can reply, and a reply on a full output
+		 * queue calls dp_drop_conn, which zeroes dp_have.
+		 * Both are size_t, so dp_have - off then underflows,
+		 * the loop condition stays true, and off walks past
+		 * the buffer - an out-of-bounds read in the memmove
+		 * below. Found by tests/unit/dp_fuzz. Nothing after a
+		 * drop is meaningful anyway: the buffer belongs to a
+		 * connection that no longer exists. */
+		if (dp_conn < 0)
+			return;
 	}
 	if (off) {
 		memmove(dp_buf, dp_buf + off, dp_have - off);

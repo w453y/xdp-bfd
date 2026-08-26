@@ -47,13 +47,19 @@ tests/unit/bfd_xdp_test.o: tests/unit/bfd_xdp_test.c include/bfd_shared.h \
 			   $(wildcard src/xdp/*.h)
 	$(CLANG) $(BPFFLAGS) -c $< -o $@
 
-tests/unit/xdp_run: tests/unit/xdp_run.c include/bfd_shared.h
+# Headers shared between the unit harnesses. Neither rule picked these
+# up before: fsm_run globs src/engine/*.h, xdp_run listed only
+# bfd_shared.h, so editing a vector table rebuilt nothing and the suite
+# ran stale against the old expectations.
+TEST_HDRS := $(wildcard tests/unit/*.h)
+
+tests/unit/xdp_run: tests/unit/xdp_run.c include/bfd_shared.h $(TEST_HDRS)
 	$(CC) $(CFLAGS) $< -o $@ -lbpf
 
 # The FSM table links against the real fsm.o with three stubs; no
 # root, no BPF, no testbed.
 tests/unit/fsm_run: tests/unit/fsm_run.c src/engine/fsm.o src/engine/log.o \
-		    $(wildcard src/engine/*.h)
+		    $(wildcard src/engine/*.h) $(TEST_HDRS)
 	$(CC) $(CFLAGS) tests/unit/fsm_run.c src/engine/fsm.o src/engine/log.o -o $@
 
 tests/unit/dp_run: tests/unit/dp_run.c src/engine/dplane.o src/engine/log.o \

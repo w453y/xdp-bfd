@@ -415,6 +415,7 @@ static void map_reset_v6(void)
 
 	bpf_map_delete_elem(cfg_fd, &k);
 	bpf_map_delete_elem(sess_fd, &k);
+	set_flags(0);
 }
 
 static void arm_session_v6(void)
@@ -437,6 +438,31 @@ static void arm_session_v6(void)
 	if (bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY) ||
 	    bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
 		fprintf(stderr, "  v6 map update failed: %s\n", strerror(errno));
+		fails++;
+	}
+}
+
+/* v6 counterpart of arm_session_ttl. */
+static void arm_session_v6_ttl(__u32 min_ttl)
+{
+	struct session_key k = key_v6("fd00::2", "fd00::1");
+	struct tx_cfg cfg = {0};
+	struct session_state st = {0};
+
+	cfg.enable    = 1;
+	cfg.my_disc   = 0x22222222;
+	cfg.your_disc = 0x11111111;
+	cfg.min_tx_us = 10000;
+	cfg.min_rx_us = 10000;
+	cfg.state     = ST_UP;
+	cfg.mult      = 3;
+	cfg.min_ttl   = min_ttl;
+
+	st.remote_state = ST_UP;
+
+	if (bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY) ||
+	    bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
+		fprintf(stderr, "  v6 mhop map update failed: %s\n", strerror(errno));
 		fails++;
 	}
 }
@@ -540,6 +566,38 @@ static void case_gtsm_v4(void)
 
 	build_v4(&f, 200, BFD_PORT_1HOP, &p, 0);
 	expect("gtsm-v4-low-ttl-drops", run_frame(&f, NULL, NULL), XDP_DROP);
+}
+
+/* v6 counterpart of case_gtsm_v4, plus the v6 arm of the deferred gate.
+ * parse.h reads the multihop flag at two sites, one per family, and only
+ * the v4 side had a case. The v6-only IPV6_MINHOPCOUNT defect the netns
+ * rig found is the reason this asymmetry is worth closing. */
+static void case_gtsm_v6(void)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct frame f;
+
+	map_reset_v6();
+	build_v6(&f, 200, BFD_PORT_1HOP, &p, 0);
+	expect("gtsm-v6-low-hlim-drops", run_frame(&f, NULL, NULL), XDP_DROP);
+
+	/* Deferred: a configured v6 session whose minimum admits it. */
+	set_flags(FLAG_MHOP);
+	arm_session_v6_ttl(32);
+	build_v6(&f, 64, BFD_PORT_MHOP, &p, 0);
+	expect("deferred-gtsm-v6-accepted", run_frame(&f, NULL, NULL), XDP_TX);
+
+	build_v6(&f, 16, BFD_PORT_MHOP, &p, 0);
+	expect("deferred-gtsm-v6-below-min-drops", run_frame(&f, NULL, NULL),
+	       XDP_DROP);
+
+	/* Negative arm for the flag on the v6 path specifically. */
+	set_flags(0);
+	build_v6(&f, 64, BFD_PORT_MHOP, &p, 0);
+	expect("deferred-gtsm-v6-flag-clear-drops", run_frame(&f, NULL, NULL),
+	       XDP_DROP);
+	map_reset_v6();
+	set_flags(0);
 }
 
 /* An Up packet from an armed peer must be bounced, not passed. This is
@@ -1531,6 +1589,7 @@ int main(void)
 
 	case_not_bfd();
 	case_gtsm_v4();
+	case_gtsm_v6();
 	case_deferred_gtsm();
 	case_bounce_v4();
 	case_bounce_v4_frame();

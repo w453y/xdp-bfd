@@ -26,6 +26,7 @@
 
 #include "session.h"
 #include "fsm.h"
+#include "detect_vectors.h"
 
 /* ---------- stubs ---------- */
 
@@ -133,6 +134,55 @@ static void row(uint8_t ours, uint8_t theirs, uint8_t want,
 	} else {
 		printf("ok   %-44s %s\n", name, st_name(s->state));
 	}
+}
+
+
+/* ---------- poll-aware detect basis ---------- */
+
+/* Drives detect_vectors.h against fsm.c's copy of the rule. The same
+ * vectors drive bfd_xdp.c's copy from xdp_run, which is the point: the
+ * arithmetic exists twice and nothing checked that the two agree.
+ *
+ * sess_init leaves last_rx_us set, so both it and detect_iv_us are
+ * cleared here - otherwise step 0 takes the gap branch rather than the
+ * no-prior-interval branch and every case tests the wrong thing. */
+static void dv_row(const struct dv_case *c)
+{
+	struct session *s = sess_init(ST_UP);
+	uint64_t t = 2000000;
+	int bad = 0;
+
+	s->detect_iv_us = 0;
+	s->last_rx_us   = 0;
+	s->min_rx_us    = c->local_min_rx_us;
+
+	for (int i = 0; i < c->nsteps; i++) {
+		const struct dv_step *st = &c->steps[i];
+		struct bfd_ctrl_pkt p = pkt(ST_UP, 0);
+
+		p.min_tx = htonl(st->adv_min_tx_us);
+		t += st->gap_us;
+		fsm_rx(s, &p, t);
+
+		if (s->detect_iv_us != st->want_iv_us) {
+			printf("     step %d: detect_iv_us %u, want %u\n",
+			       i, s->detect_iv_us, st->want_iv_us);
+			bad = 1;
+		}
+	}
+
+	if (bad) {
+		printf("FAIL %-44s\n", c->name);
+		fails++;
+	} else {
+		printf("ok   %-44s iv %u\n", c->name, s->detect_iv_us);
+	}
+}
+
+static void run_detect_vectors(void)
+{
+	for (int i = 0; i < DV_NCASES; i++)
+		dv_row(&dv_cases[i]);
 }
 
 static void run_table(void)
@@ -461,6 +511,7 @@ static void case_jitter(uint8_t mult, unsigned lo_pct, unsigned hi_pct,
 int main(void)
 {
 	run_table();
+	run_detect_vectors();
 	case_passive();
 	case_admin_down();
 	case_poll_bits();

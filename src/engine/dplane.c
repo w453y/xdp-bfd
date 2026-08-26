@@ -524,12 +524,30 @@ static void dp_process(const uint8_t *buf, size_t len)
 	}
 }
 
+/* The one read. A fuzz build replaces it so dp_read can be driven from a
+ * buffer with no socket at all: the parser is the thing under test, and
+ * owning a connection lifecycle per iteration is where a socket-based
+ * harness spends its time going wrong. Production keeps recv(2). */
+ssize_t (*dp_recv_hook)(int fd, void *buf, size_t len) = NULL;
+
+/* Companion to the hook: dp_conn is static and dp_read returns at once
+ * when it is negative, so a buffer-driven test needs a way past that
+ * guard without a real connection. Never called in production. */
+void dp_set_conn_for_test(int fd)
+{
+	dp_conn = fd;
+	dp_have = 0;
+}
+
 void dp_read(void)
 {
 	if (dp_conn < 0)
 		return;
-	ssize_t n = recv(dp_conn, dp_buf + dp_have,
-			 sizeof(dp_buf) - dp_have, 0);
+	ssize_t n = dp_recv_hook
+			    ? dp_recv_hook(dp_conn, dp_buf + dp_have,
+					   sizeof(dp_buf) - dp_have)
+			    : recv(dp_conn, dp_buf + dp_have,
+				   sizeof(dp_buf) - dp_have, 0);
 	if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
 		log_info("dplane: bfdd disconnected\n");
 		dp_drop_conn("bfdd disconnected");

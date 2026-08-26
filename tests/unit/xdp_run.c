@@ -28,6 +28,8 @@
 #include <bpf/bpf.h>
 
 #include "bfd_shared.h"
+#include <time.h>
+#include "detect_vectors.h"
 
 static struct bpf_object *obj;
 static int prog_fd = -1;
@@ -319,6 +321,35 @@ static void arm_session(void)
 	}
 }
 
+/* arm_session with a chosen min_rx_us, and alive already set.
+ * alive matters: the XDP rule's first disjunct is !st->alive, so a
+ * session left at alive 0 takes the candidate on every packet and
+ * every decrease vector would pass without the rule running. */
+static void arm_session_rx(__u32 min_rx_us)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct tx_cfg cfg = {0};
+	struct session_state st = {0};
+
+	cfg.enable    = 1;
+	cfg.my_disc   = 0x22222222;
+	cfg.your_disc = 0x11111111;
+	cfg.min_tx_us = 10000;
+	cfg.min_rx_us = min_rx_us;
+	cfg.state     = ST_UP;
+	cfg.mult      = 3;
+	cfg.min_ttl   = 255;
+
+	st.remote_state = ST_UP;
+	st.alive        = 1;
+
+	if (bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY) ||
+	    bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
+		fprintf(stderr, "  detect map update failed: %s\n", strerror(errno));
+		fails++;
+	}
+}
+
 /* Same as arm_session but with a caller-chosen min_ttl. ktx_mirror
  * pushes min_ttl for EVERY session it mirrors - ktx.c never consults
  * is_mhop - so a sub-255 value does reach tx_config and the deferred
@@ -598,6 +629,93 @@ static void case_gtsm_v6(void)
 	       XDP_DROP);
 	map_reset_v6();
 	set_flags(0);
+}
+
+/* ---------- poll-aware detect basis ---------- */
+
+/* The kernel half of detect_vectors.h. fsm_run drives the same vectors
+ * against fsm.c; this drives bfd_xdp.c. The rule exists twice and
+ * nothing checked that the two agree until these two drivers.
+ *
+ * The gap is synthesised by writing last_seen_ns before each run, since
+ * the program reads bpf_ktime_get_ns() itself and the harness cannot
+ * hand it a clock. Base is CLOCK_MONOTONIC, which is what that helper
+ * returns. Cases flagged boundary sit exactly on the comparison and are
+ * skipped here: skew between our clock read and the program's would
+ * decide them. fsm_run takes those, where the clock is an argument.
+ *
+ * LOCAL_MIN_RX_US is 10000, the same value arm_session uses, so the
+ * cfg-present and cfg-absent floors coincide unless a case says
+ * otherwise. */
+static __u64 mono_ns(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (__u64)ts.tv_sec * 1000000000ull + (__u64)ts.tv_nsec;
+}
+
+static void dv_row_xdp(const struct dv_case *c)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct session_state st = {0};
+	struct frame f;
+	int bad = 0;
+
+	map_reset();
+	arm_session_rx(c->local_min_rx_us);
+
+	for (int i = 0; i < c->nsteps; i++) {
+		const struct dv_step *s = &c->steps[i];
+
+		if (!read_state(&k, &st))
+			return;
+		if (i == 0) {
+			/* No prior interval: the first packet must take the
+			 * !detect_iv_us branch, as in the engine driver. */
+			st.detect_iv_us = 0;
+			st.last_seen_ns = 0;
+			st.alive        = 0;
+		} else {
+			st.last_seen_ns = mono_ns() - (__u64)s->gap_us * 1000ull;
+			st.alive        = 1;
+		}
+		if (bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
+			printf("     state write failed: %s\n", strerror(errno));
+			fails++;
+			return;
+		}
+
+		p.min_tx = htonl(s->adv_min_tx_us);
+		build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+		run_frame(&f, NULL, NULL);
+
+		if (!read_state(&k, &st))
+			return;
+		if (st.detect_iv_us != s->want_iv_us) {
+			printf("     step %d: detect_iv_us %u, want %u\n",
+			       i, st.detect_iv_us, s->want_iv_us);
+			bad = 1;
+		}
+	}
+
+	if (bad) {
+		printf("FAIL %-40s\n", c->name);
+		fails++;
+	} else {
+		printf("ok   %-40s iv %u\n", c->name, st.detect_iv_us);
+	}
+	map_reset();
+}
+
+static void case_detect_vectors(void)
+{
+	for (int i = 0; i < DV_NCASES; i++) {
+		if (dv_cases[i].boundary)
+			continue;
+		dv_row_xdp(&dv_cases[i]);
+	}
 }
 
 /* An Up packet from an armed peer must be bounced, not passed. This is
@@ -1589,6 +1707,7 @@ int main(void)
 
 	case_not_bfd();
 	case_gtsm_v4();
+	case_detect_vectors();
 	case_gtsm_v6();
 	case_deferred_gtsm();
 	case_bounce_v4();

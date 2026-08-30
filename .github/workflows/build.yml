@@ -77,10 +77,15 @@ jobs:
 
       # bpftool comes from linux-tools-common plus the running kernel's
       # package; the fixture shells out to it to assert attach state.
-      - name: check bpftool
+      # linux-tools-common ships only the version-dispatching wrapper;
+      # the real binary is in linux-tools-<uname -r>, which has no package
+      # for every runner kernel. The two engine-death tests skip rather
+      # than fail when it is missing - an absent bpftool is not an attach
+      # failure, and conflating them produced a confusing assertion once.
+      - name: bpftool
         run: |
-          which bpftool || sudo apt-get install -y \
-              linux-tools-$(uname -r) || true
+          sudo apt-get install -y linux-tools-$(uname -r) || \
+            echo "no linux-tools for $(uname -r); engine-death tests skip"
           bpftool version || true
 
       - name: netns end-to-end

@@ -89,6 +89,11 @@ def xdp_progs(ns, dev):
     """
     out = sh("sudo ip netns exec %s bpftool net show dev %s -j" % (ns, dev),
              check=False)
+    if not out.strip():
+        # bpftool absent, not an attach failure. linux-tools-common ships
+        # only the version-dispatching wrapper; the real binary comes from
+        # linux-tools-<uname -r>, which has no package for some kernels.
+        pytest.skip("bpftool produced no output; is it installed?")
     try:
         return json.loads(out)[0]["xdp"]
     except (ValueError, KeyError, IndexError):

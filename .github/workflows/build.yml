@@ -11,26 +11,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # clang 21 from apt.llvm.org, not the archive. The BPF backend below
+      # LLVM 20 has no 32-bit atomic compare-and-swap, so
+      # __sync_val_compare_and_swap on sweep.h's __u32 `inited` crashes
+      # the compiler outright ("unsupported atomic operation, please use
+      # 64 bit version" then a backend fatal error). Measured on the DUT:
+      # 18 and 19 fail, 20 and 21 build. The runner image default is 18.
+      #
+      # Pinning rather than widening the field: this engine targets kernel
+      # 7.x and newer, and 21 is what it is developed against.
       - name: install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang llvm libbpf-dev linux-tools-common
-          clang --version
-          echo "TRIPLE from make:"
-          make -s -p 2>/dev/null | grep -m1 '^TRIPLE' || true
+          sudo apt-get install -y llvm libbpf-dev linux-tools-common
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 21
+          clang-21 --version
           ls /usr/include/$(gcc -print-multiarch) | head -5
 
       - name: build
-        run: make
+        run: make CLANG=clang-21
 
       # Layers 1 and 2 that need nothing special. If the XDP suite
       # fails on the runner's kernel, these still tell us the rest is
       # green rather than the whole gate going red for one reason.
       - name: abi, fsm, dp
         run: |
-          make abi-check
-          make test-fsm
-          make test-dp
+          make CLANG=clang-21 abi-check
+          make CLANG=clang-21 test-fsm
+          make CLANG=clang-21 test-dp
 
       - name: xdp (needs root and BPF_PROG_TEST_RUN)
-        run: make test-xdp
+        run: make CLANG=clang-21 test-xdp

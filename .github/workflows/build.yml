@@ -45,6 +45,13 @@ jobs:
       - name: xdp (needs root and BPF_PROG_TEST_RUN)
         run: make CLANG=clang-21 test-xdp
 
+      # Milliseconds. Pins the out-of-bounds read fixed in 0441f6c; the
+      # open-ended fuzz run lives in fuzz.yml on a schedule.
+      - name: fuzz regressions
+        run: |
+          make FUZZ_CC=clang-21 tests/unit/dp_fuzz
+          find tests/unit/fuzz-regress -type f ! -name '*.md' -exec ./tests/unit/dp_fuzz {} +
+
   # Layer 3: two engines on a veth pair in namespaces, one carrying the
   # XDP program through a bpf_link. Separate job rather than a step, so a
   # runner that cannot do generic XDP attach on veth does not take the

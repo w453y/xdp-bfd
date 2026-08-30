@@ -1,7 +1,7 @@
 Inputs that once crashed tests/unit/dp_fuzz, kept as permanent
 regression checks:
 
-    ./tests/unit/dp_fuzz tests/unit/fuzz-regress/*
+    find tests/unit/fuzz-regress -type f ! -name '*.md' -exec ./tests/unit/dp_fuzz {} +
 
 Each runs in milliseconds. Name new ones for what they broke.
 

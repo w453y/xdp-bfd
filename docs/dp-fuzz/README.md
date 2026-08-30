@@ -348,7 +348,7 @@ open-ended, and the enumerable edges are already `dp_run`'s 11 cases.
 make tests/unit/dp_fuzz
 
 # regression check, milliseconds
-./tests/unit/dp_fuzz tests/unit/fuzz-regress/*
+find tests/unit/fuzz-regress -type f ! -name '*.md' -exec ./tests/unit/dp_fuzz {} +
 
 # a real run, with a corpus that persists across invocations
 mkdir -p tests/unit/corpus

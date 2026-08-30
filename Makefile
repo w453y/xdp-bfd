@@ -96,7 +96,12 @@ check: all test-fsm test-dp test-xdp
 
 # Layer 3 end-to-end on veth + netns. Needs root and pytest, and
 # runs in seconds rather than milliseconds, so it is NOT in `check`.
+# The userspace parity rig first: 24 cases, seconds, and the only
+# coverage of the socket receive path where the inert IP_MINTTL and
+# IPV6_MINHOPCOUNT fixes live. Needs no peer and no testbed, and was
+# runnable all along without being gated by anything.
 check-netns:
+	python3 tests/netns_userspace.py
 	python3 -m pytest tests/e2e -v
 
 test-fsm: tests/unit/fsm_run

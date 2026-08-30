@@ -1,0 +1,36 @@
+name: build and test
+
+on:
+  push:
+    branches: [ '**' ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libbpf-dev linux-tools-common
+          clang --version
+          echo "TRIPLE from make:"
+          make -s -p 2>/dev/null | grep -m1 '^TRIPLE' || true
+          ls /usr/include/$(gcc -print-multiarch) | head -5
+
+      - name: build
+        run: make
+
+      # Layers 1 and 2 that need nothing special. If the XDP suite
+      # fails on the runner's kernel, these still tell us the rest is
+      # green rather than the whole gate going red for one reason.
+      - name: abi, fsm, dp
+        run: |
+          make abi-check
+          make test-fsm
+          make test-dp
+
+      - name: xdp (needs root and BPF_PROG_TEST_RUN)
+        run: make test-xdp

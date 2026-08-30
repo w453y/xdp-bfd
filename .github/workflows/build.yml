@@ -44,3 +44,44 @@ jobs:
 
       - name: xdp (needs root and BPF_PROG_TEST_RUN)
         run: make CLANG=clang-21 test-xdp
+
+  # Layer 3: two engines on a veth pair in namespaces, one carrying the
+  # XDP program through a bpf_link. Separate job rather than a step, so a
+  # runner that cannot do generic XDP attach on veth does not take the
+  # fast gate red with it.
+  #
+  # continue-on-error while this is unproven on hosted runners. Two
+  # independent unknowns, and they fail differently: generic XDP attach
+  # inside a netns (aborts at the attach with a bpftool error), and
+  # whether two static engines reach Up inside the 15s wait on a shared
+  # runner (times out in wait_both_up and dumps the engine logs). Remove
+  # the flag once a run proves both.
+  netns:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm libbpf-dev linux-tools-common \
+                                  python3-pytest iproute2
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 21
+          python3 -m pytest --version
+
+      - name: build
+        run: make CLANG=clang-21
+
+      # bpftool comes from linux-tools-common plus the running kernel's
+      # package; the fixture shells out to it to assert attach state.
+      - name: check bpftool
+        run: |
+          which bpftool || sudo apt-get install -y \
+              linux-tools-$(uname -r) || true
+          bpftool version || true
+
+      - name: netns end-to-end
+        run: sudo make CLANG=clang-21 check-netns

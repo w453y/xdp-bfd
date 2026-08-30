@@ -81,23 +81,30 @@ def wait_both_up(timeout=UP_WAIT):
 
 
 def xdp_progs(ns, dev):
-    """Programs attached to dev, from bpftool JSON.
+    """Programs attached to dev, as a list.
 
-    NOT `"xdp" in bpftool net show` - that prints its section headers
-    unconditionally, so the substring matches whether or not anything is
-    attached. That produced a vacuously passing assertion once already.
+    Reads `ip -d link show`, not bpftool: iproute2 is on every runner
+    while bpftool lives in linux-tools-<uname -r>, which has no package
+    for some kernels, and these cases were skipping in CI because of it.
+
+    NOT a substring match on `bpftool net show` either - that prints its
+    section headers unconditionally, so "xdp" matches whether or not
+    anything is attached. That produced a vacuously passing assertion
+    once already. `ip -d` prints an xdp/xdpgeneric clause only when a
+    program is actually attached, so presence is the signal.
     """
-    out = sh("sudo ip netns exec %s bpftool net show dev %s -j" % (ns, dev),
+    out = sh("sudo ip netns exec %s ip -d link show %s" % (ns, dev),
              check=False)
     if not out.strip():
-        # bpftool absent, not an attach failure. linux-tools-common ships
-        # only the version-dispatching wrapper; the real binary comes from
-        # linux-tools-<uname -r>, which has no package for some kernels.
-        pytest.skip("bpftool produced no output; is it installed?")
-    try:
-        return json.loads(out)[0]["xdp"]
-    except (ValueError, KeyError, IndexError):
-        raise AssertionError("unparseable bpftool output: %r" % out)
+        raise AssertionError("no link %s in %s" % (dev, ns))
+    progs = []
+    for tok in out.split():
+        if tok.startswith("prog/xdp"):
+            progs.append(tok)
+    if not progs and ("xdpgeneric" in out or " xdp " in out):
+        # Attached but the prog/xdp detail line is absent: still attached.
+        progs.append("xdp")
+    return progs
 
 
 def only_session(ns, stats):

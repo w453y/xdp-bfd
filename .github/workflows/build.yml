@@ -50,15 +50,11 @@ jobs:
   # runner that cannot do generic XDP attach on veth does not take the
   # fast gate red with it.
   #
-  # continue-on-error while this is unproven on hosted runners. Two
-  # independent unknowns, and they fail differently: generic XDP attach
-  # inside a netns (aborts at the attach with a bpftool error), and
-  # whether two static engines reach Up inside the 15s wait on a shared
-  # runner (times out in wait_both_up and dumps the engine logs). Remove
-  # the flag once a run proves both.
+  # Both unknowns are settled: hosted runners do generic XDP attach on
+  # veth inside a netns, and two static engines reach Up well inside the
+  # 15s wait. Ran continue-on-error for one run to find that out.
   netns:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 

@@ -51,17 +51,17 @@ def death(request):
         for pid in ns_pids(NS_A):
             sh("sudo kill -KILL %d" % pid, check=False)
         killed = time.time()
-        time.sleep(0.5)
-        res["after"] = xdp_progs(NS_A, "rig-a")
-
+        # The detach read needs a moment for the link to close, but it
+        # must NOT sit between the kill and the detection loop below:
+        # detection completes in ~30ms at these timers, so half a second
+        # here meant the loop always found the session already Down and
+        # elapsed_s could never read under 500ms. Detach is checked after
+        # the loop instead.
         res["down"] = False
         end = time.time() + DOWN_WAIT
         while time.time() < end:
             s = only_session(NS_B, STATS_B)
-            # The snapshot renders state as a STRING ("Up", "Down").
-            # This read `!= 3` until 2026-08-30, which is true for
-            # every state including Up, so the loop exited on its
-            # first poll and only the diag check below gated the test.
+            # state is a STRING here ("Up", "Down"), not an int.
             if s["state"] != "Up":
                 res["down"] = True
                 res["elapsed_s"] = time.time() - killed
@@ -70,6 +70,8 @@ def death(request):
             time.sleep(0.1)
         else:
             res["tails"] = engine_tails()
+        time.sleep(0.5)
+        res["after"] = xdp_progs(NS_A, "rig-a")
         yield res
     finally:
         if not request.config.getoption("--keep-ns"):
@@ -95,5 +97,10 @@ def test_peer_detects_on_own_budget(death):
     overshoot = s["last_overshoot_us"]
     assert 0 < overshoot < OVERSHOOT_SANITY_US, (
         "implausible overshoot %sus" % overshoot)
-    print("peer Down after %.0fms, overshoot %.2fms"
+    # elapsed_s is an UPPER BOUND, not a detection time: each poll
+    # costs a SIGUSR1 round trip plus the 0.1s sleep between polls, so
+    # it reads a few hundred ms against a ~30ms budget. last_overshoot_us
+    # is the engine's own measurement and is the number that means
+    # something.
+    print("peer Down within %.0fms (harness-bound), overshoot %.2fms"
           % (death["elapsed_s"] * 1000, overshoot / 1000.0))

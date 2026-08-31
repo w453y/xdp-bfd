@@ -39,8 +39,23 @@ def sh(cmd, check=True, capture=True):
 
 
 def teardown():
+    """TERM, wait, then KILL. `ip netns del` does NOT reap the namespace's
+    processes: an engine that has not exited yet survives into a deleted
+    namespace, still holding its XDP attach, and the next run's ns_pids
+    then reads an empty list and reports a startup failure that did not
+    happen. Five engines leaked this way in one session before the wait
+    was added."""
     for ns in (NS_A, NS_B):
         sh("sudo ip netns pids %s 2>/dev/null | xargs -r sudo kill" % ns,
+           check=False)
+    for _ in range(20):
+        left = sum(len(sh("sudo ip netns pids %s 2>/dev/null" % ns,
+                          check=False).split()) for ns in (NS_A, NS_B))
+        if not left:
+            break
+        time.sleep(0.1)
+    for ns in (NS_A, NS_B):
+        sh("sudo ip netns pids %s 2>/dev/null | xargs -r sudo kill -9" % ns,
            check=False)
     sh("sudo ip netns del %s" % NS_A, check=False)
     sh("sudo ip netns del %s" % NS_B, check=False)

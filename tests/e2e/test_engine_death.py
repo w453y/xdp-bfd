@@ -58,7 +58,11 @@ def death(request):
         end = time.time() + DOWN_WAIT
         while time.time() < end:
             s = only_session(NS_B, STATS_B)
-            if s["state"] != 3:
+            # The snapshot renders state as a STRING ("Up", "Down").
+            # This read `!= 3` until 2026-08-30, which is true for
+            # every state including Up, so the loop exited on its
+            # first poll and only the diag check below gated the test.
+            if s["state"] != "Up":
                 res["down"] = True
                 res["elapsed_s"] = time.time() - killed
                 res["session"] = s

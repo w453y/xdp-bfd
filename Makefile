@@ -102,7 +102,14 @@ check: all test-fsm test-dp test-xdp
 # runnable all along without being gated by anything.
 check-netns:
 	python3 tests/netns_userspace.py
-	python3 -m pytest tests/e2e -v
+	python3 -m pytest tests/e2e -v -m "not frr"
+
+# Layer 3 scenarios against stock FRR bfdd in containers. Separate from
+# check-netns because it needs a container runtime and pulls a ~100MB
+# image, which is a poor trade on every push against 30 cases that need
+# nothing. BFD_CONTAINER_RUNTIME=docker on a runner, podman on the DUT.
+check-frr:
+	python3 -m pytest tests/e2e -v -m frr
 
 test-fsm: tests/unit/fsm_run
 	./tests/unit/fsm_run

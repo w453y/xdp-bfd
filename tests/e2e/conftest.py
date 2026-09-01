@@ -7,6 +7,7 @@ plumbing lives in tests/lib/netns.py, shared with tests/netns_userspace.py.
 import json
 import os
 import sys
+import tempfile
 import time
 
 import pytest
@@ -105,6 +106,84 @@ def xdp_progs(ns, dev):
         # Attached but the prog/xdp detail line is absent: still attached.
         progs.append("xdp")
     return progs
+
+
+# ---- FRR container peer -------------------------------------------------
+#
+# NOT `ip netns exec <ns> podman run`: ip netns exec remounts /sys for the
+# new namespace and the cgroup2 mount does not come with it, so
+# /sys/fs/cgroup reads as plain sysfs inside the exec and crun refuses with
+# "invalid file system type". --cgroups=disabled does not help; the failure
+# is in crun's mount inspection, not in cgroup management.
+#
+# Instead: start the container with --network none, then move a veth end
+# into its namespace by pid. That is the standard construction, it works
+# with docker and podman identically, and it is why RUNTIME is a variable -
+# GitHub runners ship docker, this DUT has podman.
+RUNTIME = os.environ.get("BFD_CONTAINER_RUNTIME", "podman")
+FRR_IMAGE = os.environ.get("BFD_FRR_IMAGE", "quay.io/frrouting/frr:10.4.2")
+NAME_A = "bfdrig-frr-a"          # engine's control plane, talks bffdp
+NAME_B = "bfdrig-frr-b"          # the wire peer, plain stock bfdd
+
+# The image ships /etc/frr/daemons with bfdd=no and nothing else in
+# /etc/frr, so a bind mount of a generated directory clobbers nothing.
+DAEMONS = """zebra=yes
+mgmtd=yes
+bfdd=yes
+staticd=yes
+vtysh_enable=yes
+zebra_options="  -A 127.0.0.1 -s 90000000"
+mgmtd_options="  -A 127.0.0.1"
+bfdd_options="  -A 127.0.0.1%s"
+staticd_options="  -A 127.0.0.1"
+"""
+
+# Side A's bfdd drives the engine instead of its own dataplane. The `c`
+# in ipv4c is client mode: bfdd connects out to the engine's listener.
+# unixc is the natural choice and is broken in FRR <= 10.5 (an oversized
+# addrlen that AF_UNIX rejects, fixed upstream as #22621), so TCP it is.
+DPLANE_OPT = " --dplaneaddr ipv4c:127.0.0.1:50700"
+
+
+def frr_rm(name):
+    sh("sudo %s rm -f %s" % (RUNTIME, name), check=False)
+
+
+def frr_start(name, confdir):
+    """Start detached with no network of its own, and return its pid so a
+    veth end can be moved in."""
+    frr_rm(name)
+    sh("sudo %s run -d --name %s --network none --privileged -v %s:/etc/frr %s"
+       % (RUNTIME, name, confdir, FRR_IMAGE), check=False)
+    for _ in range(50):
+        out = sh("sudo %s inspect -f '{{.State.Pid}}' %s" % (RUNTIME, name),
+                 check=False).strip()
+        if out.isdigit() and int(out) > 0:
+            return int(out)
+        time.sleep(0.2)
+    raise AssertionError("container %s did not start: %s"
+                         % (name, sh("sudo %s logs %s" % (RUNTIME, name),
+                                     check=False)))
+
+
+def frr_ns(pid, cmd):
+    """Run in the container's NETWORK namespace only. nsenter -n leaves the
+    mount namespace alone, which is what lets the host's bfd_tx and
+    bfd_xdp.o run inside the container's netns."""
+    return sh("sudo nsenter -t %d -n %s" % (pid, cmd), check=False)
+
+
+def frr_vtysh(name, cmd):
+    return sh("sudo %s exec %s vtysh -c %s"
+              % (RUNTIME, name, json.dumps(cmd)), check=False)
+
+
+def frr_conf_dir(daemons, conf):
+    d = tempfile.mkdtemp(prefix="frr-rig-")
+    open(os.path.join(d, "daemons"), "w").write(daemons)
+    open(os.path.join(d, "frr.conf"), "w").write(conf)
+    sh("chmod -R a+rX %s" % d)
+    return d
 
 
 def only_session(ns, stats):

@@ -148,3 +148,38 @@ def dump(ns=NS_A, stats=STATS):
                 return json.load(f)
     sys.exit("no snapshot at %s after SIGUSR1; see %s"
              % (stats, engine_log(ns)))
+
+
+def _one(out):
+    """bpftool -j returns a list for `show id`, a dict for some others."""
+    d = json.loads(out)
+    return d[0] if isinstance(d, list) else d
+
+
+def bpf_map_for_dev(dev, name, ns_pid=None):
+    """Dump the map called `name` belonging to the XDP program attached to
+    `dev`, resolved by program id rather than by map name.
+
+    `bpftool map dump name X` matches EVERY loaded map with that name. With
+    a netns rig running alongside the live mesh there are two of each, and
+    the dump then returns map objects rather than entries - a reader that
+    assumes one instance silently reports on the wrong engine. Resolving
+    through the interface is unambiguous: net show gives the prog id, prog
+    show gives its map ids, map show names them.
+
+    ns_pid runs the lookup inside that pid's network namespace, which is
+    how the container rig reaches its own program. Map access itself is not
+    namespaced, so only the `net show` hop needs it."""
+    pre = "sudo nsenter -t %d -n " % ns_pid if ns_pid else "sudo "
+    xdp = _one(sh(pre + "bpftool net show dev %s -j" % dev))["xdp"]
+    if not xdp:
+        raise AssertionError("no XDP program on %s" % dev)
+    prog = _one(sh("sudo bpftool prog show id %d -j" % xdp[0]["id"]))
+    for mid in prog.get("map_ids", []):
+        if _one(sh("sudo bpftool map show id %d -j" % mid)).get("name") == name:
+            # No -j on the dump: with BTF present bpftool emits JSON
+            # with NAMED FIELDS, while -j gives raw hex bytes that
+            # would have to be decoded by offset. The lab script has
+            # always relied on this.
+            return json.loads(sh("sudo bpftool map dump id %d" % mid))
+    raise AssertionError("prog %d has no map named %s" % (xdp[0]["id"], name))

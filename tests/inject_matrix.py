@@ -507,7 +507,7 @@ def orchestrate(args):
         sys.exit("no session is up; every case would pass vacuously")
 
     print("sessions: %d configured, %d up, using %s" %
-          (len(sess), len(live), ", ".join(sorted(got))))
+          (len(sess), len(live), ", ".join(sorted(got))), file=sys.stderr)
     missing = {"v4", "v6", "mh4", "mh6"} - set(got)
     if missing:
         print("no session for %s, those cases are skipped"
@@ -518,7 +518,7 @@ def orchestrate(args):
             # its cases from the list, and the run still said everything
             # passed. Say so instead.
             print("no configured session for %s %s, its cases are skipped"
-                  % (kind, addr))
+                  % (kind, addr), file=sys.stderr)
     print()
 
     if args.only and not any(c[0] == args.only for c in cases):

@@ -33,6 +33,7 @@ import pytest
 from conftest import (RUNTIME, FRR_IMAGE, NAME_A, NAME_B, DAEMONS, DPLANE_OPT,
                       sh, frr_rm, frr_start, frr_ns, frr_vtysh,
                       frr_conf_dir, frr_daemon_pid)
+from lib.netns import bpf_map_for_dev
 
 pytestmark = pytest.mark.frr
 
@@ -52,7 +53,11 @@ def _brief_up(name):
     return "up" in frr_vtysh(name, "show bfd peers brief").lower().split()
 
 
-@pytest.fixture(scope="module")
+# Function-scoped, not module: the hold tests below tear down containers
+# with the SAME names and the same veth, so a module-scoped pair hands
+# later tests a pid that has already been reaped. Two extra container
+# starts is cheaper than three fixtures racing one set of names.
+@pytest.fixture
 def frr_pair(request):
     if not sh("command -v %s" % RUNTIME, check=False).strip():
         pytest.skip("no container runtime %r" % RUNTIME)
@@ -116,7 +121,7 @@ def test_both_sides_reach_up(frr_pair):
 HOLD_S = 60
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def frr_hold(request):
     """Separate from frr_pair: this one kills bfdd, and nothing else should
     depend on a fixture that does that."""
@@ -237,3 +242,83 @@ def test_dp_hold_survives_a_bfdd_crash(frr_hold):
     assert _peer_downs(NAME_B) == before, (
         "peer recorded a down event across the crash (%d -> %d)"
         % (before, _peer_downs(NAME_B)))
+
+
+# ---- scenario 3: renegotiation, Poll/Final ------------------------------
+
+RAISED_MS = 50
+
+
+def _cfg(pa):
+    """The rig engine's own tx_config entry, resolved through the program
+    attached to eth-a. NOT by map name: the DUT's mesh engine has a map of
+    the same name loaded, and a name lookup would read that one."""
+    entries = bpf_map_for_dev("eth-a", "tx_config", ns_pid=pa)
+    assert len(entries) == 1, "expected one session, got %d" % len(entries)
+    return entries[0]["value"]
+
+
+def _state(pa):
+    entries = bpf_map_for_dev("eth-a", "bfd_sessions", ns_pid=pa)
+    assert len(entries) == 1, "expected one session, got %d" % len(entries)
+    return entries[0]["value"]
+
+
+def test_renegotiation_completes_a_poll_sequence(frr_pair):
+    """Raise transmit-interval and watch the Poll sequence terminate.
+
+    The stateful case the injection matrix explicitly cannot express: an
+    injected F bit could never be attributed, because cfg->poll is only
+    mirrored for a session in ST_UP and a real peer answers within
+    milliseconds. So drive a real one and observe it.
+
+    transmit-interval is in MILLISECONDS at the vtysh prompt while the map
+    field is microseconds - that has caught people before.
+
+    Asserts the config side of "pacing changed": min_tx_us moves to the new
+    value. The wire side, that inter-packet gaps actually widen, needs a
+    capture and is not built.
+    """
+    pa, _ = frr_pair
+    # Wait for the session before touching maps. The fixture yields as soon
+    # as the engine is launched, so scenarios 1 and 2 get away with it only
+    # because they poll; reading tx_config immediately raced the XDP attach
+    # and found no program on eth-a.
+    end = time.time() + UP_WAIT
+    while time.time() < end:
+        if _brief_up(NAME_A) and _brief_up(NAME_B):
+            break
+        time.sleep(1.0)
+    else:
+        pytest.fail("never came up before the renegotiation")
+
+    before = _cfg(pa)
+    seq0, tx0 = before["poll_seq"], before["min_tx_us"]
+    assert tx0 != RAISED_MS * 1000, "session already at the raised interval"
+
+    sh("sudo %s exec %s vtysh -c 'configure terminal' -c 'bfd'"
+       " -c 'peer %s local-address %s interface eth-a'"
+       " -c 'transmit-interval %d'" % (RUNTIME, NAME_A, IP_B, IP_A, RAISED_MS),
+       check=False)
+
+    end = time.time() + 20.0
+    seq1 = final = None
+    while time.time() < end:
+        cfg, st = _cfg(pa), _state(pa)
+        if cfg["poll_seq"] != seq0:
+            seq1, final = cfg["poll_seq"], st["final_seq"]
+            if final == seq1:
+                break
+        time.sleep(0.5)
+
+    assert seq1 is not None, (
+        "poll_seq never advanced from %d; did the interval change apply?"
+        " min_tx_us is %d" % (seq0, _cfg(pa)["min_tx_us"]))
+    assert final == seq1, (
+        "poll_seq advanced to %d but final_seq stayed at %s: the peer never"
+        " answered with F" % (seq1, final))
+    assert _cfg(pa)["min_tx_us"] == RAISED_MS * 1000, (
+        "min_tx_us is %d, want %d" % (_cfg(pa)["min_tx_us"], RAISED_MS * 1000))
+    assert _brief_up(NAME_B), "peer went down across the renegotiation"
+    print("poll_seq %d -> %d, final_seq caught up, min_tx_us %d -> %d"
+          % (seq0, seq1, tx0, _cfg(pa)["min_tx_us"]))

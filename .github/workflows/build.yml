@@ -107,11 +107,19 @@ jobs:
       - name: install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm libbpf-dev python3-pytest
+          sudo apt-get install -y llvm libbpf-dev python3-pytest \
+                                  linux-tools-common
+          # Scenario 3 reads maps through bpftool. linux-tools-common ships
+          # only the version-dispatching wrapper; the real binary is in
+          # linux-tools-<uname -r>, which has no package for every runner
+          # kernel - hence the fallback and the skip in the test.
+          sudo apt-get install -y linux-tools-$(uname -r) || \
+            echo "no linux-tools for $(uname -r); the map test will skip"
           wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
           chmod +x /tmp/llvm.sh
           sudo /tmp/llvm.sh 21
           docker --version
+          bpftool version || true
 
       - name: build
         run: make CLANG=clang-21

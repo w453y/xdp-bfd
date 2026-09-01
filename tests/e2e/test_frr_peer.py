@@ -280,6 +280,8 @@ def test_renegotiation_completes_a_poll_sequence(frr_pair):
     capture and is not built.
     """
     pa, _ = frr_pair
+    if "not found" in sh("bpftool version 2>&1", check=False):
+        pytest.skip("bpftool is not installed for this kernel")
     # Wait for the session before touching maps. The fixture yields as soon
     # as the engine is launched, so scenarios 1 and 2 get away with it only
     # because they poll; reading tx_config immediately raced the XDP attach

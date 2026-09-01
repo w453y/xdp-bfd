@@ -354,7 +354,13 @@ def build_cases(got):
         c.append(("ip-options", "single-hop BFD never carries IP options",
                   dict(family=4, src=s["peer"], dst=s["local"], ttl=255,
                        dport=3784, ydisc=0, state=1, options=True),
-                  "rejected", COUNT))
+                  # Its OWN slot, not `rejected`: the check fires on any UDP
+                  # packet carrying options, BFD or not, because the port
+                  # cannot be read until the header length is known to be 20.
+                  # This asserted `rejected` until 2026-09-01 and had been
+                  # failing since the slot was split out, unnoticed because
+                  # the full matrix had not been run in three weeks.
+                  [("ip-options", COUNT), ("rejected", 0)], None))
         c.append(("frag-first", "a first fragment aimed at 3784 is dropped, "
                   "not bounced back out with MF set",
                   dict(family=4, src=s["peer"], dst=s["local"], ttl=255,

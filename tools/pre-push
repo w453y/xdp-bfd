@@ -1,0 +1,55 @@
+#!/bin/bash
+# Run the lab matrix before pushing. NOT in CI: it needs the three-host
+# testbed. Two bugs sat undetected for three weeks because nothing ran it
+# between sessions - a counter slot split out from `rejected` with the case
+# never updated, and a map-name collision that would misreport silently.
+#
+# Skips rather than blocks when the testbed is not there: a hook that fails
+# on an unrelated machine gets disabled, and a disabled hook catches nothing.
+set -u
+cd "$(git rev-parse --show-toplevel)" || exit 0
+
+pgrep -x bfd_tx >/dev/null || { echo "pre-push: no engine, skipping matrix"; exit 0; }
+up=$(python3 - <<'PY' 2>/dev/null
+import json
+try:
+    print(json.load(open("/tmp/bfd_tx_stats.json"))["sessions_up"])
+except Exception:
+    print(0)
+PY
+)
+[ "${up:-0}" -ge 2 ] || { echo "pre-push: mesh is down ($up up), skipping"; exit 0; }
+
+echo "pre-push: running the injection matrix against $up sessions"
+# stdout only. The progress lines go to stderr now, and folding them
+# back in with 2>&1 is what broke the parse the first time.
+# The script exits non-zero when CASES FAIL, which is the thing this
+# hook exists to catch - so a bare `|| skip` here swallowed exactly that
+# and let the push through. Capture the status and let the parse below
+# decide: valid JSON means the run happened and `failures` is the answer,
+# whatever the exit status was.
+out=$(python3 tests/inject_matrix.py --json)
+fails=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["failures"])')
+if [ -z "$fails" ]; then
+    # Could not parse the report. That is a hook problem, not a test
+    # failure, and a hook that blocks pushes for its own reasons gets
+    # disabled within a day. Say so and get out of the way.
+    echo "pre-push: could not parse --json output, skipping"
+    exit 0
+fi
+if [ "$fails" != "0" ]; then
+    printf '%s' "$out" | python3 -c '
+import json,sys
+d = json.load(sys.stdin)
+for c in d["cases"]:
+    if not c["ok"]:
+        print("FAIL", c["name"])
+        for k in c["checks"]:
+            print("   ", k["counter"], k["before"], "->", k["after"],
+                  "=", k["delta"], "expected", k["expected"])
+' 2>/dev/null
+    echo "pre-push: $fails case(s) failed; push refused (--no-verify to override)"
+    exit 1
+fi
+echo "pre-push: matrix clean"
+exit 0

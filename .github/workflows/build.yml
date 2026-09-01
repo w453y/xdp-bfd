@@ -93,3 +93,31 @@ jobs:
 
       - name: netns end-to-end
         run: sudo make CLANG=clang-21 check-netns
+
+  # Scenario 1 against stock FRR bfdd. Its own job because it pulls a
+  # ~100MB image; the 30 cases above need nothing and should not wait
+  # for it. Runners ship docker, the DUT has podman - hence the variable.
+  frr:
+    runs-on: ubuntu-latest
+    env:
+      BFD_CONTAINER_RUNTIME: docker
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm libbpf-dev python3-pytest
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 21
+          docker --version
+
+      - name: build
+        run: make CLANG=clang-21
+
+      - name: pull the peer image
+        run: docker pull quay.io/frrouting/frr:10.4.2
+
+      - name: frr scenarios
+        run: sudo -E make CLANG=clang-21 check-frr

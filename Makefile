@@ -118,4 +118,4 @@ test-fsm: tests/unit/fsm_run
 test-xdp: tests/unit/xdp_run bfd_xdp.o
 	sudo ./tests/unit/xdp_run
 
-.PHONY: all clean abi-check check test-xdp test-fsm test-dp check-netns
+.PHONY: all clean abi-check check test-xdp test-fsm test-dp check-netns check-frr

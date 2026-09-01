@@ -121,9 +121,18 @@ def echo_peer_addrs():
 def bpf_map(name):
     out = sh("sudo bpftool map dump name %s" % name)
     try:
-        return json.loads(out)
+        data = json.loads(out)
     except ValueError:
         sys.exit("cannot read map %s; is the engine running?" % name)
+    # With two engines loaded - the mesh plus a netns rig, say - `dump name`
+    # matches both and returns a list of MAP OBJECTS rather than entries.
+    # Reading that as entries would silently report on the wrong engine's
+    # sessions, so refuse instead.
+    if data and isinstance(data[0], dict) and "id" in data[0] \
+            and "type" in data[0]:
+        sys.exit("more than one map named %s is loaded; another engine is "
+                 "running and this script cannot tell them apart" % name)
+    return data
 
 
 def counters():

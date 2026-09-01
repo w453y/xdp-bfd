@@ -173,6 +173,29 @@ def frr_ns(pid, cmd):
     return sh("sudo nsenter -t %d -n %s" % (pid, cmd), check=False)
 
 
+def frr_daemon_pid(container_pid, comm):
+    """Host-side pid of a daemon inside the container, matched by PID
+    namespace.
+
+    `podman exec <c> kill -9 <pid>` reports success and kills nothing -
+    verified: bfdd kept the same pid across both pkill and an explicit
+    kill by pid, with no restart in the container logs. Signalling from
+    the host works, but the host also runs the testbed's own bfdd, so the
+    namespace check is what keeps a test from killing the live mesh."""
+    ns = sh("sudo readlink /proc/%d/ns/pid" % container_pid,
+            check=False).strip()
+    assert ns, "no pid namespace for container pid %d" % container_pid
+    out = sh("sudo ls /proc | grep -E '^[0-9]+$' | while read p; do"
+             " c=$(cat /proc/$p/comm 2>/dev/null);"
+             " [ \"$c\" = %s ] && echo \"$p $(readlink /proc/$p/ns/pid)\";"
+             " done" % comm, check=False)
+    hits = [int(l.split()[0]) for l in out.splitlines()
+            if l.strip().endswith(ns)]
+    assert len(hits) == 1, ("expected one %s in %s, got %r\n%s"
+                            % (comm, ns, hits, out))
+    return hits[0]
+
+
 def frr_vtysh(name, cmd):
     return sh("sudo %s exec %s vtysh -c %s"
               % (RUNTIME, name, json.dumps(cmd)), check=False)

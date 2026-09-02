@@ -1,0 +1,65 @@
+name: full suite (self-hosted)
+
+# pull_request only for now, so a PR from review-fixes exercises everything
+# without merging to main. NOTE: on a public repo this trigger runs fork
+# code on the runner; GitHub gates first-time contributors but not repeat
+# ones.
+on:
+  pull_request:
+
+jobs:
+  full:
+    runs-on: [self-hosted, Linux, X64]
+    env:
+      BFD_CONTAINER_RUNTIME: podman
+    steps:
+      - uses: actions/checkout@v4
+
+      # The work directory persists between runs on a self-hosted runner, so
+      # a job that died mid-test leaves engines, namespaces, veths and
+      # containers behind. Every one of those poisoned a later run at least
+      # once during development: a leaked engine holds an XDP attach and the
+      # next start reports a failure that did not happen.
+      - name: clean up anything a previous run left
+        run: |
+          sudo pkill -f 'bfd_tx 10.77' || true
+          sudo pkill -f 'bfd_tx --dplane 50700' || true
+          sudo ip netns del bfdrig-a 2>/dev/null || true
+          sudo ip netns del bfdrig-b 2>/dev/null || true
+          sudo podman rm -f bfdrig-frr-a bfdrig-frr-b 2>/dev/null || true
+          sudo ip link del eth-a 2>/dev/null || true
+          sudo ip link del rig-a 2>/dev/null || true
+          true
+
+      # No toolchain install: clang 21, bpftool, podman and pytest are
+      # preinstalled. Installing per run would defeat the point of the VM.
+      - name: versions
+        run: |
+          clang-21 --version | head -1
+          bpftool version | head -1
+          podman --version
+          python3 -m pytest --version
+          uname -r
+
+      - name: build
+        run: make CLANG=clang-21
+
+      # Layers 1 and 2.
+      - name: unit suites
+        run: make CLANG=clang-21 check
+
+      - name: fuzz regressions
+        run: |
+          make FUZZ_CC=clang-21 tests/unit/dp_fuzz
+          find tests/unit/fuzz-regress -type f ! -name '*.md' \
+            -exec ./tests/unit/dp_fuzz {} +
+
+      # Layer 3 in namespaces: the parity rig plus the netns scenarios.
+      - name: netns end-to-end
+        run: sudo make CLANG=clang-21 check-netns
+
+      # Layer 3 against stock FRR. Scenario 3 reads BPF maps through
+      # bpftool, which hosted runners have none of for their Azure kernel -
+      # it skips there and runs here. That is why this VM exists.
+      - name: frr scenarios
+        run: sudo -E make CLANG=clang-21 check-frr

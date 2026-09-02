@@ -36,10 +36,18 @@ DUT's Down transition.
 
 Floor is 3x10ms = 30ms. bfdd is marginally tighter at idle: its
 detection runs on a hrtimer at almost exactly 3x interval, while
-xdp-bfd's sweep runs on a 5ms bpf_timer tick, so detection
-quantizes to the next sweep (0-5ms granularity, ~1.3ms mean).
+xdp-bfd's runs in the userspace loop, bounded by one jiffy.
 This is the tradeoff: ~1.3ms of idle detection granularity for
 scheduler immunity (see result 1). Mean 1.3ms over floor, max spread 2.4ms.
+
+CORRECTED 2026-09-02: this passage previously attributed the ~1.3ms to
+quantization by the 5ms bpf_timer sweep. `docs/sweep-ladder/` falsified
+that. The trend is inverted - a shorter sweep gives a LARGER mean - the
+5000us arm never exceeds 2.92ms where sweep phase alone would spread it
+over [0, 5ms), and the 100000us falsification arm produced a 2.58ms
+maximum, which a 100ms quantizer cannot do. The sweep contributes nothing
+in engine mode. The numbers above are unchanged and were never in doubt;
+only the mechanism was wrong.
 Engine DETECT TIMEOUT logs corroborate (30.0-32.5ms). The m5 detect
 changes (poll-aware budget, live remote-timer sync) did not smear it.
 pcap: bench2-detect-dist.pcap
@@ -88,7 +96,8 @@ differences are method, not drift:
 - detect latency: writeup cites 33-34ms under full stress; bench 2
   measures 31.3ms mean at idle. Idle is slightly faster (no softirq
   queuing); both sit in the 30-34ms band above the 30ms floor, set by
-  the 5ms sweep quantization.
+  the userspace loop's one-jiffy bound, not by the sweep - see the
+  correction under result 2.
 - pacing: writeup p50 8.75 / max ~10-13ms; bench 3 p50 8.77 / max
   10.08ms. Same distribution.
 

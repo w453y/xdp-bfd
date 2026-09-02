@@ -133,12 +133,16 @@ Wiring `ktx_poll_map` to act on the kernel sweep's `alive` flag does not help:
 bfdd. Making the kernel a real detector needs a ringbuf consumer, which is
 `02-architecture` item 2.2 and touches the main loop's pacing.
 
-## Two documents still to correct
+## Two documents corrected 2026-09-02
 
-The root `README.md` and `docs/benchmarks/README.md` result 2 both attribute
-detection overshoot to 5ms sweep quantization and describe detection as
-kernel-side. `docs/sweep-ladder/` falsified that. Both are left for the README
-pass.
+The root `README.md` and `docs/benchmarks/README.md` result 2 both attributed
+detection overshoot to 5ms sweep quantization and described detection as
+kernel-side. `docs/sweep-ladder/` falsified the first and this document the
+second. Both now say the overshoot is bounded by the loop tick, and that the
+transition and the notification to bfdd run in the loop being starved rather
+than independently of it. `docs/baseline/` carried the same quantization claim
+and was corrected with them. The measurements in all three were never in
+doubt; only the mechanism named for them.
 
 ## Files
 

@@ -1,6 +1,6 @@
 name: ci
 
-# Two jobs, one file - separate workflows show up as separate entries in the
+# Five jobs, one file - separate workflows show up as separate entries in the
 # Actions UI and it is not obvious they belong together.
 #
 #   full         self-hosted, everything: Layers 1-3, the netns rig, and the
@@ -13,6 +13,22 @@ name: ci
 #                never would have.
 on:
   pull_request:
+  # A direct push to main gets the same gate. This is not redundant with
+  # the pull-request run: the merge commit is a different tree from the
+  # branch that was tested, and a commit pushed straight to main has no
+  # pull-request run at all. The case that prompted this was a one-line
+  # change to log.h, which every suite links, pushed directly.
+  push:
+    branches: [main]
+
+# The self-hosted runner is a single VM and both `full` and `kernel` want
+# it, so two runs of this workflow on the same ref serialise into the
+# better part of an hour. Pushing twice in quick succession should cancel
+# the older run rather than queue behind it - the newer ref is the one
+# whose result anyone will read.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   full:

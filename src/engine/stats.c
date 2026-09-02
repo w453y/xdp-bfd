@@ -88,10 +88,10 @@ static void one_session(FILE *f, const struct session *s, int first)
 		(unsigned long long)s->rx_pkts,
 		(unsigned long long)s->tx_pkts);
 	/* "on" is what bfdd asked for (SESSION_ECHO in the ADD); "active"
-	 * is what this engine will actually do. They differ for a v6
-	 * session, where echo_tx_maybe returns early - a reader seeing
-	 * on=true with tx stuck at 0 would otherwise conclude echo was
-	 * failing rather than unimplemented.
+	 * is what this engine will actually do. They differ when the
+	 * negotiated interval is zero, which echo_tx_maybe treats as off
+	 * and which echo_on alone cannot show. This also carried a family
+	 * gate while the originator was v4 only; that is gone.
 	 *
 	 * "alive" is the kernel's advisory verdict and is null when there
 	 * is none: check_session only forms one once an echo has actually
@@ -105,7 +105,7 @@ static void one_session(FILE *f, const struct session *s, int first)
 		   " \"rtt_min_us\": %llu, \"rtt_max_us\": %llu,"
 		   " \"alive\": %s}}",
 		s->echo_on ? "true" : "false",
-		(s->echo_on && s->family == AF_INET) ? "true" : "false",
+		(s->echo_on && s->echo_tx_us) ? "true" : "false",
 		(unsigned long long)s->echo_tx_pkts,
 		(unsigned long long)s->echo_rx_pkts,
 		(unsigned long long)s->echo_lost,

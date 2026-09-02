@@ -63,3 +63,18 @@ jobs:
       # it skips there and runs here. That is why this VM exists.
       - name: frr scenarios
         run: sudo -E make CLANG=clang-21 check-frr
+
+      # Also at the END, so a job that dies mid-test does not leave the
+      # machine dirty until the next run happens to clean it. The work
+      # directory persists between runs on a self-hosted runner.
+      - name: leave the machine clean
+        if: always()
+        run: |
+          sudo pkill -f 'bfd_tx 10.77' || true
+          sudo pkill -f 'bfd_tx --dplane 50700' || true
+          sudo ip netns del bfdrig-a 2>/dev/null || true
+          sudo ip netns del bfdrig-b 2>/dev/null || true
+          sudo podman rm -f bfdrig-frr-a bfdrig-frr-b 2>/dev/null || true
+          sudo ip link del eth-a 2>/dev/null || true
+          sudo ip link del rig-a 2>/dev/null || true
+          true

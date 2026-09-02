@@ -94,6 +94,57 @@ jobs:
           sudo find . -user root -exec rm -rf {} + 2>/dev/null || true
           true
 
+  # The toolchain floor, as a test rather than a comment. clang 18 and 19
+  # crash on sweep.h's 32-bit atomic CAS and 20 is the first that builds;
+  # that was found by accident when CI picked up the runner's default 18.
+  # This states it deliberately: the two below the floor are expected to
+  # fail, the two above are expected to build clean.
+  toolchain:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - llvm: 18
+            expect: fail
+          - llvm: 19
+            expect: fail
+          - llvm: 20
+            expect: pass
+          - llvm: 21
+            expect: pass
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install clang-${{ matrix.llvm }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm libbpf-dev
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh ${{ matrix.llvm }}
+          clang-${{ matrix.llvm }} --version | head -1
+
+      - name: build with clang-${{ matrix.llvm }} (expect ${{ matrix.expect }})
+        run: |
+          if make CLANG=clang-${{ matrix.llvm }} >/tmp/b.log 2>&1; then
+            got=pass
+          else
+            got=fail
+          fi
+          echo "expected ${{ matrix.expect }}, got $got"
+          if [ "$got" != "${{ matrix.expect }}" ]; then
+            tail -30 /tmp/b.log
+            echo "the floor moved: update this matrix and the comment in"
+            echo "src/xdp/sweep.h if the CAS requirement changed"
+            exit 1
+          fi
+          if [ "$got" = fail ] && ! grep -q 'unsupported atomic operation' /tmp/b.log; then
+            tail -30 /tmp/b.log
+            echo "failed, but not on the atomic CAS - a different breakage"
+            exit 1
+          fi
+
   portability:
     runs-on: ubuntu-latest
     steps:

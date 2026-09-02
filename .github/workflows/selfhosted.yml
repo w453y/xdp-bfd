@@ -12,6 +12,12 @@ jobs:
     runs-on: [self-hosted, Linux, X64]
     env:
       BFD_CONTAINER_RUNTIME: podman
+      # Suites run under sudo, so any file Python writes lands root-owned -
+      # and the checkout step runs as the runner user, which then cannot
+      # delete it. A stale root-owned __pycache__ failed a whole run with
+      # EACCES before a single test started. pytest.ini disables its own
+      # cache for the same reason.
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -29,6 +35,7 @@ jobs:
           sudo podman rm -f bfdrig-frr-a bfdrig-frr-b 2>/dev/null || true
           sudo ip link del eth-a 2>/dev/null || true
           sudo ip link del rig-a 2>/dev/null || true
+          sudo find . -user root -exec rm -rf {} + 2>/dev/null || true
           true
 
       # No toolchain install: clang 21, bpftool, podman and pytest are
@@ -77,4 +84,5 @@ jobs:
           sudo podman rm -f bfdrig-frr-a bfdrig-frr-b 2>/dev/null || true
           sudo ip link del eth-a 2>/dev/null || true
           sudo ip link del rig-a 2>/dev/null || true
+          sudo find . -user root -exec rm -rf {} + 2>/dev/null || true
           true

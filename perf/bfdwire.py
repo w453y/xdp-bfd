@@ -27,7 +27,11 @@ class Pkt:
 
 
 def read(path):
-    r = subprocess.run(["tcpdump", "-tt", "-r", path],
+    # -n: no name resolution. Without it tcpdump renders 10.66.0.1 as
+    # "bfd-dut" on a host whose /etc/hosts says so and numerically
+    # everywhere else, so the parsed addresses depend on which
+    # machine runs the harness. That broke CI on the first run.
+    r = subprocess.run(["tcpdump", "-n", "-tt", "-r", path],
                        capture_output=True, text=True)
     pkts = []
     for line in r.stdout.splitlines():

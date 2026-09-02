@@ -29,7 +29,7 @@ import bfdwire as w                                    # noqa: E402
 
 B = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                  "..", "docs", "benchmarks")
-DUT, PEER = "bfd-dut", "10.66.0.2"
+DUT, PEER = "10.66.0.1", "10.66.0.2"
 fails = []
 
 

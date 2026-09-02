@@ -45,8 +45,23 @@ enum bfd_log_level {
 extern int bfd_log_level;
 
 /* Errors are never gated: if the engine cannot do its job the operator
- * needs to know regardless of what verbosity was asked for. */
-#define log_err(...)   fprintf(stderr, __VA_ARGS__)
+ * needs to know regardless of what verbosity was asked for.
+ *
+ * Where they go is a different question from whether they are emitted.
+ * The fuzz target points this at /dev/null, because the engine's own
+ * rejection messages are not level-gated and a bad frame length is the
+ * most common thing a random input produces - left alone they cost more
+ * than the parsing does. It is deliberately a sink and not a level: an
+ * operator must never be able to turn errors off, and redirecting the
+ * process's stderr instead would also swallow the sanitizer reports and
+ * libFuzzer's own output, which is the whole product of a fuzz run.
+ *
+ * NULL means stderr, resolved at each use, because stderr is not a
+ * constant expression and a static initialiser is not portable. */
+extern FILE *bfd_log_err_fp;
+
+#define log_err(...) \
+	fprintf(bfd_log_err_fp ? bfd_log_err_fp : stderr, __VA_ARGS__)
 
 #define log_info(...)  do { \
 	if (bfd_log_level >= BFD_LOG_INFO) \

@@ -34,6 +34,7 @@
 #include "session.h"
 #include "dplane.h"
 #include "bffdp.h"
+#include "log.h"
 
 /* Same stub group dp_run uses, plus the three dplane.c references that
  * only surface when linking from source rather than the prebuilt .o. */
@@ -80,6 +81,14 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
 {
 	(void)argc; (void)argv;
 	dp_recv_hook = feed_recv;
+
+	/* Send the engine's error lines to /dev/null. They are not
+	 * level-gated, and "bad frame length" is what most random inputs
+	 * produce, so they dominate the run - exec/s reads 0 with them on.
+	 * Only this stream moves: the sanitizer reports and libFuzzer's
+	 * own stats still go to the real stderr, which is what a finding
+	 * is made of. */
+	bfd_log_err_fp = fopen("/dev/null", "w");
 	return 0;
 }
 

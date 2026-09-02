@@ -1,9 +1,16 @@
-name: full suite (self-hosted)
+name: ci
 
-# pull_request only for now, so a PR from review-fixes exercises everything
-# without merging to main. NOTE: on a public repo this trigger runs fork
-# code on the runner; GitHub gates first-time contributors but not repeat
-# ones.
+# Two jobs, one file - separate workflows show up as separate entries in the
+# Actions UI and it is not obvious they belong together.
+#
+#   full         self-hosted, everything: Layers 1-3, the netns rig, and the
+#                FRR container scenarios. Scenario 3 reads BPF maps through
+#                bpftool, which hosted runners have none of for their Azure
+#                kernel, so it only really runs here.
+#   portability  hosted, build + make check ONLY. Its value is the stock
+#                machine: nothing preinstalled. That is what caught the
+#                clang 18 floor, and a runner with clang 21 already on it
+#                never would have.
 on:
   pull_request:
 
@@ -86,3 +93,33 @@ jobs:
           sudo ip link del rig-a 2>/dev/null || true
           sudo find . -user root -exec rm -rf {} + 2>/dev/null || true
           true
+
+  portability:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # clang 21 from apt.llvm.org, not the archive. The BPF backend below
+      # LLVM 20 has no 32-bit atomic compare-and-swap, so
+      # __sync_val_compare_and_swap on sweep.h's __u32 `inited` crashes
+      # the compiler outright ("unsupported atomic operation, please use
+      # 64 bit version" then a backend fatal error). Measured on the DUT:
+      # 18 and 19 fail, 20 and 21 build. The runner image default is 18.
+      #
+      # Pinning rather than widening the field: this engine targets kernel
+      # 7.x and newer, and 21 is what it is developed against.
+      - name: install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm libbpf-dev linux-tools-common
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 21
+          clang-21 --version
+          ls /usr/include/$(gcc -print-multiarch) | head -5
+
+      - name: build
+        run: make CLANG=clang-21
+
+      - name: unit suites
+        run: make CLANG=clang-21 check

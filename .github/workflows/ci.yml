@@ -208,7 +208,23 @@ jobs:
           wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
           chmod +x /tmp/llvm.sh
           sudo /tmp/llvm.sh 21
+          # Ubuntu splits architectures across mirrors: archive.ubuntu.com
+          # carries amd64 only, everything else lives on ports.ubuntu.com.
+          # Adding arm64 without scoping the existing sources makes apt ask
+          # the amd64 mirror for arm64 indices and every one 404s.
           sudo dpkg --add-architecture arm64
+          for f in /etc/apt/sources.list.d/*.sources; do
+            sudo sed -i '/^Architectures:/d' "$f"
+            sudo sed -i '/^Types:/a Architectures: amd64' "$f"
+          done
+          printf '%s\n' \
+            'Types: deb' \
+            'URIs: http://ports.ubuntu.com/ubuntu-ports' \
+            'Suites: noble noble-updates' \
+            'Components: main universe' \
+            'Architectures: arm64' \
+            'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' \
+            | sudo tee /etc/apt/sources.list.d/arm64.sources >/dev/null
           sudo apt-get update
           sudo apt-get install -y linux-libc-dev:arm64
           ls -d /usr/include/aarch64-linux-gnu

@@ -187,6 +187,46 @@ jobs:
           # the pipe through tee would otherwise mask it anyway.
           grep -q 'all suites passed' /tmp/vng.log
 
+  # Finding 16's arch-neutral include fix, which nothing checked. The BPF
+  # object is target-independent bytecode, but BPFFLAGS carries
+  # -I/usr/include/$(TRIPLE) and that triple is the host's - hardcoding
+  # x86_64-linux-gnu broke every other architecture. Syntax and codegen
+  # only: no cross libbpf, no linking, so this stays cheap.
+  #
+  # Both arms are checked. A bogus triple must FAIL on <asm/types.h>,
+  # otherwise the -I is decorative and an aarch64 build would pass on a
+  # tree that had regressed.
+  cross:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install toolchain and arm64 headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 21
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
+          sudo apt-get install -y linux-libc-dev:arm64
+          ls -d /usr/include/aarch64-linux-gnu
+
+      - name: build the BPF object for aarch64
+        run: make CLANG=clang-21 TRIPLE=aarch64-linux-gnu bfd_xdp.o
+
+      - name: a bogus triple must fail on asm/types.h
+        run: |
+          touch src/xdp/bfd_xdp.c
+          if make CLANG=clang-21 TRIPLE=does-not-exist bfd_xdp.o >/tmp/x.log 2>&1; then
+            echo "built with a nonexistent include path; the -I is not"
+            echo "load-bearing and the aarch64 arm proves nothing"
+            exit 1
+          fi
+          grep -q 'asm/types.h' /tmp/x.log || {
+            echo "failed, but not on the missing header:"; tail -5 /tmp/x.log; exit 1; }
+
   portability:
     runs-on: ubuntu-latest
     # Userspace with both compilers. The BPF object is always clang; this

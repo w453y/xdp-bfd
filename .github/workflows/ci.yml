@@ -230,6 +230,15 @@ jobs:
       # it is clean: --status-bugs makes a finding exit non-zero, and the
       # two receive paths now check their fds in code rather than in a
       # comment so there is nothing to excuse.
+      # Recompute the published benchmark numbers from the committed
+      # pcaps. No testbed and no timing sensitivity: the captures are
+      # fixed, so a change in the output is a change in the arithmetic.
+      # This validates the harness, NOT the engine's performance.
+      - name: benchmark arithmetic
+        run: |
+          sudo apt-get install -y tcpdump
+          python3 perf/check.py
+
       - name: static analysis
         run: |
           sudo apt-get install -y clang-tools-21

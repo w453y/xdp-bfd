@@ -174,3 +174,14 @@ jobs:
 
       - name: unit suites
         run: make CLANG=clang-21 check
+
+      # scan-build found a real null-deref and two unchecked socket() calls
+      # the first time it was run by hand. As a gate it stays useful only if
+      # it is clean: --status-bugs makes a finding exit non-zero, and the
+      # two receive paths now check their fds in code rather than in a
+      # comment so there is nothing to excuse.
+      - name: static analysis
+        run: |
+          sudo apt-get install -y clang-tools-21
+          make clean
+          scan-build-21 --status-bugs -o /tmp/sb make bfd_tx bfd_loader

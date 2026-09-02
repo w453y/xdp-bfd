@@ -516,13 +516,15 @@ int main(int argc, char **argv)
 			dp_accept();
 		if (rdc)
 			dp_read();
-		/* scan-build flags rx_sock as possibly -1 here. It cannot see
-		 * that rd4 is only set from a pollfd built when rx_sock >= 0,
-		 * so the call is unreachable with a bad fd. The invariant is
-		 * the loop's, not the compiler's: if the poll-set build and
-		 * this ever disagree about which sockets exist, the checker
-		 * would be right. */
-		ssize_t n = rd4 ? recvmsg(rx_sock, &mh, MSG_DONTWAIT | MSG_TRUNC)
+		/* The fd check is redundant with rd4, which is only set from a
+		 * pollfd built when rx_sock >= 0 - but it was a comment saying
+		 * so until scan-build kept flagging it, and the comment itself
+		 * admitted the checker would be right if the poll-set build and
+		 * this ever disagreed. Stating the invariant in code rather
+		 * than in prose costs one comparison per pass and lets the
+		 * analyser run as a gate with no findings to excuse. */
+		ssize_t n = (rd4 && rx_sock >= 0)
+				  ? recvmsg(rx_sock, &mh, MSG_DONTWAIT | MSG_TRUNC)
 				  : -1;
 		uint64_t t = now_us();
 		loop_passes++;
@@ -650,7 +652,11 @@ int main(int argc, char **argv)
 				fsm_rx(ms, &pm, now_us());
 		}
 
-		for (int d = 0; rd6 && d < drain_budget; d++) {
+		/* rx6_sock >= 0 is redundant with rd6, which is only set from a
+		 * pollfd built when the socket exists. Stated in code rather
+		 * than in a comment for the same reason as the v4 drain above:
+		 * it lets scan-build run as a gate with nothing to excuse. */
+		for (int d = 0; rd6 && rx6_sock >= 0 && d < drain_budget; d++) {
 			struct bfd_ctrl_pkt p6;
 			struct sockaddr_in6 from6;
 			struct iovec iov6 = { .iov_base = &p6,

@@ -145,6 +145,45 @@ jobs:
             exit 1
           fi
 
+  # Layers 1 and 2 inside a qemu microVM, so the kernel under test is a
+  # choice rather than whatever the runner happens to run. One entry today:
+  # the archive only carries 7.0.0-x, which differ by Ubuntu patch level
+  # rather than by BPF feature generation, so a span across them would run
+  # seven times and prove nothing about verifier sensitivity. Add entries
+  # when a second series ships - that is the whole point of the shape.
+  #
+  # virtme-ng passes the host filesystem through, so the build happens
+  # outside and only the test binaries run inside. The VM provides a
+  # kernel, not a build environment.
+  kernel:
+    runs-on: [self-hosted, Linux, X64]
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel:
+          - "7.0.0-30-generic"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build on the host
+        run: make CLANG=clang-21 && make CLANG=clang-21 tests/unit/bfd_xdp_test.o
+
+      # The archive installs kernel images mode 600 and virtme-ng needs to
+      # read one as the runner user.
+      - name: make the kernel image readable
+        run: |
+          test -f /boot/vmlinuz-${{ matrix.kernel }} || {
+            sudo apt-get update
+            sudo apt-get install -y linux-image-${{ matrix.kernel }}
+          }
+          sudo chmod 644 /boot/vmlinuz-${{ matrix.kernel }}
+
+      - name: run the suites under ${{ matrix.kernel }}
+        run: |
+          vng -r ${{ matrix.kernel }} --rwdir=$PWD -- \
+            sh -c "cd $PWD && make CLANG=clang-21 check" 2>&1 | tee /tmp/vng.log
+          grep -q 'all suites passed' /tmp/vng.log
+
   portability:
     runs-on: ubuntu-latest
     steps:

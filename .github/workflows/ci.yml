@@ -189,6 +189,14 @@ jobs:
 
   portability:
     runs-on: ubuntu-latest
+    # Userspace with both compilers. The BPF object is always clang; this
+    # axis is the engine. `make CC=clang` was broken outright until
+    # 6aea65a derived the multiarch triple from the system rather than
+    # from $(CC), and nothing has checked it since.
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [cc, clang-21]
     steps:
       - uses: actions/checkout@v4
 
@@ -212,10 +220,10 @@ jobs:
           ls /usr/include/$(gcc -print-multiarch) | head -5
 
       - name: build
-        run: make CLANG=clang-21
+        run: make CC=${{ matrix.cc }} CLANG=clang-21
 
       - name: unit suites
-        run: make CLANG=clang-21 check
+        run: make CC=${{ matrix.cc }} CLANG=clang-21 check
 
       # scan-build found a real null-deref and two unchecked socket() calls
       # the first time it was run by hand. As a gate it stays useful only if

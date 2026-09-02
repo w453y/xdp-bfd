@@ -1,6 +1,8 @@
 CLANG     ?= clang
 CC        ?= gcc
-CFLAGS    := -O2 -g -Wall -Iinclude -Isrc/engine
+# -Werror: the tree is clean under both gcc and clang-21, so a new
+# warning is a break rather than something to scroll past.
+CFLAGS    := -O2 -g -Wall -Werror -Iinclude -Isrc/engine
 # The BPF target has no multiarch include path of its own, so the
 # system's triple supplies it. Hardcoding x86_64-linux-gnu broke any
 # other architecture.

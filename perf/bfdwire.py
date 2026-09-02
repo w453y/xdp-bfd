@@ -40,8 +40,13 @@ def read(path):
             pkts.append(Pkt(float(m.group(1)), m.group(2), m.group(4),
                             int(m.group(5)), m.group(6)))
     if not pkts:
-        raise SystemExit("no BFD control packets in %s\n%s"
-                         % (path, r.stderr.strip()[:200]))
+        raise SystemExit(
+            "no BFD control packets in %s\n"
+            "tcpdump rc=%d, %d stdout lines. First three:\n%s\n"
+            "stderr: %s"
+            % (path, r.returncode, len(r.stdout.splitlines()),
+               "\n".join(r.stdout.splitlines()[:3]) or "(none)",
+               r.stderr.strip()[:200]))
     return pkts
 
 

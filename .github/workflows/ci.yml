@@ -182,6 +182,9 @@ jobs:
         run: |
           vng -r ${{ matrix.kernel }} --rwdir=$PWD -- \
             sh -c "cd $PWD && make CLANG=clang-21 check" 2>&1 | tee /tmp/vng.log
+          # vng DOES propagate the inner exit status (verified: `-- false`
+          # gives 1), so this is a second check rather than the only one -
+          # the pipe through tee would otherwise mask it anyway.
           grep -q 'all suites passed' /tmp/vng.log
 
   portability:

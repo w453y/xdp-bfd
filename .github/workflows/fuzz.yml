@@ -1,0 +1,60 @@
+name: fuzz
+
+# Separate from build.yml because the triggers have nothing in common: a
+# fuzz run is open-ended and belongs on a clock, not on every push. The
+# millisecond regression check over tests/unit/fuzz-regress/ DOES run in
+# the push gate; this is the search for new findings.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: 'wall-clock budget'
+        default: '20'
+
+jobs:
+  dp_fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm libbpf-dev
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 21
+          clang-21 --version
+
+      - name: build
+        run: make FUZZ_CC=clang-21 tests/unit/dp_fuzz
+
+      # Known findings first. If one of these reproduces, a fix regressed
+      # and that is worth failing on before spending the budget searching.
+      - name: regressions
+        run: find tests/unit/fuzz-regress -type f ! -name '*.md' -exec ./tests/unit/dp_fuzz {} +
+
+      # -max_total_time rather than -runs: the budget is wall clock, and
+      # runs/second varies with the runner. No corpus is committed (it is
+      # regenerable and would go stale), so each run starts cold.
+      - name: search
+        run: |
+          mkdir -p corpus
+          ./tests/unit/dp_fuzz \
+            -max_total_time=$(( ${{ github.event.inputs.minutes || 20 }} * 60 )) \
+            -print_final_stats=1 corpus/
+
+      # A finding is written as crash-<sha1> in the working directory and
+      # would vanish with the runner otherwise.
+      - name: keep any finding
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dp_fuzz-findings
+          path: |
+            crash-*
+            leak-*
+            timeout-*
+          if-no-files-found: ignore

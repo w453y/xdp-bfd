@@ -1,14 +1,45 @@
 # Tests
 
+Four layers, split by what each can reach. Everything below `## Oracles` is
+about the lab matrix specifically; the other layers have their own notes.
+
+| Where | Needs | What it covers |
+|---|---|---|
+| `unit/` | root, no testbed | XDP under `BPF_PROG_TEST_RUN`, the FSM table, bffdp framing, the ABI pin, and a libFuzzer target. See `unit/README.md` |
+| `netns_userspace.py` | root, one machine | the userspace receive path: acceptance predicate, socket GTSM, demux |
+| `e2e/` | root, one machine | two engines on a veth pair, and scenarios against stock bfdd in containers |
+| this directory | the three-host testbed | the lab suite below |
+
+`lib/netns.py` is the shared namespace fixture; `e2e/conftest.py` adds the
+container helpers. `perf/` recomputes the published benchmark numbers from
+the pcaps in `docs/benchmarks/`.
+
+`make check` runs the unit layer, `make check-netns` the namespace layer, and
+`make check-frr` the container scenarios. CI runs all three plus a microVM
+kernel arm; the lab suite below cannot run there and is gated by
+`tools/pre-push` instead.
+
+## The lab suite
+
 Three scripts. All run on the engine host and read the BPF maps directly,
 because the two verdicts that matter most — `XDP_DROP` and `XDP_TX` — are
 both invisible to a capture taken on the DUT.
 
 | Script | Shape | What it proves |
 |---|---|---|
-| `inject_matrix.py` | 33 single-packet cases | every accept/reject rule the fast path applies |
+| `inject_matrix.py` | single-packet cases, `--list` for the current set | every accept/reject rule the fast path applies |
 | `dp_hold.py` | lifecycle | `--dp-hold` keeps sessions up across a bfdd crash |
 | `poll_final.py` | observation | a real Poll sequence terminates |
+
+`sweep_ladder.py` and `starved_detection.py` also live here. Both are timing
+measurements rather than pass/fail suites, and both are lab-only by nature:
+`starved_detection.py` captures from the hypervisor bridge, and the ladder
+needs enough sessions for its samples to be independent.
+
+`wedged_ktx.py` is a demonstration rather than a suite: it SIGSTOPs the engine
+and shows the peer stays Up on kernel-TX alone. Its header records the three
+instruments that failed before SIGSTOP worked, which is the reusable part.
+`docs/wedged-ktx/` has the write-up.
 
 ## Running them
 
@@ -16,7 +47,17 @@ both invisible to a capture taken on the DUT.
     ./tests/inject_matrix.py --list          show them without sending
     ./tests/inject_matrix.py --only gtsm-v4  one case
     ./tests/inject_matrix.py --verbose       raw before -> after, not just the delta
-    ./tests/inject_matrix.py --json          machine-readable, for a pre-push hook
+    ./tests/inject_matrix.py --json          machine-readable, for the hook
+
+The hook is `tools/pre-push`; install it with
+
+    ln -sf ../../tools/pre-push .git/hooks/pre-push
+
+It runs the matrix and refuses the push on a failing case, and skips
+cleanly when the engine is not running or the mesh is down. Two bugs sat
+undetected for three weeks because nothing ran the matrix between
+sessions: a counter slot split out from `rejected` with the case never
+updated, and a map-name collision that would have misreported silently.
 
     ./tests/dp_hold.py
     ./tests/poll_final.py
@@ -100,7 +141,10 @@ add counters to branches that previously fell out with a bare `XDP_PASS`.
 | 7 | `echo-not-self` | both `saddr != daddr` returns; **also fires in normal use**, since FRR sources its own v6 echoes at the peer rather than self-addressed |
 | 8 | `echo-ttl` | both echo GTSM checks |
 
-`bfd_stats` grew from 6 entries to 9. Slot 1 was renamed from `accepted` to
+`bfd_stats` grew to carry them, and has grown again since — the X-macro in
+`include/bfd_shared.h` is the list, and a count written here rots. Three
+slots postdate the table above: `unsupported-flags`, `sweep-init-fail`
+and `ip-options`. Slot 1 was renamed from `accepted` to
 `well-formed` in the harness: its `count(1)` sits *before* the GTSM and
 demux drops, so a rejected packet increments slot 1 and slot 3 both.
 

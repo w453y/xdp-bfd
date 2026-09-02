@@ -43,8 +43,13 @@ Under L3 stress (the 44-flap condition for bfdd), with FRR stopped and
 started on the peer to create true failures:
 
 - False positives: 0
-- True-death detection latency: 33-34ms (30ms RFC budget + <=5ms sweep
-  quantization), stable under stress
+- True-death detection latency: 33-34ms (30ms RFC budget plus the
+  userspace loop's one-jiffy bound), stable under stress. CORRECTED
+  2026-09-02: this read "<=5ms sweep quantization" until
+  `docs/sweep-ladder/` falsified that attribution - its 100ms
+  falsification arm produced a 2.58ms maximum, which a 100ms quantizer
+  cannot do. The latency is unchanged; the mechanism named for it was
+  wrong.
 - One sweep-vs-RX race found and fixed (unsigned time delta wrap ->
   signed delta guard); visible in events.csv as the 18446744073709.6ms
   entry before the fix

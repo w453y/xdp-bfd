@@ -30,6 +30,8 @@ next restart loses them.
 
 import argparse
 import json
+import os
+import re
 import shlex
 import subprocess
 import sys
@@ -43,13 +45,62 @@ COUNT = 20
 SETTLE = 0.6
 UNKNOWN_ECHO = "10.66.0.250"
 UNKNOWN_ECHO6 = "fd66::250"
+# Configured peers nothing answers on, used as positive controls.
+# Pinned by address: "multihop session with enable == 0" also
+# describes every real multihop peer that is merely down.
+PHANTOM4 = "10.66.0.200"
+PHANTOM6 = "fd66::200"
 
 MAC = None
 # Fields an injected packet must not disturb on a live session.
 WATCH = ("remote_disc", "detect_iv_us", "min_tx_us", "min_rx_us",
          "detect_mult", "peer_mac")
-STAT = {0: "seen", 1: "well-formed", 2: "malformed", 3: "rejected",
-        4: "reflected", 5: "echo-returns", 6: "declined", 7: "not-self", 8: "echo-ttl"}
+# An address pair with no session and no tx_config entry, used to prove the
+# deferred GTSM drops rather than passing an unconfigured pair to the
+# stack. Must not collide with any mesh, multihop or phantom address.
+UNKNOWN_SRC = "10.66.0.240"
+UNKNOWN_DST = "10.66.0.241"
+
+_STAT = {}
+
+
+def stat_names():
+    """Slot numbering and names, read from the BFD_STAT_LIST X-macro in
+    include/bfd_shared.h.
+
+    Resolved on first use, NOT at import: this file pipes itself to the
+    injector host over ssh and runs there as `python3 -`, where __file__
+    is "<stdin>" and the repo is not checked out at all. Only the
+    orchestrator half ever needs the table.
+
+    Hand-copied here until 2026-08: the same table lived in the header,
+    the loader and this file, and grew from 9 slots to 11 in one branch.
+    A missed edit would have made every assertion below name the wrong
+    counter, silently. Reading the definition is the only way this file
+    cannot drift from what the program actually counts.
+    """
+    if _STAT:
+        return _STAT
+
+    hdr = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "..", "include", "bfd_shared.h")
+    out, inside = {}, False
+    with open(hdr) as f:
+        for line in f:
+            if line.startswith("#define BFD_STAT_LIST"):
+                inside = True
+                continue
+            if not inside:
+                continue
+            m = re.match(r'\s*X\(\w+,\s*"([^"]+)"\)', line)
+            if m:
+                out[len(out)] = m.group(1)
+            if not line.rstrip().endswith("\\"):
+                break
+    if not out:
+        sys.exit("no BFD_STAT_LIST entries found in %s" % hdr)
+    _STAT.update(out)
+    return _STAT
 
 
 def sh(cmd):
@@ -70,9 +121,18 @@ def echo_peer_addrs():
 def bpf_map(name):
     out = sh("sudo bpftool map dump name %s" % name)
     try:
-        return json.loads(out)
+        data = json.loads(out)
     except ValueError:
         sys.exit("cannot read map %s; is the engine running?" % name)
+    # With two engines loaded - the mesh plus a netns rig, say - `dump name`
+    # matches both and returns a list of MAP OBJECTS rather than entries.
+    # Reading that as entries would silently report on the wrong engine's
+    # sessions, so refuse instead.
+    if data and isinstance(data[0], dict) and "id" in data[0] \
+            and "type" in data[0]:
+        sys.exit("more than one map named %s is loaded; another engine is "
+                 "running and this script cannot tell them apart" % name)
+    return data
 
 
 def counters():
@@ -83,8 +143,9 @@ def counters():
     rx_pkts instead. A key absent before and present after reads as 0 -> n,
     which is what a session receiving its first packet looks like.
     """
-    out = {STAT[e["key"]]: sum(c["value"] for c in e["values"])
-           for e in bpf_map("bfd_stats") if e["key"] in STAT}
+    names = stat_names()
+    out = {names[e["key"]]: sum(c["value"] for c in e["values"])
+           for e in bpf_map("bfd_stats") if e["key"] in names}
     for e in bpf_map("bfd_sessions"):
         peer = addr_of(e["key"]["peer"]["b"])[0]
         local = addr_of(e["key"]["local"]["b"])[0]
@@ -165,11 +226,14 @@ def pick(sess):
                 and "mh4" not in got):
             got["mh4"] = s
         # A configured peer nothing answers on: enable stays 0, so the
-        # TX bounce never fires and its rx_pkts moves only when we inject.
-        if (s["family"] == 4 and s["min_ttl"] < 255 and not s["enable"]
+        # TX bounce never fires and its rx_pkts moves only when we
+        # inject. Matched on the address, not on enable == 0 - that also
+        # matches a real multihop peer during bring-up, and the case then
+        # asserts against a session carrying live traffic.
+        if (s["family"] == 4 and s["peer"] == PHANTOM4
                 and "phantom" not in got):
             got["phantom"] = s
-        if (s["family"] == 6 and s["min_ttl"] < 255 and not s["enable"]
+        if (s["family"] == 6 and s["peer"] == PHANTOM6
                 and "phantom6" not in got):
             got["phantom6"] = s
         if s["family"] == 6 and s["min_ttl"] < 255 and "mh6" not in got:
@@ -209,6 +273,35 @@ MALFORMED = (
     ("truncated-header", "frame ends before the BFD header does",
      dict(trunc=12)),
 )
+
+
+# Well-formed headers carrying a flag we cannot honour. Unlike the
+# malformed set these DROP rather than PASS: passing one hands it to a
+# userspace path that would accept it as plain unauthenticated BFD.
+UNSUPPORTED = (
+    ("auth-bit", "the A bit with no authentication configured", 0x04),
+    ("mp-bit", "the M bit is reserved for multipoint", 0x01),
+)
+
+
+def unsupported_cases(sess, fam):
+    """The unsupported-flag set for one family. Same reasoning as
+    malformed_cases: the check sits after the family branch, so running
+    both exercises each parse path into it."""
+    out = []
+    for cname, cdesc, fl in UNSUPPORTED:
+        # ydisc naming no session, peer state Up: on a build WITHOUT the
+        # flag check this is rejected by the demux (slot 3) instead of
+        # reaching the session state update. That matters for the
+        # before-arm - ydisc=0 with the peer in Init is admitted by the
+        # demux, so the pre-fix run would overwrite a live session's
+        # remote_disc and trip the collateral check.
+        spec = dict(family=fam, src=sess["peer"], dst=sess["local"],
+                    ttl=255, dport=3784, ydisc=0x11111111, state=3,
+                    flags=fl)
+        out.append(("%s-v%d" % (cname, fam), cdesc, spec,
+                    "unsupported-flags", COUNT))
+    return out
 
 
 def malformed_cases(sess, fam):
@@ -261,7 +354,30 @@ def build_cases(got):
         c.append(("ip-options", "single-hop BFD never carries IP options",
                   dict(family=4, src=s["peer"], dst=s["local"], ttl=255,
                        dport=3784, ydisc=0, state=1, options=True),
+                  # Its OWN slot, not `rejected`: the check fires on any UDP
+                  # packet carrying options, BFD or not, because the port
+                  # cannot be read until the header length is known to be 20.
+                  # This asserted `rejected` until 2026-09-01 and had been
+                  # failing since the slot was split out, unnoticed because
+                  # the full matrix had not been run in three weeks.
+                  [("ip-options", COUNT), ("rejected", 0)], None))
+        c.append(("frag-first", "a first fragment aimed at 3784 is dropped, "
+                  "not bounced back out with MF set",
+                  dict(family=4, src=s["peer"], dst=s["local"], ttl=255,
+                       dport=3784, ydisc=0, state=1, mf=True),
                   "rejected", COUNT))
+        # Only meaningful while a multihop session exists: that is what
+        # sets prog_flags bit 1 and makes parse_l3 defer the TTL verdict
+        # instead of dropping the packet at the front filter. Without one
+        # the packet dies earlier and the case would pass for a reason
+        # that has nothing to do with the fix.
+        if any(k in got for k in ("mh4", "mh6", "phantom", "phantom6")):
+            c.append(("gtsm-unconfigured-pair",
+                      "a low-TTL packet naming an address pair we have no "
+                      "session for dies in XDP even with multihop configured",
+                      dict(family=4, src=UNKNOWN_SRC, dst=UNKNOWN_DST,
+                           ttl=64, dport=3784, ydisc=0, state=1, l2dst=MAC),
+                      "rejected", COUNT))
         pf = session_value(s["peer"], s["local"])
         if pf:
             # Poll/Final responder (RFC 5880 s6.5). Everything but the P
@@ -281,6 +397,7 @@ def build_cases(got):
                       [("cap:final", COUNT)], None))
 
         c.extend(malformed_cases(s, 4))
+        c.extend(unsupported_cases(s, 4))
         c.append(("echo-not-self", "a 3785 packet that is not self-addressed "
                   "is never reflected",
                   dict(family=4, src=s["peer"], dst=s["local"], ttl=255,
@@ -300,6 +417,7 @@ def build_cases(got):
                        dport=3784, ydisc=0, state=1),
                   "rejected", COUNT))
         c.extend(malformed_cases(s, 6))
+        c.extend(unsupported_cases(s, 6))
         c.append(("disc-mismatch-v6", "your_disc naming no session of ours",
                   dict(family=6, src=s["peer"], dst=s["local"], ttl=255,
                        dport=3784, ydisc=0x11111111, state=3),
@@ -389,12 +507,26 @@ def orchestrate(args):
         sys.exit("no session is up; every case would pass vacuously")
 
     print("sessions: %d configured, %d up, using %s" %
-          (len(sess), len(live), ", ".join(sorted(got))))
+          (len(sess), len(live), ", ".join(sorted(got))), file=sys.stderr)
     missing = {"v4", "v6", "mh4", "mh6"} - set(got)
     if missing:
         print("no session for %s, those cases are skipped"
               % ", ".join(sorted(missing)))
+    for kind, addr in (("phantom", PHANTOM4), ("phantom6", PHANTOM6)):
+        if kind not in got:
+            # Silent before: a phantom that does not resolve just dropped
+            # its cases from the list, and the run still said everything
+            # passed. Say so instead.
+            print("no configured session for %s %s, its cases are skipped"
+                  % (kind, addr), file=sys.stderr)
     print()
+
+    if args.only and not any(c[0] == args.only for c in cases):
+        # A name that matches nothing used to run zero cases and still
+        # report "all cases passed". Every +0 assertion in this file
+        # needs a witness; so does the case list itself.
+        sys.exit("no case named %r. Available now: %s"
+                 % (args.only, ", ".join(c[0] for c in cases)))
 
     failures = 0
     report = {"cases": [], "collateral": []}
@@ -532,6 +664,11 @@ def send(spec):
 
     if spec["family"] == 4:
         ip = IP(src=spec["src"], dst=spec["dst"], ttl=spec["ttl"])
+        if spec.get("mf"):
+            # Offset 0 with More Fragments set. The UDP and BFD headers
+            # are all present, so this is the fragment that could pass
+            # every check and be bounced back out still marked MF.
+            ip.flags = "MF"
         if spec.get("options"):
             # Four NOPs is one option word, so ihl becomes 6 and the UDP
             # header moves. Single-hop BFD never carries options, and the
@@ -575,6 +712,7 @@ def send(spec):
 
 def main():
     global INJECTOR_HOST, IFACE, COUNT, SETTLE, UNKNOWN_ECHO, UNKNOWN_ECHO6
+    global PHANTOM4, PHANTOM6
     p = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -597,6 +735,10 @@ def main():
                    help="address for the echo peer we do not serve")
     p.add_argument("--unknown-echo6", default=UNKNOWN_ECHO6,
                    help="v6 address for the echo peer we do not serve")
+    p.add_argument("--phantom", default=PHANTOM4,
+                   help="configured peer with no host behind it")
+    p.add_argument("--phantom6", default=PHANTOM6,
+                   help="v6 configured peer with no host behind it")
     args = p.parse_args()
 
     INJECTOR_HOST = args.injector
@@ -605,6 +747,8 @@ def main():
     SETTLE = args.settle
     UNKNOWN_ECHO = args.unknown_echo
     UNKNOWN_ECHO6 = args.unknown_echo6
+    PHANTOM4 = args.phantom
+    PHANTOM6 = args.phantom6
 
     if args.send:
         return send(json.loads(args.send))

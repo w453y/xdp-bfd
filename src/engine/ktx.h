@@ -6,14 +6,27 @@
 #include "session.h"
 
 extern int use_ktx;
+extern const char *ktx_obj_path;
+extern unsigned int ktx_xdp_flags;
+extern int ktx_ifindex;
+extern __u64 ktx_sweep_ns;
 extern int sess_fd;
 extern int echo_peers_fd;
 extern int echo_disc_fd;
+extern int stats_fd;
 
+void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip);
+void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local,
+		   uint32_t wire_disc);
+
+int ktx_load(void);
 int ktx_attach(const char *ifname);
+int ktx_attach_if(int ifindex, const char *ifname);
+int ktx_covers(int ifindex);
 void ktx_update_mhop_flag(void);
 void ktx_mirror(struct session *s);
 void ktx_clear(struct session *s);
+void ktx_poll_all(void);
 void ktx_poll_map(struct session *s, uint64_t t);
 
 #endif /* BFD_ENGINE_KTX_H */

@@ -29,7 +29,7 @@ int bfd_observer(struct xdp_md *ctx)
 	void *data     = (void *)(long)ctx->data;
 	void *data_end = (void *)(long)ctx->data_end;
 
-	count(0);
+	count(BFD_STAT_SEEN);
 
 	struct ethhdr *eth = data;
 	if ((void *)(eth + 1) > data_end)
@@ -52,7 +52,7 @@ int bfd_observer(struct xdp_md *ctx)
 	 * No session lookup, no map, no adjust_tail. */
 	if (udp->dest == bpf_htons(BFD_ECHO_PORT)) {
 		if (ip6)
-			return echo_reflect_v6(eth, ip6);
+			return echo_reflect_v6(eth, ip6, udp, data_end);
 		if (!iph)
 			return XDP_PASS;
 	        return echo_reflect_v4(eth, iph, udp, data_end);
@@ -66,42 +66,48 @@ int bfd_observer(struct xdp_md *ctx)
 
 	struct bfd_ctrl_pkt *bfd = (void *)(udp + 1);
 	if ((void *)(bfd + 1) > data_end) {
-		count(2);
+		count(BFD_STAT_MALFORMED);
 		return XDP_PASS;
 	}
-	if (!bfd_hdr_valid(bfd, udp))
-		return XDP_PASS;
+	int hv = bfd_hdr_verdict(bfd, udp);
+	if (hv >= 0)
+		return hv;
 
-	count(1);
+	count(BFD_STAT_WELL_FORMED);
 
 	/* Only track sessions the control plane configured, unless the
 	 * standalone loader asked for promiscuous observation. Stops
 	 * unsolicited packets from filling the session map. */
 	struct tx_cfg *cfg = bpf_map_lookup_elem(&tx_config, &c.key);
+
+	/* Deferred GTSM. A control packet that did not arrive at 255 is
+	 * acceptable only if it names a configured session whose minimum
+	 * admits it. An unconfigured pair must still drop, which is why
+	 * this runs BEFORE the promiscuous PASS below rather than after
+	 * it: with a multihop session configured, prog_flags bit value 2 tells
+	 * parse_l3 to defer the TTL verdict, so an off-link packet naming
+	 * an address pair we do not have reached the stack instead of
+	 * dying here. The promiscuous PASS exists for observation, not to
+	 * relax GTSM. Single-hop sessions carry min_ttl 255, so nothing
+	 * below 255 reaches them and their behaviour is unchanged. */
+	{
+		__u8 pttl = iph ? iph->ttl : (ip6 ? ip6->hop_limit : 0);
+
+		if (pttl != 255) {
+			__u32 mt = (cfg && cfg->min_ttl) ? cfg->min_ttl : 255;
+
+			if (!cfg || pttl < mt) {
+				count(BFD_STAT_REJECTED);
+				return XDP_DROP;
+			}
+		}
+	}
+
 	if (!cfg) {
 		__u32 zero = 0;
 		__u32 *fl = bpf_map_lookup_elem(&prog_flags, &zero);
 		if (!fl || !(*fl & 1))
 			return XDP_PASS;
-	}
-
-	/* Deferred GTSM. A control packet that did not arrive at 255 is
-	 * acceptable only if it names a configured session whose minimum
-	 * admits it. An unconfigured pair must still drop: the
-	 * promiscuous PASS above exists for observation, not to relax
-	 * GTSM. Single-hop sessions carry min_ttl 255, so nothing below
-	 * 255 reaches them and their behaviour is unchanged. */
-	{
-		__u8 pttl = iph ? iph->ttl : (ip6 ? ip6->hop_limit : 0);
-	
-		if (pttl != 255) {
-			__u32 mt = (cfg && cfg->min_ttl) ? cfg->min_ttl : 255;
-	
-			if (!cfg || pttl < mt) {
-				count(3);
-				return XDP_DROP;
-			}
-		}
 	}
 
 	/* Demux validation (RFC 5880 s6.8.6): your_disc must name our
@@ -114,7 +120,7 @@ int bfd_observer(struct xdp_md *ctx)
 		__u32 ydisc = bpf_ntohl(bfd->your_disc);
 		if (ydisc != cfg->my_disc &&
 		    !(ydisc == 0 && rstate <= 1)) {
-			count(3);
+			count(BFD_STAT_REJECTED);
 			return XDP_DROP;
 		}
 	}

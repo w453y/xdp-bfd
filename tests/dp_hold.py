@@ -14,12 +14,21 @@ Cannot run inside inject_matrix.py: restarting bfdd would wreck every
 counter delta there. Run it separately.
 """
 
+import os
 import json
 import subprocess
 import sys
 import time
 
 PEER_HOST = "w453y@10.66.0.2"
+
+# The peer-side read must use w453y's keys even when this script runs under
+# sudo, which it must for the SIGKILL. root has no key on the peer and its
+# HOME is /root, so a plain ssh from here fails on publickey - and the peer
+# is the only witness that can say whether a flap happened, so losing it
+# turns a failed run into one that prints nothing and looks fine.
+SSH = ("sudo -u w453y -H ssh" if os.geteuid() == 0 else "ssh") + \
+      " -o BatchMode=yes"
 VTYSH = "/opt/frr-master/bin/vtysh"
 SETTLE = 25
 
@@ -30,7 +39,7 @@ def sh(cmd):
 
 def peer_downs():
     """(peer, local) -> session-down, as the neighbour sees it."""
-    r = sh("ssh -o BatchMode=yes %s \"sudo vtysh -c 'show bfd peers "
+    r = sh(SSH + " %s \"sudo vtysh -c 'show bfd peers "
            "counters json'\"" % PEER_HOST)
     if r.returncode:
         sys.exit("cannot read peer counters: %s" % (r.stderr.strip() or "?"))

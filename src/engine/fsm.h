@@ -20,5 +20,6 @@ void state_transition(struct session *s, int newstate, int diag,
 void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t);
 void fsm_detect(struct session *s, uint64_t t);
 void fsm_tx(struct session *s, uint64_t t);
+void fsm_announce_down(struct session *s);
 
 #endif /* BFD_ENGINE_FSM_H */

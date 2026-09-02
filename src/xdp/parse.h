@@ -8,6 +8,19 @@
 #include "maps.h"
 #include "stats.h"
 
+/* Self-addressed: a classic echo is sent to the originator's own address.
+ * Four word compares rather than a memcmp; the program uses none. Lives
+ * here rather than in echo.h because the parser's GTSM exception needs it
+ * too, and two copies of one address comparison is how they drift. */
+static __always_inline int v6_self_addressed(const struct ipv6hdr *ip6)
+{
+	const __u32 *sa = (const __u32 *)&ip6->saddr;
+	const __u32 *da = (const __u32 *)&ip6->daddr;
+
+	return sa[0] == da[0] && sa[1] == da[1] &&
+	       sa[2] == da[2] && sa[3] == da[3];
+}
+
 struct l3ctx {
 	struct iphdr   *iph;
 	struct ipv6hdr *ip6;
@@ -39,12 +52,44 @@ static __always_inline int parse_l3(struct ethhdr *eth, void *data_end,
 		 * socket unvalidated - the same bypass class as an XDP_PASS
 		 * reject. Drop it. */
 		if (c->iph->ihl != 5) {
-			count(3);
+			/* Its own slot, not REJECTED: this fires on any UDP
+			 * packet carrying options, including traffic that has
+			 * nothing to do with BFD, because the port cannot be
+			 * read until the header length is known to be 20.
+			 * Counting it as a BFD reject tells an operator the
+			 * wrong thing. */
+			count(BFD_STAT_IP_OPTIONS);
 			return XDP_DROP;
 		}
 		c->udp = (void *)(c->iph + 1);
 		if ((void *)(c->udp + 1) > data_end)
 			return XDP_PASS;
+		/* Fragmented UDP. Nothing below this point is safe on a
+		 * fragment: at any offset but 0 there is no UDP header at
+		 * all, so c->udp points at payload and every port test
+		 * reads garbage. At offset 0 with MF set the header IS
+		 * there, so the packet can satisfy every check below and
+		 * then be bounced with MF still set - a nonsense fragment
+		 * emitted onto the wire while the stack separately
+		 * reassembles the datagram for the socket.
+		 *
+		 * A BFD control packet is 66 bytes and never fragments, so
+		 * dropping a fragment aimed at a BFD port costs nothing and
+		 * closes the same bypass class as the ihl != 5 rule above.
+		 * Everything else PASSes to the stack as before.
+		 *
+		 * IPv6 needs no equivalent: a fragment header makes
+		 * nexthdr != IPPROTO_UDP and falls out of the dispatch. */
+		if (c->iph->frag_off & bpf_htons(0x3fff)) {
+			if (!(c->iph->frag_off & bpf_htons(0x1fff)) &&
+			    (c->udp->dest == bpf_htons(BFD_PORT_1HOP) ||
+			     c->udp->dest == bpf_htons(BFD_PORT_MHOP) ||
+			     c->udp->dest == bpf_htons(BFD_ECHO_PORT))) {
+				count(BFD_STAT_REJECTED);
+				return XDP_DROP;
+			}
+			return XDP_PASS;
+		}
 		/* GTSM (RFC 5881 s5): single-hop control packets MUST arrive
 		 * with TTL 255. Anything else is off-link or spoofed. The one
 		 * exception is our own echo coming back: the neighbour's
@@ -63,7 +108,7 @@ static __always_inline int parse_l3(struct ethhdr *eth, void *data_end,
 			__u32 mz = 0;
 			__u32 *mf = bpf_map_lookup_elem(&prog_flags, &mz);
 			if (!mf || !(*mf & 2)) {
-				count(3);
+				count(BFD_STAT_REJECTED);
 				return XDP_DROP;
 			}
 		}
@@ -81,18 +126,28 @@ static __always_inline int parse_l3(struct ethhdr *eth, void *data_end,
 		 * (IPV6_MINHOPCOUNT) and demux; single-hop BFD never sends one. */
 		if (c->ip6->nexthdr != IPPROTO_UDP)
 			return XDP_PASS;
-		/* GTSM: hop_limit is the v6 TTL. */
-		if (c->ip6->hop_limit != 255) {
-			__u32 mz = 0;
-			__u32 *mf = bpf_map_lookup_elem(&prog_flags, &mz);
-			if (!mf || !(*mf & 2)) {
-				count(3);
-				return XDP_DROP;
-			}
-		}
 		c->udp = (void *)(c->ip6 + 1);
 		if ((void *)(c->udp + 1) > data_end)
 			return XDP_PASS;
+		/* GTSM: hop_limit is the v6 TTL. Same narrow exception as the v4
+		 * branch for our own echo coming back: the neighbour's forwarding
+		 * plane decremented it to 254 and the frame is still
+		 * self-addressed on the echo port. Without it echo_reflect_v6's
+		 * return branch is unreachable and v6 echo RTT never updates.
+		 * The udp assignment moved above this check so the port is
+		 * readable here; nothing between the two reads it. Kept narrow so
+		 * it cannot become a general hop-limit bypass. */
+		if (c->ip6->hop_limit != 255 &&
+		    !(c->udp->dest == bpf_htons(BFD_ECHO_PORT) &&
+		      c->ip6->hop_limit == 254 &&
+		      v6_self_addressed(c->ip6))) {
+			__u32 mz = 0;
+			__u32 *mf = bpf_map_lookup_elem(&prog_flags, &mz);
+			if (!mf || !(*mf & 2)) {
+				count(BFD_STAT_REJECTED);
+				return XDP_DROP;
+			}
+		}
 		key_set_v6(&c->key.peer,  &c->ip6->saddr);
 		key_set_v6(&c->key.local, &c->ip6->daddr);
 	} else {

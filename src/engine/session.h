@@ -35,6 +35,23 @@ struct session {
 	int      admin_down;          /* SESSION_SHUTDOWN */
 
 	int      state, diag;
+	/* Transitions were logged and never counted, so nothing could
+	 * answer "how often has this session bounced". bfdd counts it
+	 * separately and bfddp_counters has no field for it, so it cannot
+	 * travel over the dplane socket - it comes out of the stats dump. */
+	uint32_t up_events, down_events;
+	uint64_t last_transition_us;
+	/* What the last detection actually cost, captured at the moment it
+	 * fired. Cannot be recomputed later: state_transition clears
+	 * detect_iv_us on the way into Down, so the budget the overshoot is
+	 * measured against is gone by the time anything reads the session.
+	 * Detect-timeout transitions only - a peer-signalled Down has no
+	 * overshoot, and mixing the two puts a false spike at zero. */
+	uint32_t last_detect_us;     /* silence before we declared Down */
+	uint32_t last_overshoot_us;  /* that, minus the negotiated budget */
+	char     last_reason[24];    /* copied, not aliased: every caller
+	                              * passes a literal today and nothing
+	                              * should have to keep doing so */
 	uint32_t rdisc;
 	uint32_t r_min_tx, r_min_rx;
 	uint32_t r_min_echo;          /* peer's Required Min Echo RX */
@@ -54,10 +71,29 @@ struct session {
 	struct tx_cfg pushed_cfg;
 	uint64_t last_rx_us, next_tx_us;
 	uint64_t tx_pkts;             /* userspace-sent control packets */
+	uint64_t rx_pkts;             /* userspace-received control packets;
+	                               * the kernel keeps its own in
+	                               * session_state.rx_pkts and the two are
+	                               * summed for the counters reply */
+	uint64_t rx_bytes;            /* exact, from the validated len field */
+	uint8_t  echo_on;             /* SESSION_ECHO from the ADD. Explicit
+	                               * rather than inferred from echo_tx_us,
+	                               * which is 0 for an echo-enabled
+	                               * session whose peer asked for 0 */
 	uint32_t echo_tx_us;          /* echo interval from the ADD; 0 = off */
 	uint32_t min_echo_rx_us;      /* advertised Required Min Echo RX */
 	uint8_t  min_ttl;             /* from the ADD; 255 = single-hop */
 	int      is_mhop;             /* RFC 5883: control port 4784 */
+	uint8_t  iface_warned;        /* the off-interface notice is once per
+	                               * session, not once per ADD - bfdd
+	                               * re-sends one on every config touch */
+	uint8_t  ktx_uncovered;       /* single-hop session on an
+	                              * interface the fast path is not
+	                              * attached to. --kernel-tx is
+	                              * global but coverage is not, and
+	                              * fsm_tx must not stay silent
+	                              * waiting for a bounce that no
+	                              * XDP program will make. */
 	uint8_t  peer_mac[6];         /* synced from the map, learned by XDP */
 	int      mac_valid;
 	uint64_t next_echo_tx_us;

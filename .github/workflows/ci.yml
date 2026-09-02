@@ -1,0 +1,307 @@
+name: ci
+
+# Two jobs, one file - separate workflows show up as separate entries in the
+# Actions UI and it is not obvious they belong together.
+#
+#   full         self-hosted, everything: Layers 1-3, the netns rig, and the
+#                FRR container scenarios. Scenario 3 reads BPF maps through
+#                bpftool, which hosted runners have none of for their Azure
+#                kernel, so it only really runs here.
+#   portability  hosted, build + make check ONLY. Its value is the stock
+#                machine: nothing preinstalled. That is what caught the
+#                clang 18 floor, and a runner with clang 21 already on it
+#                never would have.
+on:
+  pull_request:
+
+jobs:
+  full:
+    runs-on: [self-hosted, Linux, X64]
+    env:
+      BFD_CONTAINER_RUNTIME: podman
+      # Suites run under sudo, so any file Python writes lands root-owned -
+      # and the checkout step runs as the runner user, which then cannot
+      # delete it. A stale root-owned __pycache__ failed a whole run with
+      # EACCES before a single test started. pytest.ini disables its own
+      # cache for the same reason.
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      # The work directory persists between runs on a self-hosted runner, so
+      # a job that died mid-test leaves engines, namespaces, veths and
+      # containers behind. Every one of those poisoned a later run at least
+      # once during development: a leaked engine holds an XDP attach and the
+      # next start reports a failure that did not happen.
+      - name: clean up anything a previous run left
+        run: |
+          sudo pkill -f 'bfd_tx 10.77' || true
+          sudo pkill -f 'bfd_tx --dplane 50700' || true
+          sudo ip netns del bfdrig-a 2>/dev/null || true
+          sudo ip netns del bfdrig-b 2>/dev/null || true
+          sudo podman rm -f bfdrig-frr-a bfdrig-frr-b 2>/dev/null || true
+          sudo ip link del eth-a 2>/dev/null || true
+          sudo ip link del rig-a 2>/dev/null || true
+          sudo find . -user root -exec rm -rf {} + 2>/dev/null || true
+          true
+
+      # No toolchain install: clang 21, bpftool, podman and pytest are
+      # preinstalled. Installing per run would defeat the point of the VM.
+      - name: versions
+        run: |
+          clang-21 --version | head -1
+          bpftool version | head -1
+          podman --version
+          python3 -m pytest --version
+          uname -r
+
+      - name: build
+        run: make CLANG=clang-21
+
+      # Layers 1 and 2.
+      - name: unit suites
+        run: make CLANG=clang-21 check
+
+      - name: fuzz regressions
+        run: |
+          make FUZZ_CC=clang-21 tests/unit/dp_fuzz
+          find tests/unit/fuzz-regress -type f ! -name '*.md' \
+            -exec ./tests/unit/dp_fuzz {} +
+
+      # Layer 3 in namespaces: the parity rig plus the netns scenarios.
+      - name: netns end-to-end
+        run: sudo make CLANG=clang-21 check-netns
+
+      # Layer 3 against stock FRR. Scenario 3 reads BPF maps through
+      # bpftool, which hosted runners have none of for their Azure kernel -
+      # it skips there and runs here. That is why this VM exists.
+      - name: frr scenarios
+        run: sudo -E make CLANG=clang-21 check-frr
+
+      # Also at the END, so a job that dies mid-test does not leave the
+      # machine dirty until the next run happens to clean it. The work
+      # directory persists between runs on a self-hosted runner.
+      - name: leave the machine clean
+        if: always()
+        run: |
+          sudo pkill -f 'bfd_tx 10.77' || true
+          sudo pkill -f 'bfd_tx --dplane 50700' || true
+          sudo ip netns del bfdrig-a 2>/dev/null || true
+          sudo ip netns del bfdrig-b 2>/dev/null || true
+          sudo podman rm -f bfdrig-frr-a bfdrig-frr-b 2>/dev/null || true
+          sudo ip link del eth-a 2>/dev/null || true
+          sudo ip link del rig-a 2>/dev/null || true
+          sudo find . -user root -exec rm -rf {} + 2>/dev/null || true
+          true
+
+  # The toolchain floor, as a test rather than a comment. clang 18 and 19
+  # crash on sweep.h's 32-bit atomic CAS and 20 is the first that builds;
+  # that was found by accident when CI picked up the runner's default 18.
+  # This states it deliberately: the two below the floor are expected to
+  # fail, the two above are expected to build clean.
+  toolchain:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - llvm: 18
+            expect: fail
+          - llvm: 19
+            expect: fail
+          - llvm: 20
+            expect: pass
+          - llvm: 21
+            expect: pass
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install clang-${{ matrix.llvm }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm libbpf-dev
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh ${{ matrix.llvm }}
+          clang-${{ matrix.llvm }} --version | head -1
+
+      - name: build with clang-${{ matrix.llvm }} (expect ${{ matrix.expect }})
+        run: |
+          if make CLANG=clang-${{ matrix.llvm }} >/tmp/b.log 2>&1; then
+            got=pass
+          else
+            got=fail
+          fi
+          echo "expected ${{ matrix.expect }}, got $got"
+          if [ "$got" != "${{ matrix.expect }}" ]; then
+            tail -30 /tmp/b.log
+            echo "the floor moved: update this matrix and the comment in"
+            echo "src/xdp/sweep.h if the CAS requirement changed"
+            exit 1
+          fi
+          if [ "$got" = fail ] && ! grep -q 'unsupported atomic operation' /tmp/b.log; then
+            tail -30 /tmp/b.log
+            echo "failed, but not on the atomic CAS - a different breakage"
+            exit 1
+          fi
+
+  # Layers 1 and 2 inside a qemu microVM, so the kernel under test is a
+  # choice rather than whatever the runner happens to run. One entry today:
+  # the archive only carries 7.0.0-x, which differ by Ubuntu patch level
+  # rather than by BPF feature generation, so a span across them would run
+  # seven times and prove nothing about verifier sensitivity. Add entries
+  # when a second series ships - that is the whole point of the shape.
+  #
+  # virtme-ng passes the host filesystem through, so the build happens
+  # outside and only the test binaries run inside. The VM provides a
+  # kernel, not a build environment.
+  kernel:
+    runs-on: [self-hosted, Linux, X64]
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel:
+          - "7.0.0-30-generic"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build on the host
+        run: make CLANG=clang-21 && make CLANG=clang-21 tests/unit/bfd_xdp_test.o
+
+      # The archive installs kernel images mode 600 and virtme-ng needs to
+      # read one as the runner user.
+      - name: make the kernel image readable
+        run: |
+          test -f /boot/vmlinuz-${{ matrix.kernel }} || {
+            sudo apt-get update
+            sudo apt-get install -y linux-image-${{ matrix.kernel }}
+          }
+          sudo chmod 644 /boot/vmlinuz-${{ matrix.kernel }}
+
+      - name: run the suites under ${{ matrix.kernel }}
+        run: |
+          vng -r ${{ matrix.kernel }} --rwdir=$PWD -- \
+            sh -c "cd $PWD && make CLANG=clang-21 check" 2>&1 | tee /tmp/vng.log
+          # vng DOES propagate the inner exit status (verified: `-- false`
+          # gives 1), so this is a second check rather than the only one -
+          # the pipe through tee would otherwise mask it anyway.
+          grep -q 'all suites passed' /tmp/vng.log
+
+  # Finding 16's arch-neutral include fix, which nothing checked. The BPF
+  # object is target-independent bytecode, but BPFFLAGS carries
+  # -I/usr/include/$(TRIPLE) and that triple is the host's - hardcoding
+  # x86_64-linux-gnu broke every other architecture. Syntax and codegen
+  # only: no cross libbpf, no linking, so this stays cheap.
+  #
+  # Both arms are checked. A bogus triple must FAIL on <asm/types.h>,
+  # otherwise the -I is decorative and an aarch64 build would pass on a
+  # tree that had regressed.
+  cross:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install toolchain and arm64 headers
+        run: |
+          sudo apt-get update
+          # libbpf-dev for bpf/bpf_helpers.h, which the BPF source
+          # includes and which is architecture-independent: the host's
+          # amd64 copy serves the aarch64 build fine. Only the kernel
+          # UAPI headers under /usr/include/<triple> are arch-specific,
+          # and those are what finding 16 was about.
+          sudo apt-get install -y llvm libbpf-dev
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 21
+          # Ubuntu splits architectures across mirrors: archive.ubuntu.com
+          # carries amd64 only, everything else lives on ports.ubuntu.com.
+          # Adding arm64 without scoping the existing sources makes apt ask
+          # the amd64 mirror for arm64 indices and every one 404s.
+          sudo dpkg --add-architecture arm64
+          for f in /etc/apt/sources.list.d/*.sources; do
+            sudo sed -i '/^Architectures:/d' "$f"
+            sudo sed -i '/^Types:/a Architectures: amd64' "$f"
+          done
+          printf '%s\n' \
+            'Types: deb' \
+            'URIs: http://ports.ubuntu.com/ubuntu-ports' \
+            'Suites: noble noble-updates' \
+            'Components: main universe' \
+            'Architectures: arm64' \
+            'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' \
+            | sudo tee /etc/apt/sources.list.d/arm64.sources >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y linux-libc-dev:arm64
+          ls -d /usr/include/aarch64-linux-gnu
+
+      - name: build the BPF object for aarch64
+        run: make CLANG=clang-21 TRIPLE=aarch64-linux-gnu bfd_xdp.o
+
+      - name: a bogus triple must fail on asm/types.h
+        run: |
+          touch src/xdp/bfd_xdp.c
+          if make CLANG=clang-21 TRIPLE=does-not-exist bfd_xdp.o >/tmp/x.log 2>&1; then
+            echo "built with a nonexistent include path; the -I is not"
+            echo "load-bearing and the aarch64 arm proves nothing"
+            exit 1
+          fi
+          grep -q 'asm/types.h' /tmp/x.log || {
+            echo "failed, but not on the missing header:"; tail -5 /tmp/x.log; exit 1; }
+
+  portability:
+    runs-on: ubuntu-latest
+    # Userspace with both compilers. The BPF object is always clang; this
+    # axis is the engine. `make CC=clang` was broken outright until
+    # 6aea65a derived the multiarch triple from the system rather than
+    # from $(CC), and nothing has checked it since.
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [cc, clang-21]
+    steps:
+      - uses: actions/checkout@v4
+
+      # clang 21 from apt.llvm.org, not the archive. The BPF backend below
+      # LLVM 20 has no 32-bit atomic compare-and-swap, so
+      # __sync_val_compare_and_swap on sweep.h's __u32 `inited` crashes
+      # the compiler outright ("unsupported atomic operation, please use
+      # 64 bit version" then a backend fatal error). Measured on the DUT:
+      # 18 and 19 fail, 20 and 21 build. The runner image default is 18.
+      #
+      # Pinning rather than widening the field: this engine targets kernel
+      # 7.x and newer, and 21 is what it is developed against.
+      - name: install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm libbpf-dev linux-tools-common
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 21
+          clang-21 --version
+          ls /usr/include/$(gcc -print-multiarch) | head -5
+
+      - name: build
+        run: make CC=${{ matrix.cc }} CLANG=clang-21
+
+      - name: unit suites
+        run: make CC=${{ matrix.cc }} CLANG=clang-21 check
+
+      # scan-build found a real null-deref and two unchecked socket() calls
+      # the first time it was run by hand. As a gate it stays useful only if
+      # it is clean: --status-bugs makes a finding exit non-zero, and the
+      # two receive paths now check their fds in code rather than in a
+      # comment so there is nothing to excuse.
+      # Recompute the published benchmark numbers from the committed
+      # pcaps. No testbed and no timing sensitivity: the captures are
+      # fixed, so a change in the output is a change in the arithmetic.
+      # This validates the harness, NOT the engine's performance.
+      - name: benchmark arithmetic
+        run: |
+          sudo apt-get install -y tcpdump
+          python3 perf/check.py
+
+      - name: static analysis
+        run: |
+          sudo apt-get install -y clang-tools-21
+          make clean
+          scan-build-21 --status-bugs -o /tmp/sb make bfd_tx bfd_loader

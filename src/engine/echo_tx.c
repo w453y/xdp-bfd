@@ -22,7 +22,9 @@
 #include <bpf/bpf.h>
 
 #include "bfd_shared.h"
+#include "addrstr.h"
 #include "util.h"
+#include "log.h"
 #include "session.h"
 #include <net/if.h>
 #include <sys/ioctl.h>
@@ -59,51 +61,44 @@ void echo_tx_init(const char *ifname)
         			memcpy(echo_src_mac, ifr.ifr_hwaddr.sa_data, 6);
         		close(mfd);
         	}
-        	echo_sock = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+        	/* Protocol 0, not ETH_P_ALL: this socket only ever sends.
+        	 * ETH_P_ALL subscribes the process to every inbound frame on
+        	 * every interface, so packet_rcv runs for all host traffic and
+        	 * queues it on a socket nothing reads. TX behaviour is
+        	 * identical either way. */
+        	echo_sock = socket(AF_PACKET, SOCK_RAW, 0);
         	if (echo_sock < 0)
         		perror("echo raw socket");
-        	printf("echo-tx: ifindex %d src-mac %02x:%02x:%02x:%02x:%02x:%02x sock %d\n",
+        	log_info("echo-tx: ifindex %d src-mac %02x:%02x:%02x:%02x:%02x:%02x sock %d\n",
         	       echo_ifindex, echo_src_mac[0], echo_src_mac[1], echo_src_mac[2],
         	       echo_src_mac[3], echo_src_mac[4], echo_src_mac[5], echo_sock);
 }
 
-/* Self-addressed UDP/3785 to the neighbour's MAC, TTL 255. The trailing
- * payload word carries a nonce; the return is matched on it for RTT.
- * Detection keys off the outstanding nonce, so if this stalls there is
- * simply no echo outstanding and no timeout can fire. */
-void echo_tx_maybe(struct session *s, uint64_t t)
+/* The 24-byte payload, identical on both families. My Disc names the
+ * session when the frame comes back; Your Disc is zero because a classic
+ * echo never loops it; and the nonce rides in the Required Min Echo RX
+ * field, which is the word the kernel return demux reads back into
+ * session_state.echo_last_nonce. */
+static void echo_payload(struct session *s, uint8_t *b, uint32_t nonce)
 {
-	if (echo_sock < 0 || !s->echo_tx_us || s->state != ST_UP)
-		return;
-	if (!s->mac_valid || s->family != AF_INET)
-		return;
-	if (t < s->next_echo_tx_us)
-		return;
-	if (s->echo_last_send_us) {
-		uint64_t gap = t - s->echo_last_send_us;
-		if (gap > s->echo_gap_max_us)
-			s->echo_gap_max_us = gap;
-	}
-	s->echo_last_send_us = t;
-	s->next_echo_tx_us = t + s->echo_tx_us;
+	uint32_t v;
 
-	/* Previous echo never came back before this one is due. */
-	if (s->echo_sent_us) {
-		s->echo_lost++;
-		s->echo_sent_us = 0;
-	}
+	b[0] = (1 << 5);
+	b[1] = (ST_UP & 0x3) << 6;
+	b[2] = s->detect_mult;
+	b[3] = 24;
+	v = htonl(s->wire_disc); memcpy(b + 4,  &v, 4);
+	v = 0;                   memcpy(b + 8,  &v, 4);
+	v = htonl(s->min_tx_us); memcpy(b + 12, &v, 4);
+	v = htonl(s->min_rx_us); memcpy(b + 16, &v, 4);
+	v = htonl(nonce);        memcpy(b + 20, &v, 4);
+}
 
-	if (!s->echo_disc_done && echo_disc_fd >= 0 && s->wire_disc) {
-		struct session_key dk = {};
-		dk.peer  = s->peer;
-		dk.local = s->local;
-		if (!bpf_map_update_elem(echo_disc_fd, &s->wire_disc, &dk, 0))
-			s->echo_disc_done = 1;
-	}
-
-	uint8_t frame[66];
-	memset(frame, 0, sizeof(frame));
-
+/* v4: self-addressed, TTL 255, IP checksum plus a UDP checksum over the
+ * 12-byte pseudo-header. Returns the frame length. */
+static unsigned echo_build_v4(struct session *s, uint8_t *frame,
+			      uint32_t nonce)
+{
 	memcpy(frame + 0, s->peer_mac, 6);
 	memcpy(frame + 6, echo_src_mac, 6);
 	frame[12] = 0x08;
@@ -129,16 +124,7 @@ void echo_tx_maybe(struct session *s, uint64_t t)
 	udp[4] = ulen >> 8; udp[5] = ulen & 0xff;
 
 	uint8_t *b = frame + 42;
-	uint32_t v, nonce = ++echo_nonce_ctr;
-	b[0] = (1 << 5);
-	b[1] = (ST_UP & 0x3) << 6;
-	b[2] = s->detect_mult;
-	b[3] = 24;
-	v = htonl(s->wire_disc); memcpy(b + 4,  &v, 4);
-	v = 0;                   memcpy(b + 8,  &v, 4);
-	v = htonl(s->min_tx_us); memcpy(b + 12, &v, 4);
-	v = htonl(s->min_rx_us); memcpy(b + 16, &v, 4);
-	v = htonl(nonce);        memcpy(b + 20, &v, 4);
+	echo_payload(s, b, nonce);
 
 	uint8_t ps[12 + 8 + 24];
 	memcpy(ps + 0, ip + 12, 4);
@@ -154,6 +140,102 @@ void echo_tx_maybe(struct session *s, uint64_t t)
 		uc = 0xffff;
 	memcpy(udp + 6, &uc, 2);
 
+	return 14 + 20 + 8 + 24;
+}
+
+/* v6: no IP checksum to compute, but the UDP one is mandatory rather than
+ * optional and its pseudo-header is 40 bytes instead of 12 - the two
+ * addresses, a 32-bit upper-layer length, three zero bytes and the next
+ * header. Self-addressed at hop limit 255, which the neighbour's
+ * forwarding plane returns at 254 exactly as it does for v4. */
+static unsigned echo_build_v6(struct session *s, uint8_t *frame,
+			      uint32_t nonce)
+{
+	memcpy(frame + 0, s->peer_mac, 6);
+	memcpy(frame + 6, echo_src_mac, 6);
+	frame[12] = 0x86;
+	frame[13] = 0xdd;
+
+	uint8_t *ip = frame + 14;
+	uint16_t plen = 8 + 24;
+	ip[0] = 0x6c;          /* version 6, traffic class 0xc0 */
+	ip[4] = plen >> 8;
+	ip[5] = plen & 0xff;
+	ip[6] = 17;            /* next header: UDP */
+	ip[7] = 255;           /* hop limit */
+	memcpy(ip + 8,  s->local.b, 16);
+	memcpy(ip + 24, s->local.b, 16);
+
+	uint8_t *udp = frame + 54;
+	udp[0] = 3785 >> 8; udp[1] = 3785 & 0xff;
+	udp[2] = 3785 >> 8; udp[3] = 3785 & 0xff;
+	udp[4] = plen >> 8; udp[5] = plen & 0xff;
+
+	uint8_t *b = frame + 62;
+	echo_payload(s, b, nonce);
+
+	uint8_t ps[40 + 8 + 24];
+	memset(ps, 0, sizeof(ps));
+	memcpy(ps + 0,  s->local.b, 16);
+	memcpy(ps + 16, s->local.b, 16);
+	ps[34] = plen >> 8;
+	ps[35] = plen & 0xff;
+	ps[39] = 17;
+	memcpy(ps + 40, udp, 8);
+	memcpy(ps + 48, b, 24);
+	uint16_t uc = ip_csum(ps, sizeof(ps));
+	if (!uc)
+		uc = 0xffff;
+	memcpy(udp + 6, &uc, 2);
+
+	return 14 + 40 + 8 + 24;
+}
+
+/* Self-addressed UDP/3785 to the neighbour's MAC, TTL 255. The trailing
+ * payload word carries a nonce; the return is matched on it for RTT.
+ * Detection keys off the outstanding nonce, so if this stalls there is
+ * simply no echo outstanding and no timeout can fire. */
+void echo_tx_maybe(struct session *s, uint64_t t)
+{
+	if (echo_sock < 0 || !s->echo_tx_us || s->state != ST_UP)
+		return;
+	if (!s->mac_valid)
+		return;
+	if (t < s->next_echo_tx_us)
+		return;
+	if (s->echo_last_send_us) {
+		uint64_t gap = t - s->echo_last_send_us;
+		if (gap > s->echo_gap_max_us)
+			s->echo_gap_max_us = gap;
+	}
+	s->echo_last_send_us = t;
+	s->next_echo_tx_us = t + s->echo_tx_us;
+
+	/* Previous echo never came back before this one is due. */
+	if (s->echo_sent_us) {
+		s->echo_lost++;
+		s->echo_sent_us = 0;
+	}
+
+	if (!s->echo_disc_done && echo_disc_fd >= 0 && s->wire_disc) {
+		struct session_key dk = {};
+		dk.peer  = s->peer;
+		dk.local = s->local;
+		if (!bpf_map_update_elem(echo_disc_fd, &s->wire_disc, &dk, 0))
+			s->echo_disc_done = 1;
+	}
+
+	uint8_t frame[86];
+	uint32_t nonce = ++echo_nonce_ctr;
+	unsigned flen;
+
+	memset(frame, 0, sizeof(frame));
+
+	if (s->family == AF_INET6)
+		flen = echo_build_v6(s, frame, nonce);
+	else
+		flen = echo_build_v4(s, frame, nonce);
+
 	struct sockaddr_ll sll;
 	memset(&sll, 0, sizeof(sll));
 	sll.sll_family  = AF_PACKET;
@@ -161,7 +243,7 @@ void echo_tx_maybe(struct session *s, uint64_t t)
 	sll.sll_halen   = 6;
 	memcpy(sll.sll_addr, s->peer_mac, 6);
 
-	if (sendto(echo_sock, frame, sizeof(frame), 0,
+	if (sendto(echo_sock, frame, flen, 0,
 		   (struct sockaddr *)&sll, sizeof(sll)) < 0)
 		return;
 
@@ -170,11 +252,12 @@ void echo_tx_maybe(struct session *s, uint64_t t)
 	s->echo_tx_pkts++;
 
 	if (s->echo_tx_pkts % 100 == 0) {
-		const uint8_t *lo = s->local.b + 12, *pe = s->peer.b + 12;
+		char lb[INET6_ADDRSTRLEN], pb[INET6_ADDRSTRLEN];
 		uint64_t avg = s->echo_rtt_n ? s->echo_rtt_sum_us / s->echo_rtt_n : 0;
-		printf("echo %u.%u.%u.%u->%u.%u.%u.%u tx=%llu rx=%llu lost=%llu "
+		log_debug("echo %s->%s tx=%llu rx=%llu lost=%llu "
 		       "rtt last/min/avg/max %llu/%llu/%llu/%llu us win-max %llu gap-max %lluus echo-alive=%d\n",
-		       lo[0], lo[1], lo[2], lo[3], pe[0], pe[1], pe[2], pe[3],
+		       bfd_addr_str(&s->local, lb, sizeof(lb)),
+		       bfd_addr_str(&s->peer, pb, sizeof(pb)),
 		       (unsigned long long)s->echo_tx_pkts,
 		       (unsigned long long)s->echo_rx_pkts,
 		       (unsigned long long)s->echo_lost,

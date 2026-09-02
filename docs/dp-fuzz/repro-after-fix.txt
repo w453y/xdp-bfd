@@ -1,0 +1,12 @@
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 3439174977
+INFO: Loaded 1 modules   (1363 inline 8-bit counters): 1363 [0x5eac8a2af100, 0x5eac8a2af653), 
+INFO: Loaded 1 PC tables (1363 PCs): 1363 [0x5eac8a2af658,0x5eac8a2b4b88), 
+./tests/unit/dp_fuzz: Running 1 inputs 1 time(s) each.
+Running: tests/unit/fuzz-regress/dp_read-off-walk-past-buf
+dplane: send failed (Socket operation on non-socket), dropping connection
+Executed tests/unit/fuzz-regress/dp_read-off-walk-past-buf in 0 ms
+***
+*** NOTE: fuzzing was not performed, you have only
+***       executed the target code on a fixed set of inputs.
+***

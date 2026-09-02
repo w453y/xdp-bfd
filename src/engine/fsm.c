@@ -19,6 +19,7 @@
 
 #include "bfd_shared.h"
 #include "util.h"
+#include "log.h"
 #include "session.h"
 #include "fsm.h"
 #include "dplane.h"
@@ -72,7 +73,7 @@ static int slot_sock(int slot, const struct session *s)
 		rc = bind(fd, (void *)&sa, sizeof(sa));
 	}
 	if (rc) {
-		fprintf(stderr,
+		log_err(
 			"slot %d: bind port %d: %s - using fallback socket "
 			"(ephemeral src port) for this session\n",
 			slot, SRC_PORT + slot, strerror(errno));
@@ -90,10 +91,30 @@ void state_transition(struct session *s, int newstate, int diag,
 {
 	if (s->state == newstate)
 		return;
-	printf("[%llu] lid=%u %s -> %s (%s)\n", (unsigned long long)t,
+	log_info("[%llu] lid=%u %s -> %s (%s)\n", (unsigned long long)t,
 	       s->lid, bfd_state_str(s->state), bfd_state_str(newstate), why);
 	s->state = newstate;
 	s->diag  = diag;
+	if (newstate == ST_UP)
+		s->up_events++;
+	else if (newstate == ST_DOWN)
+		s->down_events++;
+	s->last_transition_us = t;
+	if (newstate == ST_DOWN && diag == 1 && s->last_rx_us) {
+		/* Before the detect_iv_us reset below, which is why this
+		 * lives here rather than in fsm_detect: the kernel sweep can
+		 * declare Down too, via ktx_poll_map, and that path deserves
+		 * the same accounting. */
+		uint64_t silent = t - s->last_rx_us;
+		uint64_t budget = (uint64_t)(s->r_mult ? s->r_mult
+						    : s->detect_mult) *
+				  s->detect_iv_us;
+
+		s->last_detect_us = (uint32_t)silent;
+		s->last_overshoot_us = silent > budget ?
+				       (uint32_t)(silent - budget) : 0;
+	}
+	snprintf(s->last_reason, sizeof(s->last_reason), "%s", why);
 	if (newstate == ST_DOWN)
 		s->detect_iv_us = 0;
 	if (newstate == ST_UP || newstate == ST_DOWN) {
@@ -109,31 +130,40 @@ void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 {
 	int ps = (p->flags >> 6) & 3;
 
-	{
-		uint32_t ntx = ntohl(p->min_tx), nrx = ntohl(p->min_rx);
-		uint8_t  nfl = p->flags & 0x3f;
+	/* Only accepted packets reach here, so this is the userspace half
+	 * of the session's receive count. p->len is safe to bill: the
+	 * shared predicate already checked it against the payload. */
+	s->rx_pkts++;
+	s->rx_bytes += p->len;
 
-		/* The peer's flags are reported to bfdd in the state
-		 * change, so a flags-only change needs a notify too:
-		 * without it a peer entering or leaving Demand mode
-		 * is never seen by the control plane.
-		 */
-		if (s->state == ST_UP &&
-		    (ntx != s->r_min_tx || nrx != s->r_min_rx ||
-		     nfl != s->r_flags)) {
-			s->r_min_tx = ntx;
-			s->r_min_rx = nrx;
-			s->r_flags  = nfl;
-			dp_notify_state(s);   /* remote timers or flags */
-		}
-	}
+	/* Everything dp_notify_state reports about the peer - timers,
+	 * flags, detect_mult, remote discriminator - is read out of the
+	 * session, so the notify has to run AFTER the assignments below.
+	 * It used to run before them and shipped the previous mult and
+	 * rdisc alongside the new timers. Decide here whether anything
+	 * moved, assign, then notify.
+	 *
+	 * A flags-only change counts: without it a peer entering or
+	 * leaving Demand mode is never seen by the control plane. So does
+	 * a mult-only change, which bfdd displays and which alters the
+	 * peer's detection budget for us.
+	 */
+	uint32_t ntx = ntohl(p->min_tx), nrx = ntohl(p->min_rx);
+	uint8_t  nfl = p->flags & 0x3f;
+	int rparams_changed = (ntx != s->r_min_tx || nrx != s->r_min_rx ||
+			       nfl != s->r_flags ||
+			       p->detect_mult != s->r_mult);
+
 	s->rdisc    = ntohl(p->my_disc);
 	s->r_state  = ps;
-	s->r_min_rx = ntohl(p->min_rx);
-	s->r_min_tx = ntohl(p->min_tx);
+	s->r_min_rx = nrx;
+	s->r_min_tx = ntx;
 	s->r_min_echo = ntohl(p->min_echo_rx);
 	s->r_mult   = p->detect_mult;
-	s->r_flags  = p->flags & 0x3f;
+	s->r_flags  = nfl;
+
+	if (s->state == ST_UP && rparams_changed)
+		dp_notify_state(s);
 
 	/* Poll-aware detect basis: decreases apply only once traffic
 	 * actually paces at the new interval (RFC 5880 s6.8.3). */
@@ -192,42 +222,20 @@ void fsm_detect(struct session *s, uint64_t t)
 		sd = 0;
 	uint8_t mult = s->r_mult ? s->r_mult : s->detect_mult;
 	if ((uint64_t)sd > (uint64_t)mult * iv) {
-		printf("[%llu] lid=%u DETECT TIMEOUT (silent %.1fms)\n",
+		/* The transition below carries "detect timeout" as its
+		 * reason, so this line is a duplicate at INFO. */
+		log_debug("[%llu] lid=%u DETECT TIMEOUT (silent %.1fms)\n",
 		       (unsigned long long)t, s->lid, sd / 1000.0);
 		s->rdisc = 0;
 		state_transition(s, ST_DOWN, 1, t, "detect timeout");
 	}
 }
 
-void fsm_tx(struct session *s, uint64_t t)
+/* Build and send one control packet from the session's current state.
+ * Split out of fsm_tx so the teardown path can emit a few without
+ * re-deriving any of the pacing logic that precedes it there. */
+static void tx_one(struct session *s)
 {
-	if (s->admin_down && s->state != ST_ADMINDOWN)
-		state_transition(s, ST_ADMINDOWN, 7, t, "admin shutdown");
-
-	if (s->last_rx_us) {
-		uint64_t cur = (s->state == ST_UP)
-			? (s->applied_tx_us > s->r_min_rx ? s->applied_tx_us
-							  : s->r_min_rx)
-			: SLOW_TX_US;
-		if (s->next_tx_us > t + cur)
-			s->next_tx_us = t + cur;
-	}
-
-	int due = (t >= s->next_tx_us) || s->send_final;
-	if (use_ktx && s->state == ST_UP && !s->send_final && !s->just_up) {
-		/* Kernel echo covers TX only at the peer's pace. If the
-		 * peer paces slower than our required rate (its detect
-		 * budget for us), transmit from here at the required
-		 * pace; otherwise stay silent as before. last_rx_us is
-		 * synced from the map, so it tracks kernel echo times. */
-		uint64_t pace = s->applied_tx_us > s->r_min_rx ?
-				s->applied_tx_us : s->r_min_rx;
-		if (t - s->last_rx_us < pace)
-			due = 0;
-	}
-	if (!due)
-		return;
-
 	struct bfd_ctrl_pkt o = {0};
 	o.vers_diag   = (1 << 5) | (s->diag & 0x1f);
 	o.flags       = (s->state << 6) |
@@ -258,20 +266,94 @@ void fsm_tx(struct session *s, uint64_t t)
 	s->tx_pkts++;
 	s->send_final = 0;
 	s->just_up = 0;
+}
+
+/* RFC 5880 s6.8.16: a system tearing a session down should say so
+ * rather than going quiet. Silent teardown makes the peer wait out its
+ * whole detection time and then report diag 1, control detection time
+ * expired - a link failure - for an orderly local event. Announcing
+ * AdminDown gets the peer down immediately with diag 3, neighbor
+ * signaled session down, which is both faster and true.
+ *
+ * Three packets because there is no retransmission once the slot is
+ * freed and a single one is one drop away from being lost. 24 bytes
+ * each, once per teardown.
+ *
+ * NOT called on the dp_hold orphan path: there the peer must not
+ * notice bfdd restarting, which is the entire point of the feature.
+ */
+void fsm_announce_down(struct session *s)
+{
+	if (!s->used || !s->wire_disc || s->state == ST_ADMINDOWN)
+		return;
+
+	/* Assigned directly rather than through state_transition: bfdd
+	 * asked for this teardown, so telling it about a transition into a
+	 * state the session is about to leave entirely is noise. */
+	s->state = ST_ADMINDOWN;
+	s->diag  = 7;   /* Administratively Down */
+	s->send_final = 0;
+	s->polling = 0;
+
+	for (int i = 0; i < 3; i++)
+		tx_one(s);
+}
+
+void fsm_tx(struct session *s, uint64_t t)
+{
+	if (s->admin_down && s->state != ST_ADMINDOWN)
+		state_transition(s, ST_ADMINDOWN, 7, t, "admin shutdown");
+
+	if (s->last_rx_us) {
+		uint64_t cur = (s->state == ST_UP)
+			? (s->applied_tx_us > s->r_min_rx ? s->applied_tx_us
+							  : s->r_min_rx)
+			: SLOW_TX_US;
+		if (s->next_tx_us > t + cur)
+			s->next_tx_us = t + cur;
+	}
+
+	int due = (t >= s->next_tx_us) || s->send_final;
+	if (use_ktx && !s->ktx_uncovered && s->state == ST_UP &&
+	    !s->send_final && !s->just_up) {
+		/* Kernel echo covers TX only at the peer's pace. If the
+		 * peer paces slower than our required rate (its detect
+		 * budget for us), transmit from here at the required
+		 * pace; otherwise stay silent as before. last_rx_us is
+		 * synced from the map, so it tracks kernel echo times. */
+		uint64_t pace = s->applied_tx_us > s->r_min_rx ?
+				s->applied_tx_us : s->r_min_rx;
+		if (t - s->last_rx_us < pace)
+			due = 0;
+	}
+	if (!due)
+		return;
+
+	tx_one(s);
 
 	if (t >= s->next_tx_us) {
-		uint64_t iv;
-		if (s->state == ST_UP) {
+		uint64_t iv, span;
+
+		if (s->state == ST_UP)
 			iv = s->applied_tx_us > s->r_min_rx ? s->applied_tx_us
 							    : s->r_min_rx;
-			/* RFC 5880 s6.8.7: jitter the interval to 75-100%,
-			 * but only 75-90% when detect_mult is 1. */
-			uint64_t span = s->detect_mult == 1 ? iv * 3 / 20
-							    : iv / 4;
-			iv = iv * 3 / 4 + (random() % (span + 1));
-		} else {
+		else
 			iv = SLOW_TX_US;
-		}
+
+		/* RFC 5880 s6.8.3: jitter the interval to 75-100%, but only
+		 * 75-90% when detect_mult is 1. This applies to the slow
+		 * rate as well, which previously used SLOW_TX_US raw - so
+		 * every session below Up transmitted on the same 1s grid and
+		 * a mesh coming up at once synchronised into a burst every
+		 * second, which is what jitter exists to prevent.
+		 *
+		 * It looks like an undershoot but is not: the 'not less than
+		 * one second' rule in s6.8.7 constrains
+		 * bfd.DesiredMinTxInterval, not the resulting gap.
+		 */
+		span = s->detect_mult == 1 ? iv * 3 / 20 : iv / 4;
+		iv = iv * 3 / 4 + (random() % (span + 1));
+
 		s->next_tx_us = t + iv;
 	}
 }

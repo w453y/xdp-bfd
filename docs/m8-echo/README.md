@@ -284,6 +284,73 @@ which is a different vantage; doing so reads as a regression that does
 not exist. The engine-relative number is the correct one for detection,
 because it is what the engine actually experiences.
 
+### IPv6 origination, and an assumption that was never measured
+
+The originator above was v4 only, gated on the session family in
+echo_tx_maybe. The reason was never written into this document, which
+is just as well, because it was an inference rather than a finding:
+FRR sources its IPv6 echoes at the peer rather than at itself, from
+which it was assumed that a neighbour's forwarding plane does not
+loop a self-addressed v6 packet the way it loops a v4 one. Nobody
+checked.
+
+It loops. Injected from bfd-chaos to bfd-peer's MAC, captured on the
+hypervisor bridge, with a v4 arm as a positive control so that a v6
+zero could not be a broken rig:
+
+| arm | neighbour forwarding | injected | returned at 254 |
+|-----|---------------------|----------|-----------------|
+| v4 control | ip_forward=1 | 10 | 10 |
+| v6 | conf.all.forwarding=0 | 10 | 0 |
+| v6 | conf.all.forwarding=1 | 10 | 10 |
+
+FRR reflecting v6 echo in software is a choice in FRR, not a limit in
+the kernel, and the self-addressed v6 reflector in echo.h is not
+serving a pattern that never occurs.
+
+Three pieces followed, because the return path was dead before the
+first of them. parse.h gained the same narrow GTSM exception the v4
+branch already had - hop limit 254, self-addressed, on the echo port
+- and this is the second appearance of the trap described above: the
+v6 branch dropped every return before the echo path was reached, and
+it also assigned the UDP pointer after the hop-limit check, so the
+exception could not be written until that assignment moved. The unit
+probe in tests/unit/xdp_run.c had carried a comment saying exactly
+this since the v6 reflector landed, reporting rather than asserting
+because the parser made the case unreachable. echo.h gained the
+hop-limit-254 return branch, demuxing on echo_disc; it is ordered
+before the GTSM check and every miss inside it returns rather than
+falling through, which is what keeps BFD_STAT_ECHO_TTL unreachable on
+both families. echo_tx.c gained the v6 frame builder: 86 bytes, no IP
+checksum, and a UDP checksum folded over the 40-byte v6
+pseudo-header, with the payload writer now shared since it is
+byte-identical across families.
+
+A second family gate was hiding in stats.c, reporting echo.active as
+false for any v6 session. It was found only because the wire test
+needed that field as an oracle, which is the general hazard with a
+gate written during a v4-only phase: nothing fails, the reported
+state is simply wrong. active now means the negotiated interval is
+non-zero rather than the family is v4. A grep for the pattern across
+src/ found no third.
+
+Validated on the wire in docs/v6-echo: one config, 15s per arm at a
+50ms interval, changing only the neighbour's sysctl between them.
+With forwarding off, 295 sent, all 295 carrying a valid UDP checksum
+as judged by tcpdump rather than by our own fold, and none returned.
+With it on, 295 sent and 295 returned, every returned payload
+byte-identical to one that was sent, engine rx climbing to 304 and
+rtt_last 59us. The payload match is what makes the count mean
+something: a tally of frames at hop limit 254 would have passed on
+any 254 frame that happened to be on the bridge.
+
+One operational note. The neighbour's net.ipv6.conf.all.forwarding is
+0 by default on this testbed, unlike ip_forward, and it does not
+persist. A v6 echo session against a neighbour without it will
+transmit and report echo liveness false, which is the correct
+advisory behaviour described below rather than a fault.
+
+
 ### Detection is advisory, and why
 
 The sweep marks each echo-active session alive or not from the time
@@ -509,6 +576,32 @@ m8b (originator/detector), as run:
   not wire-to-wire, and is not comparable to the section 4 baseline.
 - Not covered: the cost of the m8b changes at the 64-session cap. See
   the note at the end of section 5.
+
+m8b over IPv6, as run (tests/v6_echo_wire.py, evidence in
+docs/v6-echo):
+- Establish first that the loop exists at all: inject a self-addressed
+  v6 echo at a neighbour with forwarding on and confirm it returns at
+  hop limit 254, with a v4 arm in the same rig as a positive control
+  so that a v6 zero cannot be a broken injector.
+- Enable echo on a v6 session against a forwarding neighbour. Confirm
+  on a bridge capture that outbound frames are self-addressed at hop
+  limit 255 and that tcpdump reports the UDP checksum valid, which is
+  an independent fold of the 40-byte v6 pseudo-header rather than a
+  restatement of ours.
+- Confirm every returned frame's payload is byte-identical to one that
+  was sent. A count of frames at hop limit 254 passes on any 254 frame
+  on the bridge; the payload match is what ties a return to a
+  transmission.
+- Confirm the engine demuxes them: echo rx climbs and rtt_last is
+  non-zero, which happens only on a nonce match.
+- Negative arm: the same config with the neighbour's forwarding off.
+  Transmission continues, returns stop entirely.
+- Two guards, both of which caught a false reading while this was being
+  written. The engine under test must be the binary that was built,
+  since make replaces the file and an engine started before the build
+  produces an empty capture indistinguishable from a broken frame
+  builder. And echo must report active before any wire count is read,
+  or every number below it is vacuous.
 
 All loss and RTT numbers are taken from host-side captures on vmbr3,
 never from vtysh status.

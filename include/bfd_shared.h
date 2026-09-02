@@ -71,6 +71,103 @@ struct bfd_ctrl_pkt {
 #define BFD_DIAG(h)   ((h)->vers_diag & 0x1f)
 #define BFD_STATE(h)  (((h)->flags >> 6) & 0x3)
 
+/* Stat slots, defined once.
+ *
+ * The table used to live in three places that had to agree - the
+ * comment on bfd_stats, the loader's name array and the test harness's
+ * STAT dict - plus twenty bare count(N) calls. It grew from 9 slots to
+ * 11 during one review branch, and nothing caught a missed edit: the
+ * loader would print the wrong name and the harness would assert on the
+ * wrong counter, both silently.
+ *
+ * The BPF side takes only the enum. Name strings are instantiated by
+ * userspace alone, so none of them land in the object file.
+ *
+ * Slots 2, 3, 9 and 10 should stay flat on a healthy system; 0, 1, 4,
+ * 5 and 8 climb in normal operation, and so does 7 - FRR sources its
+ * own v6 echoes at the peer rather than self-addressed, so a v6 echo
+ * arriving is routine rather than an error.
+ */
+#define BFD_STAT_LIST(X)                                              \
+	X(SEEN,              "seen")               /* every packet seen */ \
+	X(WELL_FORMED,       "well-formed")        /* parses as BFD */     \
+	X(MALFORMED,         "malformed")          /* header does not */   \
+	X(REJECTED,          "rejected")           /* GTSM, demux, frag */ \
+	X(REFLECTED,         "reflected")          /* echo bounced */      \
+	X(ECHO_RETURNS,      "echo-returns")       /* our echo came back */\
+	X(DECLINED,          "declined")           /* echo, peer unknown */\
+	X(NOT_SELF,          "not-self")           /* echo, not self-addr */\
+	X(ECHO_TTL,          "echo-ttl")           /* unreachable: see below */         \
+	X(UNSUPPORTED_FLAGS, "unsupported-flags")  /* A or M bit */        \
+	X(SWEEP_INIT_FAIL,   "sweep-init-fail")    /* sweeper never armed */ \
+	X(IP_OPTIONS,        "ip-options")         /* any UDP with options */
+
+/* Load-time tunables, written by userspace between load and attach and
+ * treated as read-only by the program thereafter. Kept in their own map
+ * rather than in .rodata, where setting one field would mean rewriting
+ * the whole blob, and rather than in sweep_map, whose value holds a
+ * bpf_timer that userspace must not write over. */
+enum bfd_tunable {
+	BFD_TUNE_SWEEP_NS,   /* 0 means use the compiled default */
+	BFD_TUNE_MAX
+};
+
+/* ECHO_TTL always reads zero. echo.h has its own GTSM check, but no
+ * frame reaches it: parse.h rejects anything that is neither TTL 255
+ * nor the 254-and-self-addressed echo exception, and counts those as
+ * REJECTED. The slot is kept rather than removed because deleting it
+ * renumbers every stat below it on both planes at once, which is the
+ * drift the ABI pins in tests/unit/abi_check.c exist to prevent. If
+ * the parser ever gains a path that defers the TTL verdict to the
+ * echo reflector, this becomes live again. */
+
+/* The compiled sweep interval. Shared rather than kernel-side only
+ * because the engine reports what it overrode and against what. */
+#define BFD_SWEEP_NS_DEFAULT (5ull * 1000 * 1000)
+
+enum bfd_stat {
+#define BFD_STAT_ENUM(n, s) BFD_STAT_##n,
+	BFD_STAT_LIST(BFD_STAT_ENUM)
+#undef BFD_STAT_ENUM
+	BFD_STAT_MAX
+};
+
+/* Why a control packet was not accepted (RFC 5880 s6.8.6). */
+enum bfd_ctrl_verdict {
+	BFD_CTRL_ACCEPT = 0,
+	BFD_CTRL_MALFORMED,     /* header does not parse */
+	BFD_CTRL_UNSUPPORTED,   /* well formed, carries a flag we cannot honour */
+};
+
+/* The acceptance rule, shared so the kernel fast path and the userspace
+ * establishment path cannot drift. They had already drifted: userspace
+ * never looked at bfd->len, so a packet claiming 200 bytes inside a
+ * 24-byte datagram was accepted there and rejected in XDP.
+ *
+ * Every argument is in HOST order and passed explicitly, because the two
+ * planes byte-swap with different helpers (bpf_ntohs vs ntohs) and this
+ * header is compiled by both. payload_len is how many bytes actually
+ * follow the UDP header - udp->len - 8 in the kernel, the recvmsg return
+ * in userspace - which is what makes the overread guard expressible
+ * once instead of twice.
+ *
+ * Caller counts and decides the disposition; this only classifies.
+ */
+static inline int bfd_ctrl_check(__u8 vers_diag, __u8 flags, __u8 mult,
+				 __u8 len, __u32 my_disc, __u32 payload_len)
+{
+	if (((vers_diag >> 5) & 0x7) != BFD_VERSION)
+		return BFD_CTRL_MALFORMED;
+	if (len < BFD_MIN_LEN || len > payload_len)
+		return BFD_CTRL_MALFORMED;
+	if (mult == 0 || my_disc == 0)
+		return BFD_CTRL_MALFORMED;
+	if (flags & (BFD_F_AUTH | BFD_F_MP))
+		return BFD_CTRL_UNSUPPORTED;
+
+	return BFD_CTRL_ACCEPT;
+}
+
 struct bfd_addr {
 	__u8 b[16];
 };

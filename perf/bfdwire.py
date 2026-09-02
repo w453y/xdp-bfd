@@ -14,8 +14,9 @@ them, already decodes BFDv1, and needs no capture library on either side.
 import re
 import subprocess
 
-LINE = re.compile(
-    r"^(\d+\.\d+) IP (\S+)\.(\d+) > (\S+)\.(\d+): BFDv1, Control, State (\w+)")
+HDR = re.compile(r"^(\d+\.\d+) IP (\S+)\.(\d+) > (\S+)\.(\d+):")
+HEX = re.compile(r"^\s+0x[0-9a-f]+:\s+(.*)$")
+STATE = {0: "AdminDown", 1: "Down", 2: "Init", 3: "Up"}
 
 
 class Pkt:
@@ -27,26 +28,48 @@ class Pkt:
 
 
 def read(path):
-    # -n: no name resolution. Without it tcpdump renders 10.66.0.1 as
-    # "bfd-dut" on a host whose /etc/hosts says so and numerically
-    # everywhere else, so the parsed addresses depend on which
-    # machine runs the harness. That broke CI on the first run.
-    r = subprocess.run(["tcpdump", "-n", "-tt", "-r", path],
+    """Parse the BFD state out of the HEX, not out of tcpdump's decode.
+
+    Ubuntu's tcpdump 4.99.4 renders UDP/3784 as BCM-LI-SHIM (a Broadcom
+    lawful-intercept shim that claims the same port) while 4.99.6 renders
+    it as BFDv1. Depending on the dissector meant the harness worked on the
+    machine it was written on and produced zero packets in CI. -x gives the
+    L3 payload and the header layout is fixed: 20 bytes IP (ihl 5, which a
+    BFD control packet always is - the engine drops options), 8 UDP, then
+    BFD, whose second byte carries the state in its top two bits.
+    """
+    r = subprocess.run(["tcpdump", "-n", "-tt", "-x", "-r", path],
                        capture_output=True, text=True)
-    pkts = []
+    pkts, pend, blob = [], None, ""
+
+    def flush():
+        if pend is None:
+            return
+        b = bytes.fromhex(blob)
+        if len(b) < 30 or (b[0] >> 4) != 4 or (b[0] & 0x0f) != 5:
+            return
+        if int.from_bytes(b[22:24], "big") not in (3784, 4784):
+            return
+        pkts.append(Pkt(pend[0], pend[1], pend[2], pend[3],
+                        STATE.get(b[29] >> 6, "?")))
+
     for line in r.stdout.splitlines():
-        m = LINE.match(line)
+        m = HDR.match(line)
         if m:
-            pkts.append(Pkt(float(m.group(1)), m.group(2), m.group(4),
-                            int(m.group(5)), m.group(6)))
+            flush()
+            pend = (float(m.group(1)), m.group(2), m.group(4), int(m.group(5)))
+            blob = ""
+            continue
+        h = HEX.match(line)
+        if h and pend is not None:
+            blob += h.group(1).replace(" ", "")
+    flush()
+
     if not pkts:
         raise SystemExit(
-            "no BFD control packets in %s\n"
-            "tcpdump rc=%d, %d stdout lines. First three:\n%s\n"
-            "stderr: %s"
+            "no BFD control packets in %s\ntcpdump rc=%d, %d lines\n%s"
             % (path, r.returncode, len(r.stdout.splitlines()),
-               "\n".join(r.stdout.splitlines()[:3]) or "(none)",
-               r.stderr.strip()[:200]))
+               "\n".join(r.stdout.splitlines()[:3])))
     return pkts
 
 

@@ -204,7 +204,12 @@ jobs:
       - name: install toolchain and arm64 headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm
+          # libbpf-dev for bpf/bpf_helpers.h, which the BPF source
+          # includes and which is architecture-independent: the host's
+          # amd64 copy serves the aarch64 build fine. Only the kernel
+          # UAPI headers under /usr/include/<triple> are arch-specific,
+          # and those are what finding 16 was about.
+          sudo apt-get install -y llvm libbpf-dev
           wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
           chmod +x /tmp/llvm.sh
           sudo /tmp/llvm.sh 21

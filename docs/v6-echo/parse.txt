@@ -1,0 +1,13 @@
+--- noforward ---
+    records parsed: 295
+    self-addressed hlim 255 (ours): 295, [udp sum ok]: 295
+    self-addressed hlim 254 (returned): 0, payload matches a sent frame: 0
+    other v6 3785 frames: 0
+    first sent:     fd66::110:0 > fd66::110:0 hlim 255 20c00318e1131e4d00000000000027100000271000000510
+--- forward ---
+    records parsed: 590
+    self-addressed hlim 255 (ours): 295, [udp sum ok]: 295
+    self-addressed hlim 254 (returned): 295, payload matches a sent frame: 295
+    other v6 3785 frames: 0
+    first sent:     fd66::110:0 > fd66::110:0 hlim 255 20c00318e1131e4d000000000000271000002710000008e4
+    first returned: fd66::110:0 > fd66::110:0 hlim 254 20c00318e1131e4d000000000000271000002710000008e4

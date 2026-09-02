@@ -8,6 +8,19 @@
 #include "maps.h"
 #include "stats.h"
 
+/* Self-addressed: a classic echo is sent to the originator's own address.
+ * Four word compares rather than a memcmp; the program uses none. Lives
+ * here rather than in echo.h because the parser's GTSM exception needs it
+ * too, and two copies of one address comparison is how they drift. */
+static __always_inline int v6_self_addressed(const struct ipv6hdr *ip6)
+{
+	const __u32 *sa = (const __u32 *)&ip6->saddr;
+	const __u32 *da = (const __u32 *)&ip6->daddr;
+
+	return sa[0] == da[0] && sa[1] == da[1] &&
+	       sa[2] == da[2] && sa[3] == da[3];
+}
+
 struct l3ctx {
 	struct iphdr   *iph;
 	struct ipv6hdr *ip6;
@@ -113,8 +126,21 @@ static __always_inline int parse_l3(struct ethhdr *eth, void *data_end,
 		 * (IPV6_MINHOPCOUNT) and demux; single-hop BFD never sends one. */
 		if (c->ip6->nexthdr != IPPROTO_UDP)
 			return XDP_PASS;
-		/* GTSM: hop_limit is the v6 TTL. */
-		if (c->ip6->hop_limit != 255) {
+		c->udp = (void *)(c->ip6 + 1);
+		if ((void *)(c->udp + 1) > data_end)
+			return XDP_PASS;
+		/* GTSM: hop_limit is the v6 TTL. Same narrow exception as the v4
+		 * branch for our own echo coming back: the neighbour's forwarding
+		 * plane decremented it to 254 and the frame is still
+		 * self-addressed on the echo port. Without it echo_reflect_v6's
+		 * return branch is unreachable and v6 echo RTT never updates.
+		 * The udp assignment moved above this check so the port is
+		 * readable here; nothing between the two reads it. Kept narrow so
+		 * it cannot become a general hop-limit bypass. */
+		if (c->ip6->hop_limit != 255 &&
+		    !(c->udp->dest == bpf_htons(BFD_ECHO_PORT) &&
+		      c->ip6->hop_limit == 254 &&
+		      v6_self_addressed(c->ip6))) {
 			__u32 mz = 0;
 			__u32 *mf = bpf_map_lookup_elem(&prog_flags, &mz);
 			if (!mf || !(*mf & 2)) {
@@ -122,9 +148,6 @@ static __always_inline int parse_l3(struct ethhdr *eth, void *data_end,
 				return XDP_DROP;
 			}
 		}
-		c->udp = (void *)(c->ip6 + 1);
-		if ((void *)(c->udp + 1) > data_end)
-			return XDP_PASS;
 		key_set_v6(&c->key.peer,  &c->ip6->saddr);
 		key_set_v6(&c->key.local, &c->ip6->daddr);
 	} else {

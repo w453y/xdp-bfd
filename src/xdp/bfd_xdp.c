@@ -52,7 +52,7 @@ int bfd_observer(struct xdp_md *ctx)
 	 * No session lookup, no map, no adjust_tail. */
 	if (udp->dest == bpf_htons(BFD_ECHO_PORT)) {
 		if (ip6)
-			return echo_reflect_v6(eth, ip6);
+			return echo_reflect_v6(eth, ip6, udp, data_end);
 		if (!iph)
 			return XDP_PASS;
 	        return echo_reflect_v4(eth, iph, udp, data_end);

@@ -141,7 +141,10 @@ add counters to branches that previously fell out with a bare `XDP_PASS`.
 | 7 | `echo-not-self` | both `saddr != daddr` returns; **also fires in normal use**, since FRR sources its own v6 echoes at the peer rather than self-addressed |
 | 8 | `echo-ttl` | both echo GTSM checks |
 
-`bfd_stats` grew from 6 entries to 9. Slot 1 was renamed from `accepted` to
+`bfd_stats` grew to carry them, and has grown again since — the X-macro in
+`include/bfd_shared.h` is the list, and a count written here rots. Three
+slots postdate the table above: `unsupported-flags`, `sweep-init-fail`
+and `ip-options`. Slot 1 was renamed from `accepted` to
 `well-formed` in the harness: its `count(1)` sits *before* the GTSM and
 demux drops, so a rejected packet increments slot 1 and slot 3 both.
 

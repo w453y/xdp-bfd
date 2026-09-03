@@ -40,7 +40,8 @@ bfd_tx: $(ENGINE_OBJS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f bfd_xdp.o bfd_loader bfd_tx $(ENGINE_OBJS)
+	rm -f bfd_xdp.o bfd_loader bfd_tx $(ENGINE_OBJS) \
+	      tests/unit/bfd_xdp_test.o
 
 # Same flags as bfd_xdp.o, plus src/xdp on the include path so the
 # wrapper picks up the identical headers. Test-only: never shipped,
@@ -117,7 +118,15 @@ test-fsm: tests/unit/fsm_run
 	./tests/unit/fsm_run
 
 # Needs root and the loaded object; not part of `all`.
-test-xdp: tests/unit/xdp_run bfd_xdp.o
+#
+# bfd_xdp_test.o is a prerequisite because xdp_run opens it by path at
+# runtime: nothing else referred to it, so the rule below never fired and
+# the sweep half of the suite ran against whatever bytecode was left on
+# disk. Editing sweep.h then changed the program under test and not the
+# object, which is the same stale-build trap the TEST_HDRS comment
+# describes - and it hid a real behaviour change until the object was
+# removed by hand.
+test-xdp: tests/unit/xdp_run bfd_xdp.o tests/unit/bfd_xdp_test.o
 	sudo ./tests/unit/xdp_run
 
 .PHONY: all clean abi-check check test-xdp test-fsm test-dp check-netns check-frr

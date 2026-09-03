@@ -246,9 +246,17 @@ def pick(sess):
     """Choose the sessions the cases need, or explain what is missing."""
     got = {}
     for s in sess:
-        if s["family"] == 4 and s["min_ttl"] == 255 and "v4" not in got:
+        # enable is required, not incidental: a session in demand hold is
+        # Up and configured but deliberately not answering, so the kernel
+        # bounce never fires and every case that expects a reply - the
+        # Poll/Final pair above all - reads zero. Which session the map
+        # hands back first is not stable between runs, so without this the
+        # suite passes or fails depending on iteration order.
+        if (s["family"] == 4 and s["min_ttl"] == 255 and s["enable"]
+                and "v4" not in got):
             got["v4"] = s
-        if s["family"] == 6 and s["min_ttl"] == 255 and "v6" not in got:
+        if (s["family"] == 6 and s["min_ttl"] == 255 and s["enable"]
+                and "v6" not in got):
             got["v6"] = s
         if (s["family"] == 4 and s["min_ttl"] < 255 and s["enable"]
                 and "mh4" not in got):
@@ -264,7 +272,8 @@ def pick(sess):
         if (s["family"] == 6 and s["peer"] == PHANTOM6
                 and "phantom6" not in got):
             got["phantom6"] = s
-        if s["family"] == 6 and s["min_ttl"] < 255 and "mh6" not in got:
+        if (s["family"] == 6 and s["min_ttl"] < 255 and s["enable"]
+                and "mh6" not in got):
             got["mh6"] = s
     return got
 
@@ -673,7 +682,7 @@ def orchestrate(args):
 
 def send(spec):
     """The injector half. Runs on the third host, needs root for scapy."""
-    from scapy.all import Ether, IP, IPv6, UDP, Raw, sendp
+    from scapy.all import Ether, IP, IPv6, UDP, Raw, sendp, get_if_hwaddr
     from scapy.all import IPOption_NOP
 
     def bfd(ydisc, state, vers=1, mult=3, blen=24, mydisc=0xcafebabe,
@@ -694,7 +703,18 @@ def send(spec):
             (minecho >> 8) & 0xff, minecho & 0xff,
         ])
 
-    eth = Ether(dst=spec["l2dst"]) if spec.get("l2dst") else Ether()
+    # The source MAC is set explicitly rather than left to scapy, which
+    # fills it from the route to the destination address, not from the
+    # interface sendp was told to use. Those differ whenever the injector
+    # has an address in the target session's subnet on some other link:
+    # the frame then leaves the right interface carrying the wrong
+    # interface's MAC, the reply is addressed to that MAC, and the
+    # capture below - which matches on our own - sees nothing. The bridge
+    # floods the reply, so a tcpdump still shows it and only the assertion
+    # fails.
+    eth = Ether(src=get_if_hwaddr(spec["iface"]))
+    if spec.get("l2dst"):
+        eth.dst = spec["l2dst"]
     payload = bfd(spec["ydisc"], spec["state"],
                   vers=spec.get("vers", 1), mult=spec.get("mult", 3),
                   blen=spec.get("blen", 24),

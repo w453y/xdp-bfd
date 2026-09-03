@@ -64,6 +64,34 @@ UNKNOWN_DST = "10.66.0.241"
 _STAT = {}
 
 
+
+class AtLeast:
+    """A lower bound on a delta rather than an exact one.
+
+    Most counters here are global, and the live mesh moves them while a
+    case runs. Usually that does not matter, because the counter a case
+    watches is one nothing else touches. `not-self` is the exception: it
+    climbs on its own the whole time, since FRR sources its v6 echoes at
+    the peer rather than self-addressed and every one of them arrives
+    here as a not-self echo. Slot 7 is documented as doing exactly this.
+
+    An exact delta on such a counter cannot pass. A lower bound still
+    requires the injected packets to have been counted - which is all
+    the witness is there to prove - while tolerating the traffic that
+    was always going to be running alongside it.
+    """
+    __slots__ = ("n",)
+
+    def __init__(self, n):
+        self.n = n
+
+    def met(self, got):
+        return got >= self.n
+
+    def __str__(self):
+        return ">=%+d" % self.n
+
+
 def stat_names():
     """Slot numbering and names, read from the BFD_STAT_LIST X-macro in
     include/bfd_shared.h.
@@ -401,14 +429,15 @@ def build_cases(got):
         c.append(("echo-not-self", "a 3785 packet that is not self-addressed "
                   "is never reflected",
                   dict(family=4, src=s["peer"], dst=s["local"], ttl=255,
-                       dport=3785, ydisc=0, state=1, l2dst=MAC),
-                  [("not-self", COUNT), ("reflected", 0)], None))
+                       dport=3785, ydisc=0, state=1, l2dst=MAC,
+                       capture=True),
+                  [("not-self", AtLeast(COUNT)), ("cap:replies", 0)], None))
 
         c.append(("echo-unknown-peer", "echo from a peer we do not serve",
                   dict(family=4, src=UNKNOWN_ECHO, dst=UNKNOWN_ECHO,
                        ttl=255, dport=3785, ydisc=0, state=1,
-                       l2dst=MAC),
-                  [("declined", COUNT), ("reflected", 0)], None))
+                       l2dst=MAC, capture=True),
+                  [("declined", COUNT), ("cap:replies", 0)], None))
 
     if "v6" in got:
         s = got["v6"]
@@ -428,13 +457,15 @@ def build_cases(got):
         c.append(("echo-unknown-peer-v6", "echo from a v6 peer we do not "
                   "serve",
                   dict(family=6, src=UNKNOWN_ECHO6, dst=UNKNOWN_ECHO6,
-                       ttl=255, dport=3785, ydisc=0, state=1, l2dst=MAC),
-                  [("declined", COUNT), ("reflected", 0)], None))
+                       ttl=255, dport=3785, ydisc=0, state=1, l2dst=MAC,
+                       capture=True),
+                  [("declined", COUNT), ("cap:replies", 0)], None))
         c.append(("echo-not-self-v6", "a v6 3785 packet that is not "
                   "self-addressed is never reflected",
                   dict(family=6, src=s["peer"], dst=s["local"], ttl=255,
-                       dport=3785, ydisc=0, state=1, l2dst=MAC),
-                  [("not-self", COUNT), ("reflected", 0)], None))
+                       dport=3785, ydisc=0, state=1, l2dst=MAC,
+                       capture=True),
+                  [("not-self", AtLeast(COUNT)), ("cap:replies", 0)], None))
 
     if "mh4" in got:
         s = got["mh4"]
@@ -464,19 +495,35 @@ def build_cases(got):
         if fam in seen_fams:
             continue
         seen_fams.add(fam)
+        # Both cases judge the reflector by the capture oracle alone.
+        # `reflected` is a global counter and the mesh reflects its own
+        # peer's echoes into it the whole time these run - measured at
+        # ~50/s with sixteen echo sessions up, which is more than either
+        # expectation. Neither an exact +COUNT nor a +0 can hold against
+        # a counter someone else is also moving.
+        #
+        # The capture is immune by construction: it sniffs the injector's
+        # own interface and counts only frames addressed to the
+        # injector's MAC, and the mesh's traffic is between two other
+        # hosts. It is also the stronger check of the two - a counter
+        # proves the program reached a count() call, the capture proves a
+        # correct frame actually left the NIC.
         c.append(("echo-reflect-v%d" % fam,
                   "echo from a peer of an echo-active session is returned",
                   dict(family=fam, src=addr, dst=addr, ttl=255,
                        dport=3785, ydisc=0, state=1, l2dst=MAC,
                        capture=True),
-                  [("reflected", COUNT), ("cap:replies", COUNT)], None))
+                  [("cap:replies", COUNT)], None))
         # Same packet, only the TTL wrong: proves the echo GTSM check is
         # what blocks it, not anything about the peer or the payload.
+        # echo-ttl is the witness that must move, so the zero below is
+        # not a case that passes by doing nothing.
         c.append(("echo-gtsm-v%d" % fam,
                   "an echo arriving below TTL 255 is not reflected",
                   dict(family=fam, src=addr, dst=addr, ttl=64,
-                       dport=3785, ydisc=0, state=1, l2dst=MAC),
-                  [("echo-ttl", COUNT), ("reflected", 0)], None))
+                       dport=3785, ydisc=0, state=1, l2dst=MAC,
+                       capture=True),
+                  [("echo-ttl", COUNT), ("cap:replies", 0)], None))
 
     for kind, fam in (("phantom", 4), ("phantom6", 6)):
         if kind in got:
@@ -555,14 +602,17 @@ def orchestrate(args):
         for cname, cexp in checks:
             b, a = before.get(cname, 0), after.get(cname, 0)
             got = a - b
+            bound = isinstance(cexp, AtLeast)
+            exp_s = str(cexp) if bound else "%+d" % cexp
             recorded.append({"counter": cname, "before": b, "after": a,
-                             "delta": got, "expected": cexp})
+                             "delta": got,
+                             "expected": exp_s if bound else cexp})
             if args.verbose:
-                results.append("%s %d -> %d = %+d (expected %+d)"
-                               % (cname, b, a, got, cexp))
+                results.append("%s %d -> %d = %+d (expected %s)"
+                               % (cname, b, a, got, exp_s))
             else:
-                results.append("%s %+d (expected %+d)" % (cname, got, cexp))
-            ok = ok and got == cexp
+                results.append("%s %+d (expected %s)" % (cname, got, exp_s))
+            ok = ok and (cexp.met(got) if bound else got == cexp)
         report["cases"].append({"name": name, "ok": ok, "description": desc,
                                 "checks": recorded})
         if not args.json:

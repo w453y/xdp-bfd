@@ -3,12 +3,16 @@
 BFD inter-packet gaps during SCHED_FIFO stress, per TX backend.
 Data: github.com/w453y/xdp-bfd docs/{baseline,m3-bakeoff}"""
 import calendar
+import os
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
 U = "/mnt/user-data/uploads/"
+
+# Written beside this script unless overridden.
+OUT = os.environ.get("OUT_DIR", os.path.dirname(os.path.abspath(__file__)))
 
 def load(path, s=None, e=None):
     g = []
@@ -70,6 +74,6 @@ ax.grid(True, which="both", alpha=0.25, linewidth=0.5)
 ax.legend(fontsize=8, loc="lower left", framealpha=0.9)
 
 fig.tight_layout()
-fig.savefig("/home/claude/gap-survival.png", dpi=200)
-fig.savefig("/home/claude/gap-survival.svg")
+fig.savefig(os.path.join(OUT, "gap-survival.png"), dpi=200)
+fig.savefig(os.path.join(OUT, "gap-survival.svg"))
 print("saved gap-survival.{png,svg}")

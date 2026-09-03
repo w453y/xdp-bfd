@@ -71,22 +71,15 @@ struct bfd_ctrl_pkt {
 #define BFD_DIAG(h)   ((h)->vers_diag & 0x1f)
 #define BFD_STATE(h)  (((h)->flags >> 6) & 0x3)
 
-/* Stat slots, defined once.
+/* Stat slots, defined once: the enum, the loader's names and the test
+ * harnesses all expand from this list, so a new slot cannot be added to
+ * one and missed in another. The BPF side takes only the enum, so no
+ * name string lands in the object file.
  *
- * The table used to live in three places that had to agree - the
- * comment on bfd_stats, the loader's name array and the test harness's
- * STAT dict - plus twenty bare count(N) calls. It grew from 9 slots to
- * 11 during one review branch, and nothing caught a missed edit: the
- * loader would print the wrong name and the harness would assert on the
- * wrong counter, both silently.
- *
- * The BPF side takes only the enum. Name strings are instantiated by
- * userspace alone, so none of them land in the object file.
- *
- * Slots 2, 3, 9 and 10 should stay flat on a healthy system; 0, 1, 4,
- * 5 and 8 climb in normal operation, and so does 7 - FRR sources its
- * own v6 echoes at the peer rather than self-addressed, so a v6 echo
- * arriving is routine rather than an error.
+ * MALFORMED, REJECTED, UNSUPPORTED_FLAGS and SWEEP_INIT_FAIL should stay
+ * flat on a healthy system. NOT_SELF is not one of them: FRR sources its
+ * own v6 echoes at the peer rather than self-addressed, so those arrive
+ * here routinely.
  */
 #define BFD_STAT_LIST(X)                                              \
 	X(SEEN,              "seen")               /* every packet seen */ \
@@ -103,26 +96,21 @@ struct bfd_ctrl_pkt {
 	X(IP_OPTIONS,        "ip-options")         /* any UDP with options */
 
 /* Load-time tunables, written by userspace between load and attach and
- * treated as read-only by the program thereafter. Kept in their own map
- * rather than in .rodata, where setting one field would mean rewriting
- * the whole blob, and rather than in sweep_map, whose value holds a
- * bpf_timer that userspace must not write over. */
+ * read-only to the program thereafter. Their own map rather than
+ * .rodata, where setting one field means rewriting the whole blob, and
+ * rather than sweep_map, whose value holds a bpf_timer userspace must
+ * not write over. */
 enum bfd_tunable {
 	BFD_TUNE_SWEEP_NS,   /* 0 means use the compiled default */
 	BFD_TUNE_MAX
 };
 
-/* ECHO_TTL always reads zero. echo.h has its own GTSM check, but no
- * frame reaches it: parse.h rejects anything that is neither TTL 255
- * nor the 254-and-self-addressed echo exception, and counts those as
- * REJECTED. The slot is kept rather than removed because deleting it
- * renumbers every stat below it on both planes at once, which is the
- * drift the ABI pins in tests/unit/abi_check.c exist to prevent. If
- * the parser ever gains a path that defers the TTL verdict to the
- * echo reflector, this becomes live again. */
+/* ECHO_TTL always reads zero: echo.h has its own GTSM check, but parse.h
+ * rejects everything that would reach it first. The slot stays because
+ * removing it renumbers every stat below it on both planes at once. */
 
-/* The compiled sweep interval. Shared rather than kernel-side only
- * because the engine reports what it overrode and against what. */
+/* The compiled sweep interval. Shared because the engine reports what it
+ * overrode and against what. */
 #define BFD_SWEEP_NS_DEFAULT (5ull * 1000 * 1000)
 
 enum bfd_stat {
@@ -140,16 +128,13 @@ enum bfd_ctrl_verdict {
 };
 
 /* The acceptance rule, shared so the kernel fast path and the userspace
- * establishment path cannot drift. They had already drifted: userspace
- * never looked at bfd->len, so a packet claiming 200 bytes inside a
- * 24-byte datagram was accepted there and rejected in XDP.
+ * receive path cannot drift.
  *
- * Every argument is in HOST order and passed explicitly, because the two
- * planes byte-swap with different helpers (bpf_ntohs vs ntohs) and this
- * header is compiled by both. payload_len is how many bytes actually
- * follow the UDP header - udp->len - 8 in the kernel, the recvmsg return
- * in userspace - which is what makes the overread guard expressible
- * once instead of twice.
+ * Every argument is in HOST order and passed explicitly: the two planes
+ * byte-swap with different helpers and this header is compiled by both.
+ * payload_len is how many bytes actually follow the UDP header - udp->len
+ * minus 8 in the kernel, the recvmsg return in userspace - which is what
+ * lets the overread guard be written once.
  *
  * Caller counts and decides the disposition; this only classifies.
  */
@@ -252,15 +237,12 @@ struct tx_cfg {
 	__u8  mult;
 	__u8  poll;          /* userspace-initiated Poll sequence active:
 	                      * echo sets P until final_seq == poll_seq */
-	__u8  demand;        /* set the D bit on kernel replies. Computed by
-	                      * the engine (RFC 5880 s6.8.6 needs both ends
-	                      * Up), not read off the session flags: the
-	                      * kernel has no view of the remote state. */
-	__u8  demand_hold;   /* demand steady state - we asked the peer to go
-	                      * quiet, so its silence is not a failure and the
-	                      * sweep must not call it one. Same reason it is
-	                      * precomputed: the predicate needs !polling and
-	                      * the remote state. */
+	__u8  demand;        /* set the D bit on kernel replies */
+	__u8  demand_hold;   /* demand steady state: the peer was asked to go
+	                      * quiet, so the sweep must not call its silence
+	                      * a fault. Both are precomputed by the engine -
+	                      * the kernel cannot see the remote state these
+	                      * predicates need (RFC 5880 s6.8.6). */
 	__u8  pad[1];
 	__u32 poll_seq;      /* increments per Poll sequence; kernel acks
 	                      * the peer's F via session_state.final_seq
@@ -268,11 +250,9 @@ struct tx_cfg {
 	__u32 echo_iv_us;    /* echo interval; 0 = echo off. Static per
 	                      * session, so the mirror dirty-check still
 	                      * elides pushes. */
-	__u32 min_echo_rx_us; /* what we advertise as Required Min Echo RX.
-	                       * 0 means we cannot receive echo (RFC 5880
-	                       * s4.1); set only when the session has echo
-	                       * enabled, so it tracks whether the reflector
-	                       * will actually answer. */
+	__u32 min_echo_rx_us; /* advertised Required Min Echo RX. 0 means we
+	                       * cannot receive echo (RFC 5880 s4.1), so it is
+	                       * set only when echo is enabled. */
 	__u32 min_ttl;       /* lowest acceptable TTL / hop_limit for this
 	                      * session. bfdd sends 255 for single-hop and
 	                      * the configured minimum-ttl for multihop, so

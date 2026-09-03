@@ -35,23 +35,18 @@ struct session {
 	int      admin_down;          /* SESSION_SHUTDOWN */
 
 	int      state, diag;
-	/* Transitions were logged and never counted, so nothing could
-	 * answer "how often has this session bounced". bfdd counts it
-	 * separately and bfddp_counters has no field for it, so it cannot
-	 * travel over the dplane socket - it comes out of the stats dump. */
+	/* bfddp_counters has no field for these, so they cannot travel over
+	 * the dplane socket; they come out of the stats dump instead. */
 	uint32_t up_events, down_events;
 	uint64_t last_transition_us;
-	/* What the last detection actually cost, captured at the moment it
-	 * fired. Cannot be recomputed later: state_transition clears
+	/* Captured when the detection fires: state_transition clears
 	 * detect_iv_us on the way into Down, so the budget the overshoot is
 	 * measured against is gone by the time anything reads the session.
 	 * Detect-timeout transitions only - a peer-signalled Down has no
 	 * overshoot, and mixing the two puts a false spike at zero. */
 	uint32_t last_detect_us;     /* silence before we declared Down */
 	uint32_t last_overshoot_us;  /* that, minus the negotiated budget */
-	char     last_reason[24];    /* copied, not aliased: every caller
-	                              * passes a literal today and nothing
-	                              * should have to keep doing so */
+	char     last_reason[24];    /* copied, not aliased */
 	uint32_t rdisc;
 	uint32_t r_min_tx, r_min_rx;
 	uint32_t r_min_echo;          /* peer's Required Min Echo RX */
@@ -92,24 +87,19 @@ struct session {
 	                               * once for echo TX */
 	uint8_t  echo_mac_valid;
 	int      demand;              /* SESSION_DEMAND from the ADD: we ask
-	                               * the peer to stop transmitting. The
-	                               * peer's own request is not mirrored
-	                               * here - it is the D bit in r_flags,
-	                               * already latched from every packet,
-	                               * and a second copy would only drift */
+	                               * the peer to stop transmitting. Its
+	                               * own request is the D bit in r_flags,
+	                               * not copied here */
 	uint8_t  demand_announced;    /* D bits actually put on the wire
 	                               * since entering Up; see
 	                               * demand_announce_due */
-	uint8_t  iface_warned;        /* the off-interface notice is once per
-	                               * session, not once per ADD - bfdd
-	                               * re-sends one on every config touch */
-	uint8_t  ktx_uncovered;       /* single-hop session on an
-	                              * interface the fast path is not
-	                              * attached to. --kernel-tx is
-	                              * global but coverage is not, and
-	                              * fsm_tx must not stay silent
-	                              * waiting for a bounce that no
-	                              * XDP program will make. */
+	uint8_t  iface_warned;        /* once per session, not once per ADD:
+	                               * bfdd re-sends one on every config
+	                               * touch */
+	uint8_t  ktx_uncovered;       /* single-hop session on an interface
+	                               * the fast path is not attached to, so
+	                               * fsm_tx must not stay silent waiting
+	                               * for a bounce nothing will make */
 	uint8_t  peer_mac[6];         /* synced from the map, learned by XDP */
 	int      mac_valid;
 	uint64_t next_echo_tx_us;
@@ -128,19 +118,15 @@ struct session {
 
 /* ---------- demand mode (RFC 5880 s6.6) ----------
  *
- * Three predicates, each gating a different thing, and the asymmetry
- * between them is the whole of demand mode: the D bit travels one way
- * per direction, so who asked decides what stops.
+ * Three predicates, each gating a different thing. The D bit travels one
+ * way per direction, so who asked decides what stops - that asymmetry is
+ * the whole of demand mode.
  *
- * They are here rather than in fsm.c because the kernel mirror has to
- * compute the same answers for tx_cfg - the XDP program cannot, it sees
- * no remote state - and two spellings of one predicate is how the fast
- * and slow paths drift.
- *
- * Deliberately matched line for line against bfdd's own gates so a
- * session behaves identically whether or not it is delegated here:
- * bfd_packet.c:465 (D bit), bfd.c:693 (transmission), and
- * bfd_packet.c:1473 (detection).
+ * Here rather than in fsm.c because the kernel mirror must compute the
+ * same answers for tx_cfg: the XDP program sees no remote state and
+ * cannot, and two spellings of one predicate is how the fast and slow
+ * paths drift. They match bfdd's own gates, so a session behaves the
+ * same whether or not it is delegated here.
  */
 
 /* RFC 5880 s6.8.6: the D bit goes out only once both ends are Up. */
@@ -150,26 +136,21 @@ static inline int demand_bit_out(const struct session *s)
 }
 
 /* How many D-marked packets to get out before honouring a peer's own
- * demand. One would do if nothing were ever lost; three is what
- * fsm_announce_down already uses for the same reason, and the cost is
- * three 24-byte packets once per session coming up. */
+ * demand. One would do if nothing were ever lost. */
 #define DEMAND_ANNOUNCE_N 3
 
-/* We are configured to demand but have not yet said so on the wire.
+/* Configured to demand but not yet said so on the wire.
  *
- * This exists because the two conditions arrive together. r_state only
- * reaches Up when the peer's first Up-state packet lands, and if the
- * peer is also demanding then that very packet carries its D bit - so
- * demand_bit_out and the peer's request become true in the same sync,
- * and a session that ceased on the spot would go quiet having never
- * once set D. The peer would then keep transmitting forever, waiting
- * for a request that is never coming, and a config asking for demand in
- * both directions would only ever get it in one.
+ * Both conditions arrive together: r_state reaches Up on the peer's
+ * first Up-state packet, and if that peer is also demanding then the
+ * same packet carries its D bit. Ceasing on the spot would go quiet
+ * having never set D, leaving the peer transmitting forever into a
+ * session that will never ask it to stop - demand configured at both
+ * ends, achieved in one direction.
  *
- * bfdd does not need this: it evaluates the hold at each transmit timer
- * expiry, so it has already sent several D-marked packets by the time
- * it stops. Announcing explicitly is how a dataplane that can cease
- * within a microsecond of the flag flipping keeps bfdd's behaviour.
+ * bfdd re-checks at each transmit timer expiry, so it has already sent
+ * several D-marked packets by the time it stops. This is how a data
+ * plane that can cease within a microsecond keeps that behaviour.
  */
 static inline int demand_announce_due(const struct session *s)
 {

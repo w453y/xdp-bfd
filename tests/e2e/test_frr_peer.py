@@ -1,9 +1,7 @@
-"""03-testing Layer 3 scenario 1: full handshake to Up against stock bfdd.
+"""Full handshake to Up against stock bfdd.
 
-Three parties, not two. The doc's diagram shows engine in one namespace and
-an FRR container in the other, but the scenario also says it pins the bffdp
-integration against real FRR - and bffdp is the channel between bfdd and the
-engine, so bfdd has to be the engine's control plane rather than the far end.
+Three parties, not two: bffdp is the channel between bfdd and the engine,
+so bfdd is the engine's control plane rather than the far end.
 
     container A (netns)          container B (netns)
       bfdd  --bffdp-->  engine     bfdd, stock, no dataplane

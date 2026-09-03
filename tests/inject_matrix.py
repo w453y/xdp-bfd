@@ -55,9 +55,9 @@ MAC = None
 # Fields an injected packet must not disturb on a live session.
 WATCH = ("remote_disc", "detect_iv_us", "min_tx_us", "min_rx_us",
          "detect_mult", "peer_mac")
-# An address pair with no session and no tx_config entry, used to prove the
-# deferred GTSM drops rather than passing an unconfigured pair to the
-# stack. Must not collide with any mesh, multihop or phantom address.
+# An address pair with no session and no tx_config entry: proves deferred
+# GTSM drops rather than passing an unconfigured pair to the stack. Must
+# not collide with any mesh, multihop or phantom address.
 UNKNOWN_SRC = "10.66.0.240"
 UNKNOWN_DST = "10.66.0.241"
 
@@ -569,9 +569,9 @@ def orchestrate(args):
     print()
 
     if args.only and not any(c[0] == args.only for c in cases):
-        # A name that matches nothing used to run zero cases and still
-        # report "all cases passed". Every +0 assertion in this file
-        # needs a witness; so does the case list itself.
+        # A name matching nothing would otherwise run zero cases and
+        # still report success. Every +0 assertion here needs a witness;
+        # so does the case list itself.
         sys.exit("no case named %r. Available now: %s"
                  % (args.only, ", ".join(c[0] for c in cases)))
 

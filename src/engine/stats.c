@@ -1,14 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 /* stats.c - a JSON snapshot of everything the engine knows.
  *
- * Diagnosing this engine meant `bpftool map dump` plus reading a log, and
- * the test harness leans hard on the former. One snapshot makes the state
- * assertable without reimplementing map parsing, and gives the sweeper's
- * arming error a user-visible face rather than only a counter.
- *
  * SIGUSR1 sets a flag and the dump runs from the main loop, so nothing
- * here has to be async-signal-safe. The file is written to a temp path and
- * renamed, so a reader never sees a half-written snapshot.
+ * here has to be async-signal-safe. Written to a temp path and renamed,
+ * so a reader never sees a half-written snapshot.
  */
 #include <errno.h>
 #include <signal.h>

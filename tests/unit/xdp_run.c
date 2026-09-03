@@ -2,17 +2,15 @@
 /*
  * xdp_run.c - run the XDP program in the kernel with no NIC and no testbed.
  *
- * BPF_PROG_TEST_RUN hands bfd_observer a synthetic frame and returns the
- * verdict plus the (possibly rewritten) frame, so the program can be tested
- * as what it is: a pure function of (frame bytes, map state) to (verdict,
- * frame bytes, map state). The injection matrix in tests/ reaches the same
+ * BPF_PROG_TEST_RUN hands the program a synthetic frame and returns the
+ * verdict plus the (possibly rewritten) frame, so it can be tested as
+ * what it is: a pure function of (frame bytes, map state) to (verdict,
+ * frame bytes, map state). tests/inject_matrix.py reaches the same
  * program only through the wire and cannot set map state directly.
  *
- * This is the skeleton: object load, frame builder, two cases. The case
- * table it exists to carry is 03-testing.md Layer 1.
+ * Needs root. Run from the repo root so the default object path resolves.
  *
- * Needs root. Build with `make tests/unit/xdp_run` and run from the repo
- * root so the default object path resolves.
+ *     make test-xdp
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -385,9 +383,9 @@ static void arm_session_ttl(__u32 min_ttl)
  * null-cfg arm that must drop even with the multihop flag set - which is
  * why the gate sits ABOVE the promiscuous PASS rather than after it.
  *
- * Not written: 03-testing's mhop-does-not-leak. The session key is
- * address-only, so a single-hop and a multihop session on one pair are
- * the same tx_config entry and there is no per-port state to leak. */
+ * No leak case is written: the session key is address-only, so a
+ * single-hop and a multihop session on one pair are the same tx_config
+ * entry and there is no per-port state to leak. */
 static void case_deferred_gtsm(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -588,8 +586,8 @@ static void case_not_bfd(void)
 }
 
 /* RFC 5881 s5: a single-hop control packet must arrive at TTL 255. The
- * reject must be XDP_DROP specifically, not XDP_PASS - that distinction is
- * the bug class the lab suite's m5 run found. */
+ * reject must be XDP_DROP specifically, not XDP_PASS: a reject that
+ * passes leaks the packet to the userspace socket. */
 static void case_gtsm_v4(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -1125,11 +1123,10 @@ static void case_rx_state(void)
 /* bfd_ctrl_check's reject conditions, one case each, both families.
  *
  * Two assertions per case, not one. The verdict must be XDP_DROP
- * specifically: a reject that returns XDP_PASS leaks the packet to the
- * userspace socket, which is the class the lab suite's m5 run found and
- * this pins permanently. And the session's rx_pkts must not move, because
- * a rejected packet must not refresh liveness - a peer sending garbage
- * would otherwise hold the session up forever. */
+ * specifically, since a reject that returns XDP_PASS leaks the packet to
+ * the userspace socket. And rx_pkts must not move, because a rejected
+ * packet must not refresh liveness - a peer sending garbage would
+ * otherwise hold the session up forever. */
 static void case_malformed(int v6, const char *name,
 			   void (*mutate)(struct bfd_ctrl_pkt *), int want_v,
 			   int slot)
@@ -1292,7 +1289,7 @@ static void run_demux_matrix(void)
 	}
 }
 
-/* IPv4 fragmentation, code-review finding 4.
+/* IPv4 fragmentation.
  *
  * The rule in parse.h is narrower than "drop fragments": only a FIRST
  * fragment (offset 0, MF set) aimed at a BFD port is dropped. A non-first

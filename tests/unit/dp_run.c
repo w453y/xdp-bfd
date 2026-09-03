@@ -2,21 +2,17 @@
 /* dp_run.c - the bfddp framing parser, fed by hand.
  *
  * dp_read() is the only part of this engine that faces a network daemon
- * across a byte stream, and it had no tests. A byte stream means the
- * parser must survive any split: a header arriving one byte at a time, a
- * message spanning two reads, several messages in one read, and a length
- * field that is a lie.
+ * across a byte stream, so it must survive any split: a header arriving
+ * one byte at a time, a message spanning two reads, several messages in
+ * one read, and a length field that is a lie.
  *
- * No seam was added. dp_listen_init() and dp_accept() are already
- * exported, so the test opens a real Unix socket, connects to it, and lets
- * the engine's own accept path install the connection. The bytes then go
- * in with write(2) and dp_read() is called exactly as the main loop calls
- * it. Slower than calling a parser function directly, and worth it: the
- * recv, the buffer carry-over and the drop-connection policy are all in
- * the path being tested.
+ * No seam was added. The test opens a real Unix socket and lets the
+ * engine's own accept path install the connection, so the recv, the
+ * buffer carry-over and the drop-connection policy are all in the path
+ * being tested.
  *
- * Links against the real dplane.o, session.o and fsm.o. Only the ktx
- * group is stubbed, and use_ktx stays 0 so none of it runs.
+ * Links the real dplane.o, session.o and fsm.o. Only the ktx group is
+ * stubbed, and use_ktx stays 0 so none of it runs.
  *
  *     make test-dp
  */
@@ -437,9 +433,9 @@ static void case_update_keeps_disc(void)
 	report("add-update-keeps-wire-disc", bad, "1 session");
 }
 
-/* Code-review finding 6: an ADD for an existing lid may move the address
- * pair. The old pair's map entries would otherwise stay behind with
- * enable=1 and keep being answered by the fast path. */
+/* An ADD for an existing lid may move the address pair. The old pair's
+ * map entries would otherwise stay behind with enable=1 and keep being
+ * answered by the fast path. */
 static void case_address_move(void)
 {
 	unsigned char buf[256];

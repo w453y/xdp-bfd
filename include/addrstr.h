@@ -2,10 +2,8 @@
 /* addrstr.h - render a shared 16-byte session address.
  *
  * The key always holds the 16-byte form with v4 stored v4-mapped
- * (::ffff:a.b.c.d), so anything printing one has to decide which family it
- * is looking at. The loader grew this first; the stats dump needs the same
- * thing, and two copies of a byte-comparison is exactly how the v6 render
- * bug got into the loader in the first place.
+ * (::ffff:a.b.c.d), so anything printing one has to decide which family
+ * it is looking at. One copy of that byte comparison, not several.
  *
  * Userspace only - inet_ntop does not exist on the BPF side.
  */

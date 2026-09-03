@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* echo.h - echo reflectors, IPv4 and IPv6.
  *
- * Split out of bfd_xdp.c; included after maps.h.
- */
+ * Include after maps.h. */
 #ifndef BFD_XDP_ECHO_H
 #define BFD_XDP_ECHO_H
 
@@ -88,10 +87,8 @@ static __always_inline int echo_reflect_v4(struct ethhdr *eth,
  * self-addressed reflection changes. Only the MAC and the hop limit are
  * touched, so nothing needs recomputing.
  *
- * A self-addressed v6 echo does loop: measured on this testbed at 10/10
- * returns at hop_limit 254 with the UDP checksum still valid, and 0/10
- * with the neighbour's ipv6 forwarding off. FRR sourcing its v6 echoes at
- * the peer is a choice in FRR, not a limit in the kernel.
+ * A self-addressed v6 echo loops back at hop_limit 254 exactly as v4
+ * does, provided the neighbour has ipv6 forwarding on.
  */
 static __always_inline int echo_reflect_v6(struct ethhdr *eth,
 					   struct ipv6hdr *ip6,

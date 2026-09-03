@@ -1,27 +1,20 @@
 #!/usr/bin/env python3
 """Sweep ladder: what does the kernel sweep interval cost in detection time?
 
-The README presents a mean detection overshoot of roughly 1.3ms as a
-deliberate trade for the 5ms sweep, and nothing has ever tested it. With
---sweep-us settable and the engine recording last_overshoot_us at each
-detect-timeout transition, it is finally measurable.
+Measures detection overshoot against --sweep-us, using the
+last_overshoot_us the engine records at each detect-timeout transition.
 
-METHOD, and why it is not the obvious one. Stopping frr on the peer
-silences all 62 sessions at once, so their deadlines land within a few
-milliseconds of each other and most are caught by the SAME sweep tick: 60
-numbers, roughly one independent sample. The tell is the maximum sitting
-near the peer's TX jitter rather than near the sweep interval.
-
-So one session at a time, silenced by an egress drop rule ON THE PEER.
-Dropping on the DUT would not work at all - XDP runs before netfilter, so
-the fast path would still see and answer every packet.
+Method, which is not the obvious one. Silencing every session at once
+lands their deadlines within a few milliseconds of each other, so most
+are caught by the SAME sweep tick - many numbers, roughly one independent
+sample. So this drops one session at a time, with an egress rule ON THE
+PEER: dropping on the DUT would not work, because XDP runs before
+netfilter and the fast path would still answer every packet.
 
 Each iteration is one independent draw of sweep phase. The unit of
-comparison is still the RUN MEAN across iterations, not the individual
-sample, and an arm is only different from another if the gap clears the
-spread of an arm against itself - the m8 gap measurement spanned 22.3 to
-27.1ms across two runs of identical code, which is what that discipline is
-for.
+comparison is the run mean across iterations, not the individual sample,
+and two arms differ only if the gap clears the spread of an arm against
+itself.
 
 Prerequisites: passwordless sudo and key-based ssh to the peer, the same
 setup inject_matrix.py needs for the injector. Nothing is installed there;
@@ -55,9 +48,8 @@ VTYSH = "/opt/frr-master/bin/vtysh"
 # quantizes detection. --tick-us varies that instead.
 KNOBS = {"sweep": ("--sweep-us", (5000, 2000, 1000)),
          "tick":  ("--tick-us", (2000, 1000, 500))}
-# The L4 arm from docs/benchmarks: RT starvation of userspace. Run in
-# short bursts per sample rather than across the whole arm, because a
-# starved engine cannot answer SIGUSR1 either.
+# RT starvation of userspace, in short bursts per sample rather than
+# across the whole arm: a starved engine cannot answer SIGUSR1 either.
 STRESS = ("sudo stress-ng --cpu 4 --sched fifo --sched-prio 50"
           " --timeout %ds")
 RUNS = 10

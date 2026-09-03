@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Layout pins for every struct shared between the XDP program and the
- * engine. bfd_shared.h warns that a field added on one side is a silent
- * map misread; these turn that into a compile error.
+ * engine. A field added on one side is a silent map misread; these turn
+ * that into a compile error.
  *
  * Compiled twice, by the host compiler and by clang for the BPF target,
- * so a divergence between the two fails the build rather than corrupting
- * a map at runtime. There is no runtime component: if it compiles, it
- * passes.
+ * so a divergence between them fails the build rather than corrupting a
+ * map at runtime. No runtime component: if it compiles, it passes.
  *
- * The numbers were generated from the compiler, not written by hand. If a
- * deliberate layout change makes one wrong, regenerate rather than edit:
- * see tests/unit/README.md.
+ * The numbers come from the compiler. If a deliberate layout change makes
+ * one wrong, read the new offset off the compiler rather than editing it
+ * by hand.
  */
 #include <bfd_shared.h>
 #include <stddef.h>

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
-/* echo_tx.c - m8b echo originator.
+/* echo_tx.c - echo originator (RFC 5880 s6.4).
  *
- * Self-addressed UDP/3785 to the neighbour's MAC at TTL 255, sent on
- * a raw L2 socket: a self-addressed packet through a normal socket is
- * routed to loopback and never reaches the wire. Detection keys off
- * the outstanding nonce, so a stall means no echo outstanding and no
+ * Self-addressed UDP/3785 to the neighbour's MAC at TTL 255, on a raw L2
+ * socket: through a normal socket a self-addressed packet is routed to
+ * loopback and never reaches the wire. Detection keys off the
+ * outstanding nonce, so a stall leaves nothing outstanding and no
  * timeout can fire.
  */
 #define _GNU_SOURCE
@@ -35,7 +35,6 @@ int echo_sock = -1, echo_ifindex = 0;
 uint8_t echo_src_mac[6];
 static uint32_t echo_nonce_ctr;
 
-/* ---- m8b: echo originator ---- */
 static uint16_t ip_csum(const void *data, size_t len)
 {
 	const uint16_t *w = data;
@@ -74,19 +73,13 @@ void echo_tx_init(const char *ifname)
         	       echo_src_mac[3], echo_src_mac[4], echo_src_mac[5], echo_sock);
 }
 
-/* The interface this session's echo has to leave by, and that
- * interface's own MAC.
+/* The interface this session's echo leaves by, and that interface's own
+ * MAC. Per session, not global: an echo is self-addressed, so one sent
+ * down the wrong link reaches an address only reachable via another and
+ * nothing loops it back.
  *
- * Both used to be globals taken from --kernel-tx, which is right only
- * while every session is on that one link. With sessions on a second
- * interface the echo left by the first one carrying the first one's
- * source MAC: self-addressed to an address reachable only via the
- * second, so nothing looped it back and the return counter sat at zero
- * for the life of the session while TX climbed normally.
- *
- * Falls back to the --kernel-tx interface when bfdd named none, which
- * is what a multihop ADD carries - a routed session has no single
- * egress to name, and the global is the best guess available.
+ * Falls back to the --kernel-tx interface when bfdd named none, which is
+ * what a multihop ADD carries - a routed session has no single egress.
  */
 static int echo_egress(struct session *s, uint32_t *ifindex,
 		       const uint8_t **mac)
@@ -262,7 +255,7 @@ void echo_tx_maybe(struct session *s, uint64_t t)
 	s->echo_last_send_us = t;
 	s->next_echo_tx_us = t + s->echo_tx_us;
 
-	/* Previous echo never came back before this one is due. */
+	/* The previous echo never came back before this one is due. */
 	if (s->echo_sent_us) {
 		s->echo_lost++;
 		s->echo_sent_us = 0;

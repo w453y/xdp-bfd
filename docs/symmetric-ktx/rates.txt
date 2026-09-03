@@ -1,2 +1,0 @@
-both kernel-tx                 690223 packets in 5s (configured 10ms => ~1000 expected)
-one kernel-tx (control)          1043 packets in 5s (configured 10ms => ~1000 expected)

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* stats.h - counters and the event ringbuf.
  *
- * Split out of bfd_xdp.c; included after maps.h.
- */
+ * Include after maps.h. */
 #ifndef BFD_XDP_STATS_H
 #define BFD_XDP_STATS_H
 

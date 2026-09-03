@@ -116,23 +116,15 @@ static void dp_sessions_orphan(const char *why)
 
 /* Outbound queue.
  *
- * dp_conn is non-blocking (dp_accept sets O_NONBLOCK), so a full
- * socket buffer surfaces as EAGAIN rather than a block. Treating that
- * as fatal orphaned every session over what is usually transient - a
- * counters sweep at 64 sessions is a few KB arriving faster than a
- * busy bfdd reads it.
+ * dp_conn is non-blocking, so a full socket buffer surfaces as EAGAIN.
+ * That is usually transient - a counters sweep at 64 sessions arrives
+ * faster than a busy bfdd reads it - so it must not tear the connection
+ * down. Waiting for room is not an option either: dp_notify_state runs
+ * inside the per-session tick, which paces transmit and detect timing.
  *
- * Waiting for room is not an option either: dp_notify_state runs
- * inside the per-session tick, so even a 1ms wait per message would
- * cost tens of milliseconds in one pass, and this loop's pacing is
- * upstream of transmit and detect timing.
- *
- * Everything therefore goes through the queue, which keeps ordering
- * trivially correct and makes partial writes fall out for free. The
- * common case is still one send() per message. Tearing the connection
- * down is reserved for the queue overflowing, which means bfdd has
- * stopped reading long enough that it really is gone - the case
- * dp_hold exists to cover.
+ * Queueing everything keeps ordering correct and handles partial writes
+ * for free. Only overflow drops the connection, which means bfdd really
+ * has stopped reading - the case dp_hold covers.
  *
  * 64KB is about fifteen full counter sweeps at 64 sessions.
  */
@@ -260,8 +252,7 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 		                       * while Up) */
 	/* An UPDATE for an existing lid may move the address pair. The old
 	 * pair's tx_config and bfd_sessions entries would otherwise stay
-	 * behind with enable=1 and keep being answered from the fast path -
-	 * finding 1 in miniature, with the engine still running. */
+	 * behind with enable=1 and keep being answered from the fast path. */
 	struct bfd_addr old_peer = s->peer, old_local = s->local;
 
 	sm_addrs(sm, &s->local, &s->peer, &s->family);
@@ -456,18 +447,15 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h,
 			}
 		}
 
-		/* Both halves of each direction. Establishment runs in
-		 * userspace and the steady state runs in the kernel, so
-		 * reporting only one of them understates every session -
-		 * and with kernel-TX off, rx used to be reported as a flat
-		 * zero for a session that was plainly Up.
+		/* Both halves of each direction: establishment runs in
+		 * userspace and the steady state in the kernel, so reporting
+		 * one of them understates every session.
 		 *
-		 * The kernel byte count is ESTIMATED at the 24-byte minimum:
-		 * session_state has no byte counter and its spare pad went to
-		 * remote_flags. A peer that pads its control packets is
-		 * therefore undercounted on the bytes line while the packet
-		 * line stays exact. Our own transmissions really are 24
-		 * bytes, so the output side needs no such caveat.
+		 * The kernel byte count is estimated at the 24-byte minimum -
+		 * session_state has no byte counter - so a peer that pads its
+		 * control packets is undercounted on bytes while the packet
+		 * count stays exact. Our own transmissions really are 24
+		 * bytes, so the output side is exact.
 		 */
 		uint64_t rx = s->rx_pkts + krx;
 		uint64_t rx_bytes = s->rx_bytes + krx * BFD_MIN_LEN;
@@ -478,20 +466,12 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h,
 		m.c.control_output_bytes   = htobe64(tx * BFD_MIN_LEN);
 		m.c.control_output_packets = htobe64(tx);
 
-		/* Echo, which was reported as a flat zero while echo was
-		 * plainly running - the same shape as the control-input bug
-		 * above. The numbers were already here: echo_tx_pkts from
-		 * the userspace originator, echo_rx_pkts pulled out of the
-		 * session map by ktx_poll_map.
-		 *
-		 * These are the ORIGINATOR's numbers only. Frames the kernel
-		 * reflector bounces on a peer's behalf are counted globally
-		 * and cannot be attributed to a session: echo_peers is keyed
-		 * on the peer address alone, so the reflector never learns
-		 * which session an arriving echo belongs to. A peer that
-		 * echoes at us while we do not echo back therefore still
-		 * reads zero here, and that is honest rather than missing.
-		 */
+		/* The originator's numbers only. Frames the kernel reflector
+		 * bounces on a peer's behalf are counted globally and cannot
+		 * be attributed to a session: echo_peers is keyed on the peer
+		 * address alone, so the reflector never learns which session
+		 * an arriving echo belongs to. A peer that echoes at us while
+		 * we do not echo back reads zero here. */
 		m.c.echo_input_bytes    = htobe64(s->echo_rx_pkts * BFD_MIN_LEN);
 		m.c.echo_input_packets  = htobe64(s->echo_rx_pkts);
 		m.c.echo_output_bytes   = htobe64(s->echo_tx_pkts * BFD_MIN_LEN);
@@ -586,14 +566,10 @@ void dp_read(void)
 			break;
 		dp_process(dp_buf + off, mlen);
 		off += mlen;
-		/* dp_process can reply, and a reply on a full output
-		 * queue calls dp_drop_conn, which zeroes dp_have.
-		 * Both are size_t, so dp_have - off then underflows,
-		 * the loop condition stays true, and off walks past
-		 * the buffer - an out-of-bounds read in the memmove
-		 * below. Found by tests/unit/dp_fuzz. Nothing after a
-		 * drop is meaningful anyway: the buffer belongs to a
-		 * connection that no longer exists. */
+		/* dp_process can reply, and a reply on a full output queue
+		 * drops the connection and zeroes dp_have. Both are size_t,
+		 * so dp_have - off would underflow and off would walk past
+		 * the buffer. Nothing after a drop is meaningful anyway. */
 		if (dp_conn < 0)
 			return;
 	}

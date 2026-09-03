@@ -130,7 +130,7 @@ def main():
     p.add_argument("--runs", type=int, default=10)
     p.add_argument("--stress", type=int, default=2)
     p.add_argument("--sweep-us", type=int, default=5000)
-    p.add_argument("--out", default="docs/starved-detection")
+    p.add_argument("--out", default="starved-detection")
     args = p.parse_args()
 
     sl.peer_sh("true")

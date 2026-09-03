@@ -1,17 +1,16 @@
-"""03-testing scenario 6, named for what it actually proves.
+"""What happens to a session when the engine dies.
 
 Two claims, asserted separately:
 
-  link-detaches-on-death  - SIGKILL closes the bpf_link and the program
-                            leaves the interface (finding 1, commit 13819dd)
-  peer-detects-on-own-budget - the surviving peer times out on its own
-                            detect budget, since the wire goes silent
+  link-detaches-on-death      SIGKILL closes the bpf_link and the program
+                              leaves the interface
+  peer-detects-on-own-budget  the surviving peer times out on its own
+                              detect budget, since the wire goes silent
 
-NEITHER is the dead-man case. 88a1eef bounded the receive drains, which
-removed one cause of a wedged loop, not the class: with --kernel-tx active
-XDP answers the peer from softirq regardless of userspace state, so an
-engine that wedges WITHOUT dying keeps the peer Up. Killing a process
-cannot test that. It stays open.
+Neither is the wedged-but-alive case: with --kernel-tx active XDP answers
+the peer from softirq regardless of userspace state, so an engine that
+wedges without dying keeps the peer Up. Killing a process cannot test
+that; tests/wedged_ktx.py covers it.
 
 No tight timing bound here. The engine records last_overshoot_us for
 diag 1 and the test asserts it exists and is sane; thresholds belong in

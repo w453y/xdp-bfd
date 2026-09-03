@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* sweep.h - detection sweep timer.
  *
- * Split out of bfd_xdp.c; included after maps.h.
- */
+ * Include after maps.h. */
 #ifndef BFD_XDP_SWEEP_H
 #define BFD_XDP_SWEEP_H
 
@@ -81,24 +80,21 @@ static int sweep_fire(void *map, __u32 *key, struct sweep *sw)
 	return 0;
 }
 
-/* bpf_timer can only be initialized and armed from BPF program context,
- * not from userspace at load time, so the first packet through the
- * program arms the sweep. The CAS makes exactly one CPU do it.
+/* bpf_timer can only be armed from program context, not from userspace
+ * at load time, so the first packet through arms the sweep and the CAS
+ * makes exactly one CPU do it.
  *
- * Setting `inited` BEFORE the init looks like a race and is not one, so
- * do not 'fix' it by initialising first: that would have two CPUs both
- * calling bpf_timer_init and bpf_timer_start on the same timer. A
- * losing CPU returning early is harmless, since nothing anywhere reads
+ * Setting `inited` before the init is deliberate: initialising first
+ * would let two CPUs call bpf_timer_init and bpf_timer_start on the same
+ * timer. A losing CPU returning early is harmless, since nothing reads
  * the timer.
  *
- * What DOES matter is that these calls can fail - on a kernel without
- * bpf_timer support they always will - and `inited` is already 1 by
- * then. Without a witness the sweep would silently never arm, kernel
- * side detection would be off, and nothing would say so. So record the
- * error and count it. Slot 10 must stay flat on a healthy system.
+ * These calls can fail - on a kernel without bpf_timer support they
+ * always will - and `inited` is already 1 by then, so the sweep would
+ * silently never arm. Record the error and count it.
  *
- * Deliberately not retried: on an unsupported kernel a retry would run
- * a failing helper on every packet forever.
+ * Not retried: on an unsupported kernel that runs a failing helper on
+ * every packet forever.
  */
 static __always_inline void ensure_sweeper(void)
 {

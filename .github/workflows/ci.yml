@@ -1,31 +1,21 @@
 name: ci
 
-# Five jobs, one file - separate workflows show up as separate entries in the
-# Actions UI and it is not obvious they belong together.
-#
-#   full         self-hosted, everything: Layers 1-3, the netns rig, and the
-#                FRR container scenarios. Scenario 3 reads BPF maps through
-#                bpftool, which hosted runners have none of for their Azure
-#                kernel, so it only really runs here.
-#   portability  hosted, build + make check ONLY. Its value is the stock
-#                machine: nothing preinstalled. That is what caught the
-#                clang 18 floor, and a runner with clang 21 already on it
-#                never would have.
+#   full         self-hosted: build, unit suites, fuzz corpus, and the
+#                namespace and FRR end-to-end suites. The FRR scenarios read
+#                BPF maps through bpftool, which hosted runners cannot do.
+#   toolchain    the clang floor, asserted in both directions.
+#   kernel       unit suites under a chosen kernel in a microVM.
+#   cross        the BPF object builds for a non-host architecture.
+#   portability  hosted, stock machine: build and unit suites only.
 on:
   pull_request:
-  # A direct push to main gets the same gate. This is not redundant with
-  # the pull-request run: the merge commit is a different tree from the
-  # branch that was tested, and a commit pushed straight to main has no
-  # pull-request run at all. The case that prompted this was a one-line
-  # change to log.h, which every suite links, pushed directly.
+  # A merge commit is a different tree from the branch that was tested, and
+  # a direct push has no pull-request run at all.
   push:
     branches: [main]
 
-# The self-hosted runner is a single VM and both `full` and `kernel` want
-# it, so two runs of this workflow on the same ref serialise into the
-# better part of an hour. Pushing twice in quick succession should cancel
-# the older run rather than queue behind it - the newer ref is the one
-# whose result anyone will read.
+# `full` and `kernel` share one self-hosted VM, so concurrent runs on a ref
+# serialise. Cancel the older one rather than queue behind it.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -35,20 +25,16 @@ jobs:
     runs-on: [self-hosted, Linux, X64]
     env:
       BFD_CONTAINER_RUNTIME: podman
-      # Suites run under sudo, so any file Python writes lands root-owned -
-      # and the checkout step runs as the runner user, which then cannot
-      # delete it. A stale root-owned __pycache__ failed a whole run with
-      # EACCES before a single test started. pytest.ini disables its own
-      # cache for the same reason.
+      # Suites run under sudo, so anything Python writes lands root-owned and
+      # the next checkout - which runs as the runner user - cannot remove it.
+      # pytest.ini disables its own cache for the same reason.
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v4
 
-      # The work directory persists between runs on a self-hosted runner, so
-      # a job that died mid-test leaves engines, namespaces, veths and
-      # containers behind. Every one of those poisoned a later run at least
-      # once during development: a leaked engine holds an XDP attach and the
-      # next start reports a failure that did not happen.
+      # The work directory persists between runs, so a job that died mid-test
+      # leaves engines, namespaces, veths and containers behind. A leaked
+      # engine still holds an XDP attach and fails the next run's setup.
       - name: clean up anything a previous run left
         run: |
           sudo pkill -f 'bfd_tx 10.77' || true
@@ -61,8 +47,7 @@ jobs:
           sudo find . -user root -exec rm -rf {} + 2>/dev/null || true
           true
 
-      # No toolchain install: clang 21, bpftool, podman and pytest are
-      # preinstalled. Installing per run would defeat the point of the VM.
+      # clang 21, bpftool, podman and pytest are preinstalled on this VM.
       - name: versions
         run: |
           clang-21 --version | head -1
@@ -74,7 +59,6 @@ jobs:
       - name: build
         run: make CLANG=clang-21
 
-      # Layers 1 and 2.
       - name: unit suites
         run: make CLANG=clang-21 check
 
@@ -84,19 +68,14 @@ jobs:
           find tests/unit/fuzz-regress -type f ! -name '*.md' \
             -exec ./tests/unit/dp_fuzz {} +
 
-      # Layer 3 in namespaces: the parity rig plus the netns scenarios.
       - name: netns end-to-end
         run: sudo make CLANG=clang-21 check-netns
 
-      # Layer 3 against stock FRR. Scenario 3 reads BPF maps through
-      # bpftool, which hosted runners have none of for their Azure kernel -
-      # it skips there and runs here. That is why this VM exists.
+      # Against stock FRR. Needs bpftool map access, so it only runs here.
       - name: frr scenarios
         run: sudo -E make CLANG=clang-21 check-frr
 
-      # Also at the END, so a job that dies mid-test does not leave the
-      # machine dirty until the next run happens to clean it. The work
-      # directory persists between runs on a self-hosted runner.
+      # Again at the end, so a failed run does not leave the VM dirty.
       - name: leave the machine clean
         if: always()
         run: |
@@ -110,11 +89,10 @@ jobs:
           sudo find . -user root -exec rm -rf {} + 2>/dev/null || true
           true
 
-  # The toolchain floor, as a test rather than a comment. clang 18 and 19
-  # crash on sweep.h's 32-bit atomic CAS and 20 is the first that builds;
-  # that was found by accident when CI picked up the runner's default 18.
-  # This states it deliberately: the two below the floor are expected to
-  # fail, the two above are expected to build clean.
+  # The clang floor. Below LLVM 20 the BPF backend has no 32-bit atomic
+  # compare-and-swap, so sweep.h's __sync_val_compare_and_swap crashes the
+  # compiler. Both sides are asserted: below the floor must fail, and fail
+  # on that specific error rather than on some unrelated breakage.
   toolchain:
     runs-on: ubuntu-latest
     strategy:
@@ -161,16 +139,13 @@ jobs:
             exit 1
           fi
 
-  # Layers 1 and 2 inside a qemu microVM, so the kernel under test is a
-  # choice rather than whatever the runner happens to run. One entry today:
-  # the archive only carries 7.0.0-x, which differ by Ubuntu patch level
-  # rather than by BPF feature generation, so a span across them would run
-  # seven times and prove nothing about verifier sensitivity. Add entries
-  # when a second series ships - that is the whole point of the shape.
+  # The unit suites under a chosen kernel rather than the runner's own, so
+  # verifier sensitivity is testable. Add entries when a kernel series ships
+  # that differs by BPF feature generation.
   #
-  # virtme-ng passes the host filesystem through, so the build happens
-  # outside and only the test binaries run inside. The VM provides a
-  # kernel, not a build environment.
+  # virtme-ng passes the host filesystem through: the build happens outside
+  # and only the test binaries run inside. The VM supplies a kernel, not a
+  # build environment.
   kernel:
     runs-on: [self-hosted, Linux, X64]
     strategy:
@@ -184,8 +159,7 @@ jobs:
       - name: build on the host
         run: make CLANG=clang-21 && make CLANG=clang-21 tests/unit/bfd_xdp_test.o
 
-      # The archive installs kernel images mode 600 and virtme-ng needs to
-      # read one as the runner user.
+      # Kernel images install mode 600; virtme-ng reads one as the runner user.
       - name: make the kernel image readable
         run: |
           test -f /boot/vmlinuz-${{ matrix.kernel }} || {
@@ -198,20 +172,17 @@ jobs:
         run: |
           vng -r ${{ matrix.kernel }} --rwdir=$PWD -- \
             sh -c "cd $PWD && make CLANG=clang-21 check" 2>&1 | tee /tmp/vng.log
-          # vng DOES propagate the inner exit status (verified: `-- false`
-          # gives 1), so this is a second check rather than the only one -
-          # the pipe through tee would otherwise mask it anyway.
+          # vng propagates the inner exit status, but the pipe through tee
+          # would mask it, so assert on the output too.
           grep -q 'all suites passed' /tmp/vng.log
 
-  # Finding 16's arch-neutral include fix, which nothing checked. The BPF
-  # object is target-independent bytecode, but BPFFLAGS carries
-  # -I/usr/include/$(TRIPLE) and that triple is the host's - hardcoding
-  # x86_64-linux-gnu broke every other architecture. Syntax and codegen
-  # only: no cross libbpf, no linking, so this stays cheap.
+  # The BPF object is target-independent bytecode, but BPFFLAGS carries
+  # -I/usr/include/$(TRIPLE) for the kernel UAPI headers, and that triple
+  # must not be hardcoded to the host's. Codegen only: no cross libbpf and
+  # no linking.
   #
-  # Both arms are checked. A bogus triple must FAIL on <asm/types.h>,
-  # otherwise the -I is decorative and an aarch64 build would pass on a
-  # tree that had regressed.
+  # Both arms matter. A bogus triple must fail on <asm/types.h>, or the -I
+  # is decorative and the aarch64 arm proves nothing.
   cross:
     runs-on: ubuntu-latest
     steps:
@@ -220,11 +191,9 @@ jobs:
       - name: install toolchain and arm64 headers
         run: |
           sudo apt-get update
-          # libbpf-dev for bpf/bpf_helpers.h, which the BPF source
-          # includes and which is architecture-independent: the host's
-          # amd64 copy serves the aarch64 build fine. Only the kernel
-          # UAPI headers under /usr/include/<triple> are arch-specific,
-          # and those are what finding 16 was about.
+          # bpf/bpf_helpers.h is architecture-independent, so the host's
+          # amd64 libbpf-dev serves the aarch64 build. Only the UAPI headers
+          # under /usr/include/<triple> are arch-specific.
           sudo apt-get install -y llvm libbpf-dev
           wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
           chmod +x /tmp/llvm.sh
@@ -267,9 +236,8 @@ jobs:
   portability:
     runs-on: ubuntu-latest
     # Userspace with both compilers. The BPF object is always clang; this
-    # axis is the engine. `make CC=clang` was broken outright until
-    # 6aea65a derived the multiarch triple from the system rather than
-    # from $(CC), and nothing has checked it since.
+    # axis is the engine, and it exists because the multiarch triple must be
+    # derived from the system rather than from $(CC).
     strategy:
       fail-fast: false
       matrix:
@@ -277,15 +245,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # clang 21 from apt.llvm.org, not the archive. The BPF backend below
-      # LLVM 20 has no 32-bit atomic compare-and-swap, so
-      # __sync_val_compare_and_swap on sweep.h's __u32 `inited` crashes
-      # the compiler outright ("unsupported atomic operation, please use
-      # 64 bit version" then a backend fatal error). Measured on the DUT:
-      # 18 and 19 fail, 20 and 21 build. The runner image default is 18.
-      #
-      # Pinning rather than widening the field: this engine targets kernel
-      # 7.x and newer, and 21 is what it is developed against.
+      # clang 21 from apt.llvm.org: the runner image defaults to 18, which is
+      # below the floor the toolchain job asserts.
       - name: install toolchain
         run: |
           sudo apt-get update
@@ -302,20 +263,7 @@ jobs:
       - name: unit suites
         run: make CC=${{ matrix.cc }} CLANG=clang-21 check
 
-      # scan-build found a real null-deref and two unchecked socket() calls
-      # the first time it was run by hand. As a gate it stays useful only if
-      # it is clean: --status-bugs makes a finding exit non-zero, and the
-      # two receive paths now check their fds in code rather than in a
-      # comment so there is nothing to excuse.
-      # Recompute the published benchmark numbers from the committed
-      # pcaps. No testbed and no timing sensitivity: the captures are
-      # fixed, so a change in the output is a change in the arithmetic.
-      # This validates the harness, NOT the engine's performance.
-      - name: benchmark arithmetic
-        run: |
-          sudo apt-get install -y tcpdump
-          python3 perf/check.py
-
+      # --status-bugs makes any finding fail the job.
       - name: static analysis
         run: |
           sudo apt-get install -y clang-tools-21

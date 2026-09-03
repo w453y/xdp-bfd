@@ -139,17 +139,13 @@ void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 	s->rx_pkts++;
 	s->rx_bytes += p->len;
 
-	/* Everything dp_notify_state reports about the peer - timers,
-	 * flags, detect_mult, remote discriminator - is read out of the
-	 * session, so the notify has to run AFTER the assignments below.
-	 * It used to run before them and shipped the previous mult and
-	 * rdisc alongside the new timers. Decide here whether anything
-	 * moved, assign, then notify.
+	/* dp_notify_state reads everything it reports about the peer out of
+	 * the session, so it must run AFTER the assignments below: decide
+	 * here whether anything moved, assign, then notify.
 	 *
-	 * A flags-only change counts: without it a peer entering or
-	 * leaving Demand mode is never seen by the control plane. So does
-	 * a mult-only change, which bfdd displays and which alters the
-	 * peer's detection budget for us.
+	 * A flags-only change counts, or a peer entering or leaving demand
+	 * mode is never seen by the control plane. So does a mult-only
+	 * change, which alters the peer's detection budget for us.
 	 */
 	uint32_t ntx = ntohl(p->min_tx), nrx = ntohl(p->min_rx);
 	uint8_t  nfl = p->flags & 0x3f;
@@ -280,19 +276,15 @@ static void tx_one(struct session *s)
 	s->just_up = 0;
 }
 
-/* RFC 5880 s6.8.16: a system tearing a session down should say so
- * rather than going quiet. Silent teardown makes the peer wait out its
- * whole detection time and then report diag 1, control detection time
- * expired - a link failure - for an orderly local event. Announcing
- * AdminDown gets the peer down immediately with diag 3, neighbor
- * signaled session down, which is both faster and true.
+/* RFC 5880 s6.8.16: say so rather than going quiet. A silent teardown
+ * makes the peer wait out its whole detection time and then report a
+ * link failure for an orderly local event; announcing AdminDown gets it
+ * down immediately with diag 3, which is both faster and true.
  *
- * Three packets because there is no retransmission once the slot is
- * freed and a single one is one drop away from being lost. 24 bytes
- * each, once per teardown.
+ * Three packets because nothing retransmits once the slot is freed.
  *
- * NOT called on the dp_hold orphan path: there the peer must not
- * notice bfdd restarting, which is the entire point of the feature.
+ * Not called on the dp_hold orphan path, where the peer must not notice
+ * bfdd restarting.
  */
 void fsm_announce_down(struct session *s)
 {
@@ -325,16 +317,13 @@ static void tx_reschedule(struct session *s, uint64_t t)
 	else
 		iv = SLOW_TX_US;
 
-	/* RFC 5880 s6.8.3: jitter the interval to 75-100%, but only
-	 * 75-90% when detect_mult is 1. This applies to the slow rate as
-	 * well, which previously used SLOW_TX_US raw - so every session
-	 * below Up transmitted on the same 1s grid and a mesh coming up at
-	 * once synchronised into a burst every second, which is what
-	 * jitter exists to prevent.
+	/* RFC 5880 s6.8.3: jitter to 75-100% of the interval, or 75-90%
+	 * when detect_mult is 1. The slow rate is jittered too, or every
+	 * session below Up shares one 1s grid and a mesh coming up at once
+	 * synchronises into a burst.
 	 *
-	 * It looks like an undershoot but is not: the 'not less than one
-	 * second' rule in s6.8.7 constrains bfd.DesiredMinTxInterval, not
-	 * the resulting gap.
+	 * Not an undershoot: s6.8.7's 'not less than one second' rule
+	 * constrains bfd.DesiredMinTxInterval, not the resulting gap.
 	 */
 	span = s->detect_mult == 1 ? iv * 3 / 20 : iv / 4;
 	iv = iv * 3 / 4 + (random() % (span + 1));

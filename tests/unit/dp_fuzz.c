@@ -2,23 +2,14 @@
 /*
  * dp_fuzz.c - libFuzzer target for the bffdp parser.
  *
- * dp_read() is the only part of this engine that takes bytes from a
- * network daemon. tests/unit/dp_run.c covers the enumerable edges with
- * a real socketpair: whole message, three in one read, torn at every
- * byte boundary, the three bad-length classes. Those are cases a person
- * can list.
+ * dp_run.c covers the edges a person can enumerate. This targets what
+ * nobody does: a header claiming one type with another type's payload
+ * length, nonsense type codes at plausible lengths, bodies that parse as
+ * one message and mean another.
  *
- * This targets what nobody enumerates: a header claiming one type with
- * another type's payload length, nonsense type codes at plausible
- * lengths, bodies that parse as one message and mean another.
- *
- * NO SOCKET. dp_recv_hook feeds dp_read from the fuzzer's buffer, which
- * is what 03-testing asked for. An earlier version drove a real unix
- * socket per iteration and every bug found was in the connection
- * lifecycle rather than the parser: SIGPIPE on the reply path, and
- * dp_accept's replacement branch closing the fd it had just accepted
- * because the harness freed the number first and the kernel reissued it.
- * None of that is under test. The seam deletes all of it.
+ * No socket: dp_recv_hook feeds dp_read straight from the fuzzer's
+ * buffer. Driving a real socket per iteration finds bugs in the
+ * connection lifecycle rather than in the parser under test.
  *
  *     make tests/unit/dp_fuzz
  *     ./tests/unit/dp_fuzz -runs=100000

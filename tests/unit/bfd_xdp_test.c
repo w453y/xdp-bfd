@@ -1,22 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0
 /* bfd_xdp_test.c - test-only entry point into the detection sweep.
  *
- * check_session() is a pure function of (map state, now), but it only ever
- * runs from a bpf_timer, and bpf_timer does not fire under
- * BPF_PROG_TEST_RUN. So the sweep - detect arithmetic, the echo advisory
- * verdict, the alive compare-and-swap - has no coverage at all.
+ * check_session() is a pure function of (map state, now), but it runs
+ * only from a bpf_timer, and bpf_timer does not fire under
+ * BPF_PROG_TEST_RUN. This gives the harness a way in.
  *
- * This object exists to give the harness a way in. It is NOT built into
- * bfd_xdp.o and is never loaded in production: putting a test entry point
- * in the shipped bytecode would mean a loader could attach it by mistake,
- * and one more program for the verifier to accept on every supported
- * kernel.
+ * Not built into bfd_xdp.o and never loaded in production: a test entry
+ * point in shipped bytecode is one a loader could attach by mistake, and
+ * one more program for the verifier to accept.
  *
- * The include list below must match src/xdp/bfd_xdp.c exactly, in the same
- * order - maps.h before anything referencing a map by symbol, sweep.h
- * before tx.h. Same headers, same clang flags, so the only thing that can
- * differ between this object and the real one is the entry point itself.
- * If you change the include block in bfd_xdp.c, change it here too.
+ * The include list below must match src/xdp/bfd_xdp.c exactly and in the
+ * same order - maps.h before anything referencing a map by symbol,
+ * sweep.h before tx.h - so the entry point is the only difference
+ * between this object and the real one. Change one, change both.
  */
 
 #include <linux/bpf.h>

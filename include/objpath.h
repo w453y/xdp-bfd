@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 /* objpath.h - locate bfd_xdp.o without depending on the working directory.
  *
- * Both the engine and the loader used to call
- * bpf_object__open_file("bfd_xdp.o", NULL) with a bare relative path, so
- * either one started from anywhere but the build tree failed to load. The
- * object is built beside the binaries, so the binary's own directory is
- * the right place to look; the cwd stays as a last resort so an explicitly
- * placed object still works.
+ * The object is built beside the binaries, so the binary's own directory
+ * is where to look; the cwd stays a last resort so an explicitly placed
+ * object still works.
  */
 #ifndef BFD_OBJPATH_H
 #define BFD_OBJPATH_H

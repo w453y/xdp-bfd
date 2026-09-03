@@ -1,1 +1,0 @@
-unstressed loop rate: 504 passes/s

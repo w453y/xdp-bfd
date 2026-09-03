@@ -64,19 +64,16 @@ static __always_inline int parse_l3(struct ethhdr *eth, void *data_end,
 		c->udp = (void *)(c->iph + 1);
 		if ((void *)(c->udp + 1) > data_end)
 			return XDP_PASS;
-		/* Fragmented UDP. Nothing below this point is safe on a
-		 * fragment: at any offset but 0 there is no UDP header at
-		 * all, so c->udp points at payload and every port test
-		 * reads garbage. At offset 0 with MF set the header IS
-		 * there, so the packet can satisfy every check below and
-		 * then be bounced with MF still set - a nonsense fragment
-		 * emitted onto the wire while the stack separately
-		 * reassembles the datagram for the socket.
+		/* Fragmented UDP. At any offset but 0 there is no UDP header,
+		 * so c->udp points at payload and every port test reads
+		 * garbage. At offset 0 with MF set the header is there, so
+		 * the packet can pass every check below and be bounced with
+		 * MF still set - a nonsense fragment on the wire while the
+		 * stack reassembles the datagram for the socket.
 		 *
 		 * A BFD control packet is 66 bytes and never fragments, so
-		 * dropping a fragment aimed at a BFD port costs nothing and
-		 * closes the same bypass class as the ihl != 5 rule above.
-		 * Everything else PASSes to the stack as before.
+		 * dropping one aimed at a BFD port costs nothing. Everything
+		 * else passes to the stack.
 		 *
 		 * IPv6 needs no equivalent: a fragment header makes
 		 * nexthdr != IPPROTO_UDP and falls out of the dispatch. */

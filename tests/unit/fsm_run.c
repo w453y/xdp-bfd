@@ -1,21 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0
 /* fsm_run.c - the engine's state machine, driven directly.
  *
- * RFC 5880 s6.8.6 is a table: our state, the peer's state, and a few flags
+ * RFC 5880 s6.8.6 is a table: our state, the peer's state and a few flags
  * decide the transition, the diagnostic and whether the control plane is
- * told. Nothing has ever tested it. The lab suite exercises it only
- * incidentally, through whatever FRR happens to do.
+ * told. This drives that table case by case.
  *
- * No seams were needed. fsm_rx, fsm_detect and fsm_tx all take their clock
- * as a parameter, and fsm.o refers to only three engine symbols outside
- * libc: dp_notify_state, sessions and use_ktx. All three are stubbed
- * below, so this links against the real fsm.o with no test build of the
- * engine and no #ifdefs in shipped code.
+ * No seams needed: fsm_rx, fsm_detect and fsm_tx all take their clock as
+ * a parameter, and fsm.o refers to only three engine symbols outside
+ * libc - dp_notify_state, sessions and use_ktx - all stubbed below. So
+ * this links the real fsm.o with no test build and no #ifdefs in shipped
+ * code.
  *
- * tx_one's sendto lands on an unopened socket and fails; fsm.c ignores the
- * return, which suits us. This asserts state, diag and notification, not
- * what reached the wire - the wire side is tests/unit/xdp_run.c and the
- * injection suite.
+ * tx_one's sendto lands on an unopened socket and fails, which fsm.c
+ * ignores. This asserts state, diag and notification, not what reached
+ * the wire; that is xdp_run.c and the injection matrix.
  *
  *     make test-fsm
  */
@@ -291,9 +289,9 @@ static void case_poll_bits(void)
 }
 
 /* dp_notify_state runs only when something the control plane reports
- * actually moved, and only while Up. It also has to run AFTER the session
- * is updated: it reads the peer's timers, flags, mult and discriminator
- * out of the session, and it used to ship the previous values. */
+ * actually moved, and only while Up. It must also run AFTER the session
+ * is updated, since it reads the peer's timers, flags, mult and
+ * discriminator out of the session rather than off the packet. */
 static void case_notify(void)
 {
 	struct session *s;

@@ -2,19 +2,13 @@
 /*
  * main.c - userspace BFD endpoint (RFC 5880/5881 subset).
  *
- * M4b: FRR distributed-BFD dataplane integration. We listen on a unix
- * socket; bfdd (started with --dplaneaddr unixc:<path>) connects and
- * drives session lifecycle via the bfddp protocol. Our engine (and the
- * XDP fast path in --kernel-tx mode) runs the sessions and reports
- * state changes back. No FRR patches required.
+ * Runs as a distributed-BFD data plane for FRR: bfdd connects over the
+ * bfddp protocol and drives session lifecycle, this engine runs the
+ * sessions and reports state changes back. Stock FRR, no patches.
  *
  * Modes:
- *   ./bfd_tx <local-ip> <peer-ip> [--kernel-tx <if>]      static session
- *   ./bfd_tx --dplane <port|sock-path> [--kernel-tx <if>]      bfdd-driven
- *
- * bfddp wire structs adapted from FRR bfdd/bfddp_packet.h
- * (MIT licensed, Copyright (C) 2020 NetDEF, Rafael F. Zalamena).
- * All bfddp fields are network byte order; 64-bit fields big-endian.
+ *   ./bfd_tx <local-ip> <peer-ip> [--kernel-tx <if>]    static session
+ *   ./bfd_tx --dplane <port|sock-path> [--kernel-tx <if>]  bfdd-driven
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -61,10 +55,9 @@
 static int rx_sock = -1, rx6_sock = -1;
 static int rxm_sock = -1;   /* v4 multihop RX, port 4784 */
 static int rxm6_sock = -1;  /* v6 multihop RX, port 4784 */
-/* The loop's clock. Hrtimer-backed and readable by poll, so the wait
- * covers every socket at once and a sub-millisecond tick is honoured.
- * The SO_RCVTIMEO this replaced slept on the jiffy timer wheel and
- * rounded anything under 1ms up; docs/tick-ladder/ measures both. */
+/* The loop's clock. Hrtimer-backed and pollable, so one wait covers
+ * every socket and a sub-millisecond tick is honoured - SO_RCVTIMEO
+ * sleeps on the jiffy wheel and rounds anything under 1ms up. */
 static int tick_fd = -1;
 
 
@@ -195,11 +188,9 @@ int main(int argc, char **argv)
 		else if (!static_peer)
 			static_peer = argv[i];
 	}
-	/* One address without the other. The guard below only demands a
+	/* One address without the other: the guard below only demands a
 	 * pair when --dplane is absent, so `--dplane <p> <one-address>`
-	 * used to reach the static setup and strchr() a NULL peer.
-	 * scan-build found it; validated here so nothing is opened
-	 * before the arguments are known to be usable. */
+	 * would otherwise reach the static setup with a NULL peer. */
 	if (static_local && !static_peer) {
 		log_err("static: %s given without a peer address\n",
 			static_local);
@@ -260,11 +251,8 @@ int main(int argc, char **argv)
 	 * the kernel to filter.
 	 *
 	 * IP_MINTTL is accepted on a UDP socket and then never consulted:
-	 * Linux enforces it only in tcp_v4_rcv, which has its own MIB
-	 * counter, TCPMinTtlDrop. The same is true of IPV6_MINHOPCOUNT on
-	 * the v6 socket below, which had been relying on it since long
-	 * before anything could test the userspace path. Both were
-	 * silently doing nothing; tests/netns_userspace.py caught it.
+	 * Linux enforces it only in tcp_v4_rcv. IPV6_MINHOPCOUNT on the v6
+	 * socket below behaves the same way. Both are silently inert.
 	 *
 	 * So the same treatment the multihop sockets already get, against
 	 * a fixed 255 rather than a per-session minimum. */
@@ -395,8 +383,8 @@ int main(int argc, char **argv)
 		if (fam == AF_INET6) {
 			struct in6_addr sl6, sp6;
 
-			/* Checked, unlike before: a typo used to produce a
-			 * zero address and a session that could never match. */
+			/* Unchecked, a typo yields a zero address and a
+			 * session that can never match. */
 			if (inet_pton(AF_INET6, static_local, &sl6) != 1 ||
 			    inet_pton(AF_INET6, static_peer, &sp6) != 1) {
 				log_err("static: bad IPv6 address\n");
@@ -450,28 +438,21 @@ int main(int argc, char **argv)
 			.msg_iov = &iov, .msg_iovlen = 1,
 			.msg_control = cbuf, .msg_controllen = sizeof(cbuf),
 		};
-		/* Packets drained per socket per pass. Each of these loops
-		 * used to run until EAGAIN, so a sustained flood of frames
-		 * XDP passes to the stack kept the loop here and starved
-		 * everything below it - transmit, detection, the map poll,
-		 * the dplane read. The process stays alive and does nothing,
-		 * which is the failure mode no process-liveness check sees.
+		/* Packets drained per socket per pass. Draining until EAGAIN
+		 * lets a sustained flood starve everything below it -
+		 * transmit, detection, the map poll, the dplane read - while
+		 * the process stays alive, which no liveness check catches.
 		 *
-		 * MAX_SESSIONS is one packet per configured session per pass,
-		 * so a legitimate burst still clears in a single iteration and
-		 * anything larger spreads across the next few 2ms ticks
-		 * instead of monopolising this one.
+		 * One packet per configured session per pass: a legitimate
+		 * burst clears in a single iteration and anything larger
+		 * spreads across the next few ticks.
 		 */
 		const int drain_budget = MAX_SESSIONS;
 
-		/* This poll is the loop's clock. It waits on a timerfd armed at
-		 * --tick-us and on every RX socket at once, so a v6 packet no
-		 * longer waits out the v4 socket's timeout, and the tick is not
-		 * rounded up to a jiffy the way SO_RCVTIMEO was (docs/tick-ladder/).
-		 *
-		 * All four drains below are now non-blocking. The drain budget is
-		 * what bounds a pass, not the blocking discipline: a sustained
-		 * flood still spreads across ticks instead of monopolising one. */
+		/* The loop's clock: a timerfd armed at --tick-us plus every RX
+		 * socket, so no socket waits out another's timeout. All four
+		 * drains below are non-blocking, and the drain budget rather
+		 * than the blocking discipline is what bounds a pass. */
 		struct pollfd pfd[7] = {0};
 		int dp_l = -1, dp_c = -1;
 
@@ -542,16 +523,13 @@ int main(int argc, char **argv)
 		if (n >= 0)
 			loop_rx_wakeups++;
 
-		/* Same predicate the XDP path uses. Userspace used to check a
-		 * shorter list that ignored p.len entirely, so a packet
-		 * claiming 200 bytes inside a 24-byte datagram was accepted
-		 * here and rejected in the kernel. */
+		/* The same predicate the XDP path uses, so the two cannot
+		 * disagree about what is acceptable. */
 		/* cmsgs first: the arriving TTL decides whether the packet is
 		 * acceptable at all, so it is checked alongside the header
 		 * rather than after demux. rttl stays -1 when the cmsg is
-		 * missing, which drops the packet - that would mean the
-		 * setsockopt did not take, and silently accepting anything is
-		 * how this path came to be unguarded in the first place. */
+		 * missing, which drops the packet - that means the setsockopt
+		 * did not take, and accepting anything then is worse. */
 		uint32_t dst_ip = 0;
 		int rttl = -1;
 

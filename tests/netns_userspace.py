@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 """Userspace parity rig: the socket path, in namespaces, on one machine.
 
-inject_matrix.py asserts on BPF counters, so it can only ever test the XDP
-path. Everything the engine does when a packet reaches userspace - the
-shared acceptance predicate, GTSM on the sockets, the demux - has no
-coverage at all, and two of this branch's fixes live there.
+inject_matrix.py asserts on BPF counters, so it can only test the XDP
+path. This covers what the engine does when a packet reaches userspace:
+the shared acceptance predicate, GTSM on the sockets, and the demux.
 
-This runs the engine in STATIC mode (no --dplane, no --kernel-tx), so every
+The engine runs in static mode - no --dplane, no --kernel-tx - so every
 packet goes through recvmsg and fsm_rx. Assertions come from the SIGUSR1
-stats snapshot, whose per-session rx_pkts only became a real number when
-the counter-fidelity fix landed; before that it was structurally zero and
-nothing here would have been possible.
+stats snapshot.
 
 No scapy and no raw sockets: the userspace path receives UDP datagrams, so
 a plain socket with IP_TTL set reaches every check worth testing. Layer-2

@@ -2,12 +2,11 @@
 /*
  * detect_vectors.h - shared input vectors for the poll-aware detect rule.
  *
- * The rule lives twice: fsm.c (engine, on fsm_rx) and bfd_xdp.c (kernel,
- * on packet receipt). Both express the same disjunction - take the
- * candidate if there is no prior interval, or the candidate is larger, or
- * the observed inter-arrival gap already fits it - so both should agree
- * on every vector here. Two independent expressions of one rule is
- * exactly what drifts, which is what this table is for.
+ * The rule lives twice: fsm.c on fsm_rx, and bfd_xdp.c on packet receipt.
+ * Both express the same disjunction - take the candidate if there is no
+ * prior interval, or the candidate is larger, or the observed
+ * inter-arrival gap already fits it - so both must agree on every vector
+ * here. Two independent expressions of one rule is what drifts.
  *
  * Known divergence, deliberate: the candidate is computed differently.
  * fsm.c takes max(r_min_tx, min_rx_us) from a parsed struct; bfd_xdp.c

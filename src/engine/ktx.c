@@ -197,16 +197,14 @@ int ktx_attach_if(int ifindex, const char *ifname)
 	unsigned int flags = ktx_xdp_flags;
 	const char *mode = (flags & XDP_FLAGS_SKB_MODE) ? "generic" : "native";
 
-	/* Attach through a bpf_link, so the kernel detaches the program
-	 * when this process dies - including on SIGKILL, where we get no
-	 * chance to clean up. With the plain attach the fast path kept
-	 * answering control packets from a frozen tx_config after the
-	 * engine was gone, so the peer saw a session that nothing was
-	 * driving.
+	/* Attach through a bpf_link so the kernel detaches the program when
+	 * this process dies, including on SIGKILL. Otherwise the fast path
+	 * keeps answering from a frozen tx_config and the peer sees a
+	 * session nothing is driving.
 	 *
-	 * The mode is per interface rather than per process: a veth or a
-	 * driver without native XDP refuses drv mode, and an on-demand
-	 * attach cannot choose the interface it is handed.
+	 * The mode is per interface, not per process: a veth or a driver
+	 * without native XDP refuses drv mode, and an on-demand attach
+	 * cannot choose the interface it is handed.
 	 */
 	LIBBPF_OPTS(bpf_link_create_opts, lopts, .flags = flags);
 	int fd = bpf_link_create(bpf_program__fd(ktx_prog), ifindex,
@@ -316,20 +314,16 @@ void ktx_mirror(struct session *s)
 	s->pushed_valid = 1;
 }
 
-/* echo_peers is keyed on the peer address alone - that is all the
- * reflector has when a self-addressed echo arrives, since it never
- * learns which of our local addresses the session used. Several
- * sessions can therefore share one entry, so no single session owns it
- * and no single session may delete it: doing that disabled reflection
- * for every other session with the same peer.
+/* echo_peers is keyed on the peer address alone: that is all the
+ * reflector has when a self-addressed echo arrives. Sessions sharing a
+ * peer therefore share one entry, so no single session may delete it.
  *
  * Membership is re-derived from the session table rather than
- * refcounted. A refcount that drifts by one silently disables or
- * silently enables echo and there is no witness for either; a rescan of
- * 64 slots on a config event costs nothing.
+ * refcounted - a refcount that drifts by one silently enables or
+ * disables echo with no witness, and rescanning 64 slots on a config
+ * event costs nothing.
  *
- * `skip` is the session being torn down or reconfigured, whose own
- * state must not count toward the answer.
+ * `skip` is the session being torn down, whose own state must not count.
  */
 void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip)
 {
@@ -403,18 +397,11 @@ void ktx_poll_map(struct session *s, uint64_t t)
 	}
 	if (ms.last_seen_ns / 1000 > s->last_rx_us)
 		s->last_rx_us = ms.last_seen_ns / 1000;
-	/* The peer's advertised state rides in every packet, but once the
-	 * fast path is armed userspace stops seeing them: enable flips on
-	 * at the transition into Up, so fsm_rx's last look at this field is
-	 * the bring-up packet that carried Init. r_state then sits at Init
-	 * for the life of an established session.
-	 *
-	 * That was invisible while only fsm_rx read it - it is re-read from
-	 * the packet in hand there - and stops being invisible the moment
-	 * anything asks about the peer between packets. Both demand gates
-	 * require the remote to be Up (RFC 5880 s6.8.6), so without this
-	 * they are never satisfied on exactly the sessions the fast path
-	 * is carrying. */
+	/* Once the fast path is armed userspace stops seeing packets, so
+	 * fsm_rx's last look at the peer's state is the bring-up packet
+	 * carrying Init and r_state would sit there for the life of the
+	 * session. Anything asking about the peer between packets needs
+	 * this - both demand gates require the remote to be Up. */
 	if (ms.last_seen_ns)
 		s->r_state = ms.remote_state;
 	if (ms.detect_iv_us)

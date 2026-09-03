@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """The IPv6 echo originator, end to end on the wire.
 
-m8b's originator was v4 only. The stated reason, recorded in
-docs/m8-echo/README.md, was that a self-addressed IPv6 packet is not looped
-by a neighbour's forwarding plane the way a v4 one is. That premise was
-never measured, and it is wrong: with the neighbour's ipv6 forwarding on,
-a self-addressed v6 echo comes back at hop limit 254 exactly as v4 does.
+A self-addressed v6 echo comes back at hop limit 254 exactly as a v4 one
+does, provided the neighbour has ipv6 forwarding on. That sysctl is the
+only difference between the two arms below.
 
 This drives the whole path and asserts on the wire rather than on the
 engine's own counters. Two arms against one config, changing only the

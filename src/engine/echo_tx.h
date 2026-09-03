@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* echo_tx.h - m8b echo originator: raw L2 self-addressed probes. */
+/* echo_tx.h - echo originator: raw L2 self-addressed probes. */
 #ifndef BFD_ENGINE_ECHO_TX_H
 #define BFD_ENGINE_ECHO_TX_H
 

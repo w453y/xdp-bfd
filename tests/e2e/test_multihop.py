@@ -1,4 +1,4 @@
-"""03-testing Layer 3 scenario 7: multihop over a router namespace.
+"""Multihop over a router namespace.
 
     container A (bfdd + engine)     router ns      container B (bfdd)
       eth-a 10.79.1.1/24  <-veth->  r1 10.79.1.2

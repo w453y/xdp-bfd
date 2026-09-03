@@ -508,6 +508,180 @@ static void case_jitter(uint8_t mult, unsigned lo_pct, unsigned hi_pct,
 	}
 }
 
+/* ---------- demand mode (RFC 5880 s6.6) ----------
+ *
+ * The three gates are independent and asymmetric, which is the whole
+ * point: the D bit is per-direction, so who asked decides what stops.
+ * These drive the predicates through fsm_tx and fsm_detect rather than
+ * calling them directly, so the wiring is covered too.
+ *
+ * tx_pkts is the witness for transmission: tx_one bumps it and its
+ * sendto fails harmlessly on the unopened socket. demand_announced is
+ * the witness for the D bit, since tx_one only bumps it on a packet it
+ * actually marked.
+ */
+
+/* A session Up with the peer Up, optionally demanding on either side. */
+static struct session *demand_sess(int we_demand, int peer_demands)
+{
+	struct session *s = sess_init(ST_UP);
+
+	s->r_state = ST_UP;
+	s->demand  = we_demand;
+	s->r_flags = peer_demands ? BFD_F_DEMAND : 0;
+	/* Past the announcement quota by default: these cases are about
+	 * the steady state, and the one that is not says so. */
+	s->demand_announced = DEMAND_ANNOUNCE_N;
+	return s;
+}
+
+static void check(const char *name, int ok, const char *detail)
+{
+	if (ok) {
+		printf("ok   %-44s %s\n", name, detail);
+	} else {
+		printf("FAIL %-44s %s\n", name, detail);
+		fails++;
+	}
+}
+
+/* The D bit goes out only once BOTH ends are Up (s6.8.6). */
+static void case_demand_bit(void)
+{
+	struct session *s;
+
+	s = demand_sess(1, 0);
+	s->r_state = ST_INIT;
+	s->demand_announced = 0;
+	s->next_tx_us = 0;
+	fsm_tx(s, 2000000);
+	check("demand-bit-withheld-until-peer-up", s->demand_announced == 0,
+	      "no D while peer is Init");
+
+	s = demand_sess(1, 0);
+	s->demand_announced = 0;
+	s->next_tx_us = 0;
+	fsm_tx(s, 2000000);
+	check("demand-bit-set-when-both-up", s->demand_announced == 1,
+	      "D on the wire");
+
+	/* Not configured to demand: never set it, however Up both are. */
+	s = demand_sess(0, 0);
+	s->demand_announced = 0;
+	s->next_tx_us = 0;
+	fsm_tx(s, 2000000);
+	check("demand-bit-absent-when-unconfigured", s->demand_announced == 0,
+	      "no D");
+}
+
+/* s6.8.7: transmission stops because the PEER demanded, not because we
+ * did. */
+static void case_demand_tx_hold(void)
+{
+	struct session *s;
+	uint64_t t = 2000000;
+
+	s = demand_sess(0, 1);
+	s->next_tx_us = 0;
+	fsm_tx(s, t);
+	check("demand-tx-held-when-peer-demands", s->tx_pkts == 0,
+	      "silent");
+
+	/* We demand, the peer does not: we keep transmitting. The hold is
+	 * not symmetric and reading it as "demand mode means quiet" gets
+	 * this backwards. */
+	s = demand_sess(1, 0);
+	s->next_tx_us = 0;
+	fsm_tx(s, t);
+	check("demand-tx-runs-when-only-we-demand", s->tx_pkts == 1,
+	      "still transmitting");
+
+	/* A pending Final outranks the hold: the peer asked for it. */
+	s = demand_sess(0, 1);
+	s->next_tx_us = 0;
+	s->send_final = 1;
+	fsm_tx(s, t);
+	check("demand-tx-final-exempt", s->tx_pkts == 1, "Final sent");
+
+	/* So does our own Poll - it is the only way to verify the path. */
+	s = demand_sess(0, 1);
+	s->next_tx_us = 0;
+	s->polling = 1;
+	fsm_tx(s, t);
+	check("demand-tx-poll-exempt", s->tx_pkts == 1, "Poll sent");
+
+	/* The hold needs the peer Up too, not just its D bit. */
+	s = demand_sess(0, 1);
+	s->r_state = ST_INIT;
+	s->next_tx_us = 0;
+	fsm_tx(s, t);
+	check("demand-tx-needs-peer-up", s->tx_pkts == 1, "transmitting");
+}
+
+/* Both ends demanding: we must get our own D out before going quiet, or
+ * the peer never learns to stop and keeps transmitting forever. */
+static void case_demand_announce(void)
+{
+	struct session *s = demand_sess(1, 1);
+	uint64_t t = 2000000;
+	int sent = 0;
+
+	s->demand_announced = 0;
+	for (int i = 0; i < 20; i++) {
+		s->next_tx_us = 0;          /* due every pass */
+		fsm_tx(s, t);
+		t += 10000;
+	}
+	sent = (int)s->tx_pkts;
+	check("demand-announces-before-holding", sent == DEMAND_ANNOUNCE_N,
+	      sent == DEMAND_ANNOUNCE_N ? "3 D-marked, then quiet"
+				        : "wrong count");
+	check("demand-announce-counts-only-marked",
+	      s->demand_announced == DEMAND_ANNOUNCE_N, "quota reached");
+
+	/* Coming back round to Up is a fresh negotiation: the peer on the
+	 * other side has not heard our D bit this time. */
+	state_transition(s, ST_DOWN, 1, t, "test");
+	check("demand-announce-resets-on-transition",
+	      s->demand_announced == 0, "counter cleared");
+}
+
+/* s6.8.4: the detection timer does not run while WE are demanding - the
+ * peer's silence is what we asked for. */
+static void case_demand_detect_hold(void)
+{
+	struct session *s;
+	/* last_rx_us is 1000000 and the budget is 3 x 10ms, so this is far
+	 * past it: without a hold every one of these goes Down. */
+	uint64_t t = 1000000 + 500000;
+
+	s = demand_sess(1, 0);
+	fsm_detect(s, t);
+	check("demand-detect-held-when-we-demand", s->state == ST_UP,
+	      "stayed Up through silence");
+
+	/* The peer demanding does not license US to stop timing it out. */
+	s = demand_sess(0, 1);
+	fsm_detect(s, t);
+	check("demand-detect-runs-when-peer-demands", s->state == ST_DOWN,
+	      "timed out");
+
+	/* Our own Poll re-arms detection: that is what bounds the poll, so
+	 * a lost Final brings the session down instead of hanging. */
+	s = demand_sess(1, 0);
+	s->polling = 1;
+	fsm_detect(s, t);
+	check("demand-detect-runs-while-polling", s->state == ST_DOWN,
+	      "poll is bounded");
+
+	/* And it needs the peer Up, same as the rest. */
+	s = demand_sess(1, 0);
+	s->r_state = ST_INIT;
+	fsm_detect(s, t);
+	check("demand-detect-needs-peer-up", s->state == ST_DOWN,
+	      "timed out");
+}
+
 int main(void)
 {
 	run_table();
@@ -530,6 +704,11 @@ int main(void)
 
 	case_jitter(3, 75, 100, "jitter-mult3-75-100pct");
 	case_jitter(1, 75,  90, "jitter-mult1-75-90pct");
+
+	case_demand_bit();
+	case_demand_tx_hold();
+	case_demand_announce();
+	case_demand_detect_hold();
 
 	printf("\n%d failure(s)\n", fails);
 	return fails ? 1 : 0;

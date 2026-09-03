@@ -794,6 +794,72 @@ static void case_bounce_v4_frame(void)
 	map_reset();
 }
 
+/* The D bit on an RX-clocked reply. The engine decides whether it goes
+ * out - the kernel has no view of the remote state that s6.8.6 requires
+ * - so this checks the flag is carried, and that it rides alongside a
+ * Final rather than displacing it: only P and F are mutually exclusive
+ * (s6.5).
+ *
+ * in_flags picks what the arriving frame carries, so the D-with-F case
+ * comes from a real Poll rather than being constructed. */
+static void case_demand_bit_out(uint8_t cfg_demand, uint8_t in_flags,
+				uint8_t want_set, uint8_t want_final,
+				const char *name)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct bfd_ctrl_pkt p = ctrl_up();
+	unsigned char out[FRAME_MAX];
+	unsigned int out_len = 0;
+	struct tx_cfg cfg = {0};
+	struct frame f;
+	int v, bad = 0;
+
+	map_reset();
+	arm_session();
+	if (bpf_map_lookup_elem(cfg_fd, &k, &cfg)) {
+		printf("FAIL %-40s no cfg\n", name);
+		fails++;
+		return;
+	}
+	cfg.demand = cfg_demand;
+	bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY);
+
+	p.flags |= in_flags;
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+	v = run_frame(&f, out, &out_len);
+	if (v != XDP_TX) {
+		printf("FAIL %-40s no bounce (%s)\n", name,
+		       v < 0 ? "syscall-error" : verdict_str(v));
+		fails++;
+		map_reset();
+		return;
+	}
+
+	const struct ethhdr *oe = (const void *)out;
+	const struct iphdr *oi = (const void *)(oe + 1);
+	const struct udphdr *ou = (const void *)(oi + 1);
+	const struct bfd_ctrl_pkt *ob = (const void *)(ou + 1);
+	uint8_t got = !!(ob->flags & BFD_F_DEMAND);
+	uint8_t gotf = !!(ob->flags & BFD_F_FINAL);
+
+	if (got != want_set) {
+		printf("     D bit is %u, want %u\n", got, want_set);
+		bad = 1;
+	}
+	if (gotf != want_final) {
+		printf("     F bit is %u, want %u\n", gotf, want_final);
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s D %u F %u\n", name, got, gotf);
+	}
+	map_reset();
+}
+
 /* The v6 bounce, and the only independent check the hand-rolled fold in
  * tx.h has ever had. */
 static void case_bounce_v6_frame(void)
@@ -1661,6 +1727,51 @@ static void case_sweep(const char *name, unsigned int iv_us, unsigned int mult,
 	bpf_map_delete_elem(sweep_cfg_fd, &k);
 }
 
+/* Demand mode (RFC 5880 s6.6): the engine asked this peer to stop
+ * transmitting, so the silence the sweep measures is the silence we
+ * requested. Without the hold every demanding session is torn down one
+ * detection time after it goes quiet - which is immediately, since going
+ * quiet is the whole point.
+ *
+ * alive must stay 1 rather than merely skipping the emit: bfd_loader
+ * reports the flag directly, so clearing it would show every healthy
+ * demand session as down. */
+static void case_sweep_demand(void)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct session_state st = {0}, after = {0};
+	struct tx_cfg cfg = {0};
+	unsigned long long now = 1000ull * 1000 * 1000 * 60;
+
+	st.last_seen_ns = now - 40000000ull;   /* well past 3 x 10ms */
+	st.detect_iv_us = 10000;
+	st.detect_mult  = 3;
+	st.alive        = 1;
+	cfg.min_rx_us   = 10000;
+	cfg.demand_hold = 1;
+
+	bpf_map_delete_elem(sweep_sess_fd, &k);
+	bpf_map_delete_elem(sweep_cfg_fd, &k);
+	if (!sweep_put(&k, &st, &cfg) || !sweep_at(now) ||
+	    bpf_map_lookup_elem(sweep_sess_fd, &k, &after)) {
+		printf("FAIL %-40s setup\n", "sweep-demand-hold");
+		fails++;
+		return;
+	}
+
+	if (after.alive != 1) {
+		printf("     alive is %u, want 1 - the hold did not apply\n",
+		       after.alive);
+		printf("FAIL %-40s\n", "sweep-demand-hold");
+		fails++;
+	} else {
+		printf("ok   %-40s alive 1\n", "sweep-demand-hold");
+	}
+
+	bpf_map_delete_elem(sweep_sess_fd, &k);
+	bpf_map_delete_elem(sweep_cfg_fd, &k);
+}
+
 /* now earlier than last_seen_ns. Without the signed guard the subtraction
  * wraps and every session looks silent for ~584 years. */
 static void case_sweep_negative(void)
@@ -1780,6 +1891,11 @@ static void run_sweep_matrix(void)
 	 * The guard returns early rather than letting the unsigned delta
 	 * wrap into an enormous silence. */
 	case_sweep_negative();
+	case_sweep_demand();
+
+	case_demand_bit_out(0, 0, 0, 0, "demand-bit-off-not-set");
+	case_demand_bit_out(1, 0, 1, 0, "demand-bit-on-set");
+	case_demand_bit_out(1, BFD_F_POLL, 1, 1, "demand-bit-rides-with-final");
 	/* 50ms echo interval, mult 3: budget 150ms */
 	case_echo_advisory("echo-advisory-fresh", 50000, 100000000ull, 1, 1);
 	case_echo_advisory("echo-advisory-stale", 50000, 200000000ull, 1, 0);

@@ -72,6 +72,12 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx,
         	if (!send_final && cfg->poll &&
             st->final_seq != cfg->poll_seq)
         		bfd->flags |= BFD_F_POLL;
+        	/* D rides alongside P or F rather than excluding them: only
+        	 * P and F are mutually exclusive (s6.5). The engine has
+        	 * already checked both ends are Up, which is the whole of
+        	 * s6.8.6's condition. */
+        	if (cfg->demand)
+        		bfd->flags |= BFD_F_DEMAND;
         	bfd->detect_mult = cfg->mult;
         	bfd->len         = 24;
         	bfd->my_disc     = bpf_htonl(cfg->my_disc);

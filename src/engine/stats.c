@@ -84,6 +84,18 @@ static void one_session(FILE *f, const struct session *s, int first)
 	fprintf(f, " \"detect_basis_us\": %u, \"polling\": %s,",
 		s->detect_iv_us, s->polling ? "true" : "false");
 	fprintf(f, " \"orphaned\": %s,", s->orphaned ? "true" : "false");
+	/* Four separate facts, because in demand mode they routinely
+	 * disagree and a single "demand" boolean hides which way round it
+	 * is: what bfdd configured, what the peer is asking of us, and the
+	 * two holds those actually produce right now. A session with
+	 * "demand": true and "tx_held": false has simply not seen the peer
+	 * reach Up yet. */
+	fprintf(f, " \"demand\": {\"on\": %s, \"peer\": %s,"
+		   " \"tx_held\": %s, \"detect_held\": %s},",
+		s->demand ? "true" : "false",
+		(s->r_flags & BFD_F_DEMAND) ? "true" : "false",
+		demand_tx_held(s) ? "true" : "false",
+		demand_detect_held(s) ? "true" : "false");
 	fprintf(f, " \"rx_pkts\": %llu, \"tx_pkts\": %llu,",
 		(unsigned long long)s->rx_pkts,
 		(unsigned long long)s->tx_pkts);

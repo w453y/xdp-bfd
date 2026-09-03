@@ -121,6 +121,9 @@ void state_transition(struct session *s, int newstate, int diag,
 		s->polling = 0;
 		s->applied_tx_us = s->min_tx_us;
 	}
+	/* Each time round to Up is a fresh negotiation: the peer that
+	 * comes back has not heard our D bit, whoever it is. */
+	s->demand_announced = 0;
 	s->just_up = (newstate == ST_UP);
 	s->next_tx_us = t;
 	dp_notify_state(s);
@@ -214,6 +217,10 @@ void fsm_detect(struct session *s, uint64_t t)
 {
 	if (s->state == ST_DOWN || s->state == ST_ADMINDOWN || !s->last_rx_us)
 		return;
+	/* We asked this peer to stop transmitting, so the gap since its
+	 * last packet measures our own request, not the path. */
+	if (demand_detect_held(s))
+		return;
 	uint64_t iv = s->detect_iv_us;
 	if (!iv)
 		iv = s->r_min_tx > s->min_rx_us ? s->r_min_tx : s->min_rx_us;
@@ -240,6 +247,11 @@ static void tx_one(struct session *s)
 	o.vers_diag   = (1 << 5) | (s->diag & 0x1f);
 	o.flags       = (s->state << 6) |
 		      (s->send_final ? F_F : (s->polling ? F_P : 0));
+	if (demand_bit_out(s)) {
+		o.flags |= F_D;
+		if (s->demand_announced < DEMAND_ANNOUNCE_N)
+			s->demand_announced++;
+	}
 	o.detect_mult = s->detect_mult;
 	o.len         = 24;
 	o.my_disc     = htonl(s->wire_disc);
@@ -299,10 +311,53 @@ void fsm_announce_down(struct session *s)
 		tx_one(s);
 }
 
+/* Advance next_tx_us by one jittered interval. Split out of fsm_tx
+ * because the demand hold below has to keep the schedule rolling
+ * without sending: on resume the session must pick up at the
+ * negotiated pace rather than firing off every interval it sat out. */
+static void tx_reschedule(struct session *s, uint64_t t)
+{
+	uint64_t iv, span;
+
+	if (s->state == ST_UP)
+		iv = s->applied_tx_us > s->r_min_rx ? s->applied_tx_us
+						    : s->r_min_rx;
+	else
+		iv = SLOW_TX_US;
+
+	/* RFC 5880 s6.8.3: jitter the interval to 75-100%, but only
+	 * 75-90% when detect_mult is 1. This applies to the slow rate as
+	 * well, which previously used SLOW_TX_US raw - so every session
+	 * below Up transmitted on the same 1s grid and a mesh coming up at
+	 * once synchronised into a burst every second, which is what
+	 * jitter exists to prevent.
+	 *
+	 * It looks like an undershoot but is not: the 'not less than one
+	 * second' rule in s6.8.7 constrains bfd.DesiredMinTxInterval, not
+	 * the resulting gap.
+	 */
+	span = s->detect_mult == 1 ? iv * 3 / 20 : iv / 4;
+	iv = iv * 3 / 4 + (random() % (span + 1));
+
+	s->next_tx_us = t + iv;
+}
+
 void fsm_tx(struct session *s, uint64_t t)
 {
 	if (s->admin_down && s->state != ST_ADMINDOWN)
 		state_transition(s, ST_ADMINDOWN, 7, t, "admin shutdown");
+
+	/* RFC 5880 s6.8.7: the peer is demanding, so periodic transmission
+	 * stops. Nothing else changes - the session stays Up, the mirror
+	 * stays current, and the schedule keeps advancing so the first
+	 * packet after the hold lifts is on time rather than immediate.
+	 * bfdd does the same in ptm_bfd_xmt_TO, restarting its transmit
+	 * timer and returning without sending. */
+	if (demand_tx_held(s)) {
+		if (t >= s->next_tx_us)
+			tx_reschedule(s, t);
+		return;
+	}
 
 	if (s->last_rx_us) {
 		uint64_t cur = (s->state == ST_UP)
@@ -315,7 +370,7 @@ void fsm_tx(struct session *s, uint64_t t)
 
 	int due = (t >= s->next_tx_us) || s->send_final;
 	if (use_ktx && !s->ktx_uncovered && s->state == ST_UP &&
-	    !s->send_final && !s->just_up) {
+	    !s->send_final && !s->just_up && !demand_announce_due(s)) {
 		/* Kernel echo covers TX only at the peer's pace. If the
 		 * peer paces slower than our required rate (its detect
 		 * budget for us), transmit from here at the required
@@ -331,29 +386,6 @@ void fsm_tx(struct session *s, uint64_t t)
 
 	tx_one(s);
 
-	if (t >= s->next_tx_us) {
-		uint64_t iv, span;
-
-		if (s->state == ST_UP)
-			iv = s->applied_tx_us > s->r_min_rx ? s->applied_tx_us
-							    : s->r_min_rx;
-		else
-			iv = SLOW_TX_US;
-
-		/* RFC 5880 s6.8.3: jitter the interval to 75-100%, but only
-		 * 75-90% when detect_mult is 1. This applies to the slow
-		 * rate as well, which previously used SLOW_TX_US raw - so
-		 * every session below Up transmitted on the same 1s grid and
-		 * a mesh coming up at once synchronised into a burst every
-		 * second, which is what jitter exists to prevent.
-		 *
-		 * It looks like an undershoot but is not: the 'not less than
-		 * one second' rule in s6.8.7 constrains
-		 * bfd.DesiredMinTxInterval, not the resulting gap.
-		 */
-		span = s->detect_mult == 1 ? iv * 3 / 20 : iv / 4;
-		iv = iv * 3 / 4 + (random() % (span + 1));
-
-		s->next_tx_us = t + iv;
-	}
+	if (t >= s->next_tx_us)
+		tx_reschedule(s, t);
 }

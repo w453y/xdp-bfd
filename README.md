@@ -19,7 +19,7 @@ This started as a measurement project asking whether the folklore was true — t
 | FRR distributed-BFD dataplane (bfddp) | implemented, stock FRR, no patches |
 | Graceful control-plane restart (`--dp-hold`) | implemented |
 | Authentication (s6.7) | not implemented |
-| Demand mode (s6.6) | not implemented |
+| Demand mode (s6.6) | implemented |
 | Concurrent sessions | 64, architectural cap |
 
 ## Quick start
@@ -124,7 +124,11 @@ Some of the evidence records failures rather than successes. Two invalidated m5 
 
 Each with the reason, since the reason is usually more useful than the fact.
 
-**No authentication (RFC 5880 s6.7) and no demand mode (s6.6).** Neither is implemented.
+**No authentication (RFC 5880 s6.7).** Not implemented.
+
+**Demand mode does not poll on its own (s6.6).** The mode itself is implemented — the engine sets the D bit once both ends are Up, ceases periodic transmission while the peer is demanding, and holds off both its own detection and the kernel sweep while it is the one demanding — but nothing periodically initiates the Poll Sequence that would verify an idle path. `bfd_set_polling` is reached from a parameter change and nothing else, which is exactly what stock bfdd does, and matching it is deliberate: an engine that polled on a timer would report a link fault that bfdd on the same config would not. The consequence is the one `doc/user/bfd.rst` warns about — demand at both ends without echo can leave a failure undetected — and it is a property of demand mode as FRR implements it rather than of this dataplane.
+
+One departure from bfdd is required, not optional. bfdd evaluates the transmit hold at each timer expiry, so by the time it stops it has already sent several D-marked packets. This engine can cease within a microsecond of the flag flipping, and both conditions arrive together: `r_state` only reaches Up when the peer's first Up-state packet lands, and if that peer is also demanding then the same packet carries its D bit. Ceasing immediately would mean going quiet having never once set D, leaving the peer transmitting forever into a session that will never ask it to stop — demand configured at both ends, achieved in one direction. So the engine sends `DEMAND_ANNOUNCE_N` D-marked packets before honouring the peer's request. Three, for the same reason `fsm_announce_down` sends three.
 
 **64 concurrent sessions.** The cap is architectural rather than arbitrary: it is tied to the per-slot source port range 65472-65535, with one `bfd_tx` instance owning that range per host.
 

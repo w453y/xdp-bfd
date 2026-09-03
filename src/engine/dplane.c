@@ -218,15 +218,6 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	uint32_t flags = ntohl(sm->flags);
 	uint32_t lid   = ntohl(sm->lid);
 
-	/* Multihop is supported: bfdd sends the negotiated minimum TTL in
-	 * the ADD and the XDP parser enforces it per session. Demand mode
-	 * is not implemented, so it is still refused. */
-	if (flags & SESSION_DEMAND) {
-		log_info("dplane: ADD lid=%u rejected (unsupported flags 0x%x)\n",
-		       lid, flags);
-		return;
-	}
-
 	struct session *s = sess_by_lid(lid);
 	int fresh = 0, adopted = 0;
 	if (s)
@@ -296,6 +287,7 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 				    ? ntohl(sm->min_echo_rx) : 0;
 	s->min_ttl     = sm->ttl ? sm->ttl : 255;
 	s->is_mhop     = !!(flags & SESSION_MULTIHOP);
+	s->demand      = !!(flags & SESSION_DEMAND);
 	ktx_update_mhop_flag();
 
 	/* The fast path is attached to one interface. A single-hop session
@@ -350,6 +342,14 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 		s->polling = 1;
 		if (s->min_tx_us < s->applied_tx_us || !s->applied_tx_us)
 			s->applied_tx_us = s->min_tx_us;
+		/* Starting a Poll re-arms detection on a demanding session
+		 * (demand_detect_held clears on !polling), and the peer has
+		 * been silent for as long as we asked it to be - measuring
+		 * the poll against that stale arrival declares a timeout on
+		 * the spot. bfdd resets its own recvtimer at the same point,
+		 * at the end of bfd_set_polling, for the same reason. */
+		if (s->demand)
+			s->last_rx_us = t;
 	} else {
 		s->applied_tx_us = s->min_tx_us;
 	}

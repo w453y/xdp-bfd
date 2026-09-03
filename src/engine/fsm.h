@@ -11,6 +11,7 @@
 
 #define F_P BFD_F_POLL
 #define F_F BFD_F_FINAL
+#define F_D BFD_F_DEMAND
 
 extern int tx_sock;
 extern int tx6_sock;

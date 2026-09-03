@@ -252,7 +252,16 @@ struct tx_cfg {
 	__u8  mult;
 	__u8  poll;          /* userspace-initiated Poll sequence active:
 	                      * echo sets P until final_seq == poll_seq */
-	__u8  pad[3];
+	__u8  demand;        /* set the D bit on kernel replies. Computed by
+	                      * the engine (RFC 5880 s6.8.6 needs both ends
+	                      * Up), not read off the session flags: the
+	                      * kernel has no view of the remote state. */
+	__u8  demand_hold;   /* demand steady state - we asked the peer to go
+	                      * quiet, so its silence is not a failure and the
+	                      * sweep must not call it one. Same reason it is
+	                      * precomputed: the predicate needs !polling and
+	                      * the remote state. */
+	__u8  pad[1];
 	__u32 poll_seq;      /* increments per Poll sequence; kernel acks
 	                      * the peer's F via session_state.final_seq
 	                      * (tx_cfg stays userspace-owned) */

@@ -84,6 +84,15 @@ struct session {
 	uint32_t min_echo_rx_us;      /* advertised Required Min Echo RX */
 	uint8_t  min_ttl;             /* from the ADD; 255 = single-hop */
 	int      is_mhop;             /* RFC 5883: control port 4784 */
+	int      demand;              /* SESSION_DEMAND from the ADD: we ask
+	                               * the peer to stop transmitting. The
+	                               * peer's own request is not mirrored
+	                               * here - it is the D bit in r_flags,
+	                               * already latched from every packet,
+	                               * and a second copy would only drift */
+	uint8_t  demand_announced;    /* D bits actually put on the wire
+	                               * since entering Up; see
+	                               * demand_announce_due */
 	uint8_t  iface_warned;        /* the off-interface notice is once per
 	                               * session, not once per ADD - bfdd
 	                               * re-sends one on every config touch */
@@ -109,6 +118,78 @@ struct session {
 	uint64_t echo_gap_max_us;     /* windowed, reset each report */
 	uint64_t echo_rtt_max_win_us; /* windowed, reset each report */
 };
+
+/* ---------- demand mode (RFC 5880 s6.6) ----------
+ *
+ * Three predicates, each gating a different thing, and the asymmetry
+ * between them is the whole of demand mode: the D bit travels one way
+ * per direction, so who asked decides what stops.
+ *
+ * They are here rather than in fsm.c because the kernel mirror has to
+ * compute the same answers for tx_cfg - the XDP program cannot, it sees
+ * no remote state - and two spellings of one predicate is how the fast
+ * and slow paths drift.
+ *
+ * Deliberately matched line for line against bfdd's own gates so a
+ * session behaves identically whether or not it is delegated here:
+ * bfd_packet.c:465 (D bit), bfd.c:693 (transmission), and
+ * bfd_packet.c:1473 (detection).
+ */
+
+/* RFC 5880 s6.8.6: the D bit goes out only once both ends are Up. */
+static inline int demand_bit_out(const struct session *s)
+{
+	return s->demand && s->state == ST_UP && s->r_state == ST_UP;
+}
+
+/* How many D-marked packets to get out before honouring a peer's own
+ * demand. One would do if nothing were ever lost; three is what
+ * fsm_announce_down already uses for the same reason, and the cost is
+ * three 24-byte packets once per session coming up. */
+#define DEMAND_ANNOUNCE_N 3
+
+/* We are configured to demand but have not yet said so on the wire.
+ *
+ * This exists because the two conditions arrive together. r_state only
+ * reaches Up when the peer's first Up-state packet lands, and if the
+ * peer is also demanding then that very packet carries its D bit - so
+ * demand_bit_out and the peer's request become true in the same sync,
+ * and a session that ceased on the spot would go quiet having never
+ * once set D. The peer would then keep transmitting forever, waiting
+ * for a request that is never coming, and a config asking for demand in
+ * both directions would only ever get it in one.
+ *
+ * bfdd does not need this: it evaluates the hold at each transmit timer
+ * expiry, so it has already sent several D-marked packets by the time
+ * it stops. Announcing explicitly is how a dataplane that can cease
+ * within a microsecond of the flag flipping keeps bfdd's behaviour.
+ */
+static inline int demand_announce_due(const struct session *s)
+{
+	return demand_bit_out(s) && s->demand_announced < DEMAND_ANNOUNCE_N;
+}
+
+/* RFC 5880 s6.8.7: periodic transmission ceases while the PEER is
+ * demanding - it asked, not us. A Poll sequence, a pending Final and an
+ * unsent D are exempt: they are the only things that still have to
+ * reach a peer that has stopped listening on a schedule. */
+static inline int demand_tx_held(const struct session *s)
+{
+	return (s->r_flags & BFD_F_DEMAND) && s->state == ST_UP &&
+	       s->r_state == ST_UP && !s->polling && !s->send_final &&
+	       !demand_announce_due(s);
+}
+
+/* RFC 5880 s6.8.4: the detection timer does not run while WE are
+ * demanding - we told the peer to go quiet, so silence is what we asked
+ * for and not a fault. Our own Poll re-arms it, which is what bounds the
+ * poll: a lost Final then brings the session down instead of leaving it
+ * outstanding forever. */
+static inline int demand_detect_held(const struct session *s)
+{
+	return s->demand && s->state == ST_UP && s->r_state == ST_UP &&
+	       !s->polling;
+}
 
 extern struct session sessions[MAX_SESSIONS];
 

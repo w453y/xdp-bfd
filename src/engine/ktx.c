@@ -281,11 +281,20 @@ void ktx_mirror(struct session *s)
 {
 	if (!use_ktx)
 		return;
+	/* RX-clocked TX answers every accepted packet, so leaving it armed
+	 * while the peer is demanding would transmit at exactly the pace
+	 * s6.8.7 says to stop - the peer's. Disarming hands those frames to
+	 * userspace instead, which still answers a Poll with a Final and
+	 * stays silent otherwise. Polls are rare and the session is idle by
+	 * construction, so the slow path is the right place for them. */
+	int held = demand_tx_held(s);
 	struct tx_cfg c = {
 		.echo_iv_us = s->echo_tx_us,
 		.min_echo_rx_us = s->min_echo_rx_us,
 		.min_ttl   = s->min_ttl,
-		.enable    = (s->state == ST_UP),
+		.enable    = (s->state == ST_UP && !held),
+		.demand      = demand_bit_out(s),
+		.demand_hold = demand_detect_held(s),
 		.my_disc   = s->wire_disc,
 		.your_disc = s->rdisc,
 		.min_tx_us = s->min_tx_us,
@@ -394,6 +403,20 @@ void ktx_poll_map(struct session *s, uint64_t t)
 	}
 	if (ms.last_seen_ns / 1000 > s->last_rx_us)
 		s->last_rx_us = ms.last_seen_ns / 1000;
+	/* The peer's advertised state rides in every packet, but once the
+	 * fast path is armed userspace stops seeing them: enable flips on
+	 * at the transition into Up, so fsm_rx's last look at this field is
+	 * the bring-up packet that carried Init. r_state then sits at Init
+	 * for the life of an established session.
+	 *
+	 * That was invisible while only fsm_rx read it - it is re-read from
+	 * the packet in hand there - and stops being invisible the moment
+	 * anything asks about the peer between packets. Both demand gates
+	 * require the remote to be Up (RFC 5880 s6.8.6), so without this
+	 * they are never satisfied on exactly the sessions the fast path
+	 * is carrying. */
+	if (ms.last_seen_ns)
+		s->r_state = ms.remote_state;
 	if (ms.detect_iv_us)
 		s->detect_iv_us = ms.detect_iv_us;
 	if (ms.mac_valid) {

@@ -25,6 +25,13 @@ static long check_session(struct bpf_map *map, struct session_key *k,
 			__s64 ed = (__s64)(now - st->echo_last_seen_ns);
 			st->echo_alive = (ed >= 0 && (__u64)ed <= eb);
 		}
+		/* Demand mode (RFC 5880 s6.6): the engine asked this peer to
+		 * stop transmitting, so the silence the sweep would measure
+		 * is the silence we requested. Leave `alive` set - clearing
+		 * it would emit a DETECT-DOWN for a healthy session and make
+		 * every observer of the ring report the session down. */
+		if (ec && ec->demand_hold)
+			return 0;
 	}
 
 	if (!st->alive)

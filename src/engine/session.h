@@ -84,6 +84,13 @@ struct session {
 	uint32_t min_echo_rx_us;      /* advertised Required Min Echo RX */
 	uint8_t  min_ttl;             /* from the ADD; 255 = single-hop */
 	int      is_mhop;             /* RFC 5883: control port 4784 */
+	uint32_t ifindex;             /* where bfdd placed this session. 0
+	                               * when bfdd could not resolve one,
+	                               * which is also what a multihop ADD
+	                               * carries */
+	uint8_t  echo_mac[6];         /* that interface's own MAC, resolved
+	                               * once for echo TX */
+	uint8_t  echo_mac_valid;
 	int      demand;              /* SESSION_DEMAND from the ADD: we ask
 	                               * the peer to stop transmitting. The
 	                               * peer's own request is not mirrored

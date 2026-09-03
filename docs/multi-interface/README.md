@@ -83,6 +83,16 @@ One program, two interfaces, both native mode through a bpf_link. `ens19` from
 
 - One session on the second link. Enough to prove attach-on-demand and the
   bounce; nothing here exercises many sessions across many interfaces.
+
+  Since superseded by the lab mesh, which runs 32 sessions on each of two
+  links, and which found what one session could not: echo TX took its
+  egress interface and source MAC from `--kernel-tx` alone, so every
+  second-link echo left by the first link, self-addressed to an address
+  reachable only via the second. Nothing looped them back. The control
+  session stayed Up throughout — echo is advisory and never merged into the
+  verdict — so the only witness was a return counter pinned at zero while
+  the transmit counter climbed normally. Echo now resolves egress per
+  session from the ifindex in the ADD.
 - No detach. Interfaces are attached on demand and released only when the
   process exits. bfdd deletes and re-adds sessions during reconfiguration, and
   a link that flaps with that churn would be worse than the cliff being fixed.

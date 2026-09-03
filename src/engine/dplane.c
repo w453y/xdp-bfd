@@ -302,6 +302,14 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	 */
 	uint32_t sif = ntohl(sm->ifindex);
 
+	/* Kept on the session because echo TX needs it: a raw L2 send has
+	 * to name the egress interface itself, and one global taken from
+	 * --kernel-tx put every session's echo on that one link. */
+	if (sif != s->ifindex) {
+		s->ifindex = sif;
+		s->echo_mac_valid = 0;
+	}
+
 	/* Follow the sessions: bfdd places them by routing, not by where
 	 * --kernel-tx pointed. Attach the same loaded program to this
 	 * interface too rather than letting the session fall off the

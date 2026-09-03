@@ -74,6 +74,57 @@ void echo_tx_init(const char *ifname)
         	       echo_src_mac[3], echo_src_mac[4], echo_src_mac[5], echo_sock);
 }
 
+/* The interface this session's echo has to leave by, and that
+ * interface's own MAC.
+ *
+ * Both used to be globals taken from --kernel-tx, which is right only
+ * while every session is on that one link. With sessions on a second
+ * interface the echo left by the first one carrying the first one's
+ * source MAC: self-addressed to an address reachable only via the
+ * second, so nothing looped it back and the return counter sat at zero
+ * for the life of the session while TX climbed normally.
+ *
+ * Falls back to the --kernel-tx interface when bfdd named none, which
+ * is what a multihop ADD carries - a routed session has no single
+ * egress to name, and the global is the best guess available.
+ */
+static int echo_egress(struct session *s, uint32_t *ifindex,
+		       const uint8_t **mac)
+{
+	struct ifreq ifr;
+	int mfd;
+
+	if (!s->ifindex) {
+		*ifindex = echo_ifindex;
+		*mac = echo_src_mac;
+		return echo_ifindex != 0;
+	}
+
+	if (!s->echo_mac_valid) {
+		memset(&ifr, 0, sizeof(ifr));
+		/* ifr_name is IFNAMSIZ and if_indextoname writes at most
+		 * IF_NAMESIZE including the terminator - the same 16 - so
+		 * it can fill this directly rather than through a copy
+		 * that gcc cannot prove terminates. */
+		if (!if_indextoname(s->ifindex, ifr.ifr_name))
+			return 0;
+		mfd = socket(AF_INET, SOCK_DGRAM, 0);
+		if (mfd < 0)
+			return 0;
+		if (ioctl(mfd, SIOCGIFHWADDR, &ifr)) {
+			close(mfd);
+			return 0;
+		}
+		close(mfd);
+		memcpy(s->echo_mac, ifr.ifr_hwaddr.sa_data, 6);
+		s->echo_mac_valid = 1;
+	}
+
+	*ifindex = s->ifindex;
+	*mac = s->echo_mac;
+	return 1;
+}
+
 /* The 24-byte payload, identical on both families. My Disc names the
  * session when the frame comes back; Your Disc is zero because a classic
  * echo never loops it; and the nonce rides in the Required Min Echo RX
@@ -97,10 +148,10 @@ static void echo_payload(struct session *s, uint8_t *b, uint32_t nonce)
 /* v4: self-addressed, TTL 255, IP checksum plus a UDP checksum over the
  * 12-byte pseudo-header. Returns the frame length. */
 static unsigned echo_build_v4(struct session *s, uint8_t *frame,
-			      uint32_t nonce)
+			      uint32_t nonce, const uint8_t *src_mac)
 {
 	memcpy(frame + 0, s->peer_mac, 6);
-	memcpy(frame + 6, echo_src_mac, 6);
+	memcpy(frame + 6, src_mac, 6);
 	frame[12] = 0x08;
 	frame[13] = 0x00;
 
@@ -149,10 +200,10 @@ static unsigned echo_build_v4(struct session *s, uint8_t *frame,
  * header. Self-addressed at hop limit 255, which the neighbour's
  * forwarding plane returns at 254 exactly as it does for v4. */
 static unsigned echo_build_v6(struct session *s, uint8_t *frame,
-			      uint32_t nonce)
+			      uint32_t nonce, const uint8_t *src_mac)
 {
 	memcpy(frame + 0, s->peer_mac, 6);
-	memcpy(frame + 6, echo_src_mac, 6);
+	memcpy(frame + 6, src_mac, 6);
 	frame[12] = 0x86;
 	frame[13] = 0xdd;
 
@@ -228,18 +279,23 @@ void echo_tx_maybe(struct session *s, uint64_t t)
 	uint8_t frame[86];
 	uint32_t nonce = ++echo_nonce_ctr;
 	unsigned flen;
+	uint32_t eif;
+	const uint8_t *src_mac;
+
+	if (!echo_egress(s, &eif, &src_mac))
+		return;
 
 	memset(frame, 0, sizeof(frame));
 
 	if (s->family == AF_INET6)
-		flen = echo_build_v6(s, frame, nonce);
+		flen = echo_build_v6(s, frame, nonce, src_mac);
 	else
-		flen = echo_build_v4(s, frame, nonce);
+		flen = echo_build_v4(s, frame, nonce, src_mac);
 
 	struct sockaddr_ll sll;
 	memset(&sll, 0, sizeof(sll));
 	sll.sll_family  = AF_PACKET;
-	sll.sll_ifindex = echo_ifindex;
+	sll.sll_ifindex = eif;
 	sll.sll_halen   = 6;
 	memcpy(sll.sll_addr, s->peer_mac, 6);
 

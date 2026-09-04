@@ -26,7 +26,7 @@ an implementation.
 | `your_disc` demux validation (s6.8.6) | implemented |
 | FRR distributed-BFD data plane (bfddp) | implemented, stock FRR, no patches |
 | Graceful control-plane restart (`--dp-hold`) | implemented |
-| Authentication (s6.7) | not implemented |
+| Authentication (s6.7), simple password and keyed SHA1 | implemented in the fast path; needs the bffdp key extension |
 | Concurrent sessions | 64, architectural cap |
 
 ## Build
@@ -77,6 +77,11 @@ Deployment notes:
 - **Echo mode needs the neighbour to forward.** An echo packet is
   self-addressed, so the far end loops it back only with forwarding
   enabled for that family.
+- **A keychain key needs its algorithm set explicitly.** A key defaults
+  to no algorithm, and bfdd only selects one that is `cleartext` or
+  `hmac-sha-1`. Configuring `key-string` alone leaves the session
+  unauthenticated while `show bfd peer` still reports authentication
+  configured, which is a quiet way to believe a link is protected.
 
 Several bfdd fixes this work depended on are upstream; packaged releases
 up to 10.5.1 predate some of them. On those, prefer the TCP transport
@@ -100,7 +105,27 @@ host against a live mesh.
 
 ## Limitations
 
-**No authentication (RFC 5880 s6.7).**
+**Authentication needs a data plane channel FRR does not have yet.** The
+key has to reach whatever transmits, and bfdd's `bfddp_session_msg` has
+no field for it — upstream it is a `/* TODO: missing authentication. */`.
+There is no guard either, so stock bfdd will offload an authenticated
+session and then send it unauthenticated while `show bfd peer` reports
+authentication enabled. This engine fails closed against that: it drops
+packets whose A bit disagrees with the session, so such a session simply
+never comes up. Running authenticated sessions needs the bffdp extension
+that carries the key; without it, keep authenticated sessions off the
+data plane.
+
+**The keyed-SHA1 digest follows bfdd, not RFC 5880 s6.7.4.** The RFC
+computes a plain SHA1 over the packet with the shared key placed in the
+Auth Key/Hash field; bfdd zeroes that field and computes an HMAC. The
+two do not interoperate, and bfdd is the control plane on one side of
+every session here, so this follows bfdd. Against a conformant
+third-party implementation it will not authenticate.
+
+**Keyed MD5 (types 2 and 3) is not implemented,** because bfdd cannot
+produce it: no keychain algorithm maps onto those types, so nothing ever
+sends one.
 
 **Demand mode does not poll on its own (s6.6).** The mode is implemented,
 but nothing periodically initiates the Poll Sequence that would verify an

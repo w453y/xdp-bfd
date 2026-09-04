@@ -12,12 +12,14 @@
 #include "bfd_shared.h"
 #include "tunables.h"
 #include "csum.h"
+#include "auth.h"
 
 static __always_inline int rx_clocked_tx(struct xdp_md *ctx,
                 struct ethhdr *eth, struct iphdr *iph,
                 struct ipv6hdr *ip6, struct udphdr *udp,
                 struct bfd_ctrl_pkt *bfd, struct tx_cfg *cfg,
-                struct session_state *st, void *data, void *data_end)
+                struct session_state *st, struct auth_scratch *sc,
+                void *data, void *data_end)
 {
         	__u8 send_final = (bfd->flags & BFD_F_POLL) ? BFD_F_FINAL : 0;
 
@@ -79,12 +81,25 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx,
         	if (cfg->demand)
         		bfd->flags |= BFD_F_DEMAND;
         	bfd->detect_mult = cfg->mult;
-        	bfd->len         = 24;
+        	bfd->len         = BFD_MIN_LEN;
+        	if (cfg->auth_type) {
+        		bfd->flags |= BFD_F_AUTH;
+        		bfd->len    = BFD_MIN_LEN + BFD_AUTH_SHA1_LEN;
+        	}
         	bfd->my_disc     = bpf_htonl(cfg->my_disc);
         	bfd->your_disc   = bpf_htonl(cfg->your_disc);
         	bfd->min_tx      = bpf_htonl(cfg->min_tx_us);
         	bfd->min_rx      = bpf_htonl(cfg->min_rx_us);
         	bfd->min_echo_rx = bpf_htonl(cfg->min_echo_rx_us);
+
+        	/* Sign what we just built, before the checksum covers it and
+        	 * before the frame is trimmed. A session whose digest cannot
+        	 * be produced sends nothing: a reply carrying the A bit and
+        	 * an empty section authenticates as garbage, and the peer
+        	 * would drop it anyway after doing the work. */
+        	if (cfg->auth_type &&
+        	    (!sc || !xdp_auth_build(bfd, cfg, st, sc, data_end)))
+        		return XDP_DROP;
 
         	/* Echo exactly a 24-byte control packet: a longer peer
         	 * frame (auth section, trailer) must not go back out with
@@ -94,13 +109,13 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx,
         	 * was already refreshed above. */
         	int want = (int)(sizeof(*eth) +
         	                 (iph ? sizeof(*iph) : sizeof(*ip6)) +
-        	                 sizeof(*udp) + BFD_MIN_LEN);
+        	                 sizeof(*udp) + bfd->len);
         	int excess = (int)((long)data_end - (long)data) - want;
         	if (excess > 0) {
-        		udp->len = bpf_htons(sizeof(*udp) + BFD_MIN_LEN);
+        		udp->len = bpf_htons(sizeof(*udp) + bfd->len);
         		if (iph) {
         			iph->tot_len = bpf_htons(sizeof(*iph) +
-        			                         sizeof(*udp) + BFD_MIN_LEN);
+        			                         sizeof(*udp) + bfd->len);
         			iph->check = 0;
         			__u32 csum = 0;
         			__u16 *w = (__u16 *)iph;
@@ -111,7 +126,7 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx,
         			iph->check = ~csum & 0xffff;
         		} else if (ip6) {
         			ip6->payload_len = bpf_htons(sizeof(*udp) +
-        			                             BFD_MIN_LEN);
+        			                             bfd->len);
         		}
         	}
 
@@ -131,9 +146,21 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx,
         		w = (__u16 *)udp;              /* UDP hdr, check == 0 */
         		for (int i = 0; i < 4; i++)
         			csum += w[i];
-        		w = (__u16 *)bfd;              /* 24-byte payload */
-        		for (int i = 0; i < 12; i++)
+        		w = (__u16 *)bfd;              /* the BFD payload */
+        		for (int i = 0; i < BFD_MIN_LEN / 2; i++)
         			csum += w[i];
+        		/* The authentication section is payload too. Folded in
+        		 * a second constant-bounded pass rather than by making
+        		 * the first one run to bfd->len, which is a runtime
+        		 * value and would cost the verifier a state per word. */
+        		if (cfg->auth_type) {
+        			if ((void *)((__u8 *)bfd + BFD_MIN_LEN +
+        			             BFD_AUTH_SHA1_LEN) > data_end)
+        				return XDP_DROP;
+        			for (int i = BFD_MIN_LEN / 2;
+        			     i < (BFD_MIN_LEN + BFD_AUTH_SHA1_LEN) / 2; i++)
+        				csum += w[i];
+        		}
         		csum = (csum & 0xffff) + (csum >> 16);
         		csum = (csum & 0xffff) + (csum >> 16);
         		__u16 c = ~csum & 0xffff;

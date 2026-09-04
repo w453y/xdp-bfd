@@ -247,6 +247,14 @@ struct session_state {
 	__u32 remote_min_echo_us; /* peer's advertised Required Min Echo RX.
 	                           * Reported up to bfdd so it can run the
 	                           * RFC 5880 s6.8.9 echo negotiation. */
+	__u32 auth_tx_seq;    /* RFC 5880 s6.7.3. Kernel-owned while the
+	                       * fast path answers, because the sequence
+	                       * belongs to whoever emits the packet and
+	                       * two writers would hand the peer a number
+	                       * that goes backwards. Userspace seeds it and
+	                       * reads it back when it takes over. */
+	__u32 auth_rx_seq;    /* highest sequence accepted from the peer */
+	__u32 auth_rx_seen;   /* whether auth_rx_seq means anything yet */
 	__u32 pad5;
 };
 
@@ -298,7 +306,15 @@ struct tx_cfg {
 	                      * a header, because whether the A bit is
 	                      * acceptable is a property of the session
 	                      * rather than of the packet. */
-	__u8  auth_pad[3];
+	__u8  auth_keyid;
+	__u8  auth_keylen;
+	__u8  auth_pad;
+	__u8  auth_kpad[64]; /* the key in one HMAC block, zero padded.
+	                      * Padded by the engine rather than in the
+	                      * program: filling a block from a runtime
+	                      * length is a loop the verifier walks one
+	                      * iteration at a time, and the digest wants it
+	                      * in this shape regardless. */
 };
 
 #endif /* BFD_SHARED_H */

@@ -100,8 +100,10 @@ struct session {
 	uint8_t  auth_key[BFFDP_AUTH_KEY_MAX];
 	uint8_t  auth_kpad[64];       /* the key in one SHA1 block, zero
 	                               * padded, which is what the digest
-	                               * takes and what the fast path will
-	                               * mirror */
+	                               * takes and what the fast path
+	                               * mirrors */
+	uint8_t  auth_seeded;         /* the kernel's transmit sequence has
+	                               * been handed over; see ktx_mirror */
 	uint32_t auth_tx_seq;         /* ours, incremented per transmission.
 	                               * Random at session start: RFC 5880
 	                               * s6.7.3 wants it unpredictable */
@@ -209,9 +211,25 @@ static inline int demand_detect_held(const struct session *s)
  * an authentication section yet; demand-held ones because they are
  * meant to be silent.
  */
+/* Which authentication the fast path can carry.
+ *
+ * Keyed SHA1 only, and not for want of trying: those packets are always
+ * 52 bytes, so every copy in the program has a constant bound. A simple
+ * password is 24 + 3 + the key length, and a copy bounded by a runtime
+ * length is one the verifier walks an iteration at a time. Those
+ * sessions stay in userspace, checked by the same shared code.
+ *
+ * Must agree with the program's xdp_auth_fast.
+ */
+static inline int auth_fast_capable(const struct session *s)
+{
+	return !s->auth_type || s->auth_type == BFD_AUTH_KEYED_SHA1 ||
+	       s->auth_type == BFD_AUTH_METICULOUS_SHA1;
+}
+
 static inline int ktx_answers(const struct session *s)
 {
-	return s->state == ST_UP && !s->auth_type && !demand_tx_held(s);
+	return s->state == ST_UP && auth_fast_capable(s) && !demand_tx_held(s);
 }
 
 extern struct session sessions[MAX_SESSIONS];

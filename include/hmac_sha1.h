@@ -153,6 +153,10 @@ SHA1_UNROLL
 
 /* Finish a hash whose leading whole blocks are already in `h`.
  *
+ * Inlined, unlike the compression: the block belongs to the caller, so
+ * this holds two scalars and a frame of its own would be pure overhead
+ * against the verifier's 512-byte budget for the whole call chain.
+ *
  * `blk` is one 64-byte block holding `len` message bytes with the rest
  * already zero, and it is written to: the padding goes in place. `prior`
  * is how many bytes the leading blocks held, since the length SHA1
@@ -164,7 +168,7 @@ SHA1_UNROLL
  * to assemble the block anyway - the digest field has to be zeroed
  * before hashing - so nothing is lost.
  */
-SHA1_CORE int sha1_finish(__u32 h[5], __u8 blk[SHA1_BLOCK_LEN], __u32 len,
+static __always_inline int sha1_finish(__u32 h[5], __u8 blk[SHA1_BLOCK_LEN], __u32 len,
 			   __u64 prior, __u8 out[SHA1_DIGEST_LEN])
 {
 	__u64 bits = (prior + len) * 8;
@@ -226,29 +230,39 @@ SHA1_CORE int hmac_sha1_blocks(const __u8 kpad[SHA1_BLOCK_LEN],
 			       __u8 msgblk[SHA1_BLOCK_LEN], __u32 msglen,
 			       __u8 out[SHA1_DIGEST_LEN])
 {
-	__u8 pad[SHA1_BLOCK_LEN];
-	__u8 blk[SHA1_BLOCK_LEN];
-	__u8 inner[SHA1_DIGEST_LEN];
+	/* One block buffer, not two. The BPF verifier charges the whole
+	 * call chain against a single 512-byte budget, so every frame this
+	 * sits under is paying for it. The key pad is dead the moment it
+	 * has been compressed, which is before the buffer is needed again
+	 * for the inner digest. */
+	__u8 buf[SHA1_BLOCK_LEN];
 	__u32 h[5];
 	int i;
 
 	if (msglen > HMAC_SHA1_MAX_MSG)
 		return 0;
 
+	/* The inner digest is parked in `out` rather than in a local of its
+	 * own. The verifier charges a whole call chain against 512 bytes
+	 * and this sits under the packet path, so twenty bytes is worth
+	 * having. `out` must not alias the key or the message block, which
+	 * no caller has reason to do. */
 	for (i = 0; i < SHA1_BLOCK_LEN; i++)
-		pad[i] = 0x36 ^ kpad[i];
+		buf[i] = 0x36 ^ kpad[i];
 	sha1_init(h);
-	if (!sha1_compress(h, pad) ||
-	    !sha1_finish(h, msgblk, msglen, SHA1_BLOCK_LEN, inner))
+	if (!sha1_compress(h, buf) ||
+	    !sha1_finish(h, msgblk, msglen, SHA1_BLOCK_LEN, out))
 		return 0;
 
 	for (i = 0; i < SHA1_BLOCK_LEN; i++)
-		pad[i] = 0x5c ^ kpad[i];
-	for (i = 0; i < SHA1_BLOCK_LEN; i++)
-		blk[i] = (i < SHA1_DIGEST_LEN) ? inner[i] : 0;
+		buf[i] = 0x5c ^ kpad[i];
 	sha1_init(h);
-	if (!sha1_compress(h, pad) ||
-	    !sha1_finish(h, blk, SHA1_DIGEST_LEN, SHA1_BLOCK_LEN, out))
+	if (!sha1_compress(h, buf))
+		return 0;
+
+	for (i = 0; i < SHA1_BLOCK_LEN; i++)
+		buf[i] = (i < SHA1_DIGEST_LEN) ? out[i] : 0;
+	if (!sha1_finish(h, buf, SHA1_DIGEST_LEN, SHA1_BLOCK_LEN, out))
 		return 0;
 	return 1;
 }

@@ -8,6 +8,7 @@
 #ifndef BFD_ENGINE_BFFDP_H
 #define BFD_ENGINE_BFFDP_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <netinet/in.h>
 
@@ -25,6 +26,17 @@ enum bfddp_message_type {
 /* Longest key the session message carries; must match bfdd's
  * BFDDP_AUTH_KEY_MAX or every authenticated ADD is misread. */
 #define BFFDP_AUTH_KEY_MAX 64
+
+/* How much of a session message has to be there.
+ *
+ * Authentication was appended to this message, so a control plane that
+ * predates it sends a shorter one. The header carries the length and
+ * that is the contract: anything from the start of the message up to
+ * this point must be present, and everything after it is optional and
+ * absent-means-unset. Requiring the whole struct instead would make
+ * every ADD from an older daemon unparseable, and the failure would be
+ * silence - no sessions, no error, nothing on the wire. */
+#define BFFDP_SESSION_MSG_MIN offsetof(struct bfddp_session_msg, auth_type)
 
 enum bfddp_session_flag {
 	SESSION_MULTIHOP = (1 << 0),

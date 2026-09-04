@@ -205,7 +205,8 @@ void dp_notify_state(struct session *s)
 
 /* ---------- dplane socket: inbound handlers ---------- */
 static void dp_handle_add(const struct bfddp_message_header *h,
-			  const struct bfddp_session_msg *sm, uint64_t t)
+			  const struct bfddp_session_msg *sm, uint64_t t,
+			  size_t plen)
 {
 	uint32_t flags = ntohl(sm->flags);
 	uint32_t lid   = ntohl(sm->lid);
@@ -292,7 +293,9 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	 * s6.7.3 asks for and which costs nothing here.
 	 */
 	{
-		uint8_t at = sm->auth_type, kl = sm->auth_keylen;
+		int have = plen >= sizeof(*sm);
+		uint8_t at = have ? sm->auth_type : 0;
+		uint8_t kl = have ? sm->auth_keylen : 0;
 
 		if (at && (kl == 0 || kl > sizeof(s->auth_kpad))) {
 			log_err("dplane: lid=%u auth type %u with a %u-byte key is unusable; session left unauthenticated\n",
@@ -301,17 +304,20 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 			kl = 0;
 		}
 		if (at != s->auth_type || kl != s->auth_keylen ||
-		    memcmp(s->auth_key, sm->auth_key, kl)) {
+		    (kl && memcmp(s->auth_key, sm->auth_key, kl))) {
 			memset(s->auth_key, 0, sizeof(s->auth_key));
 			memset(s->auth_kpad, 0, sizeof(s->auth_kpad));
-			memcpy(s->auth_key, sm->auth_key, kl);
-			memcpy(s->auth_kpad, sm->auth_key, kl);
+			if (kl) {
+				memcpy(s->auth_key, sm->auth_key, kl);
+				memcpy(s->auth_kpad, sm->auth_key, kl);
+			}
 			s->auth_type  = at;
-			s->auth_keyid = sm->auth_keyid;
+			s->auth_keyid = have ? sm->auth_keyid : 0;
 			s->auth_keylen = kl;
 			s->auth_tx_seq = (uint32_t)random();
 			s->auth_rx_seq = 0;
 			s->auth_rx_seen = 0;
+			s->auth_seeded = 0;
 		}
 	}
 
@@ -526,11 +532,11 @@ static void dp_process(const uint8_t *buf, size_t len)
 
 	switch (type) {
 	case DP_ADD_SESSION:
-		if (plen >= sizeof(struct bfddp_session_msg))
-			dp_handle_add(h, (const void *)payload, t);
+		if (plen >= BFFDP_SESSION_MSG_MIN)
+			dp_handle_add(h, (const void *)payload, t, plen);
 		break;
 	case DP_DELETE_SESSION:
-		if (plen >= sizeof(struct bfddp_session_msg))
+		if (plen >= BFFDP_SESSION_MSG_MIN)
 			dp_handle_delete((const void *)payload);
 		break;
 	case ECHO_REQUEST:

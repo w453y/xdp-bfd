@@ -22,11 +22,11 @@ _Static_assert(sizeof(struct bfd_addr) == 16,
 	       "sizeof(struct bfd_addr)");
 _Static_assert(sizeof(struct session_key) == 32,
 	       "sizeof(struct session_key)");
-_Static_assert(sizeof(struct session_state) == 104,
+_Static_assert(sizeof(struct session_state) == 120,
 	       "sizeof(struct session_state)");
 _Static_assert(sizeof(struct bfd_event) == 56,
 	       "sizeof(struct bfd_event)");
-_Static_assert(sizeof(struct tx_cfg) == 52,
+_Static_assert(sizeof(struct tx_cfg) == 116,
 	       "sizeof(struct tx_cfg)");
 _Static_assert(offsetof(struct session_state, last_seen_ns) == 0,
 	       "offsetof(struct session_state, last_seen_ns)");
@@ -104,6 +104,14 @@ _Static_assert(offsetof(struct tx_cfg, min_ttl) == 44,
 	       "offsetof(struct tx_cfg, min_ttl)");
 _Static_assert(offsetof(struct tx_cfg, auth_type) == 48,
 	       "offsetof(struct tx_cfg, auth_type)");
+_Static_assert(offsetof(struct tx_cfg, auth_kpad) == 52,
+	       "offsetof(struct tx_cfg, auth_kpad)");
+_Static_assert(sizeof(((struct tx_cfg *)0)->auth_kpad) == SHA1_BLOCK_LEN,
+	       "the mirrored key must be exactly one HMAC block");
+_Static_assert(offsetof(struct session_state, auth_tx_seq) == 100,
+	       "offsetof(struct session_state, auth_tx_seq)");
+_Static_assert(offsetof(struct session_state, auth_rx_seq) == 104,
+	       "offsetof(struct session_state, auth_rx_seq)");
 _Static_assert(offsetof(struct bfd_event, ts_ns) == 0,
 	       "offsetof(struct bfd_event, ts_ns)");
 _Static_assert(offsetof(struct bfd_event, last_seen_ns) == 8,

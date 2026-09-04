@@ -19,6 +19,7 @@
 #include "stats.h"
 #include "parse.h"
 #include "validate.h"
+#include "auth.h"
 #include "sweep.h"
 #include "csum.h"
 #include "echo.h"
@@ -141,6 +142,25 @@ int bfd_observer(struct xdp_md *ctx)
 			return XDP_PASS;
 	}
 
+	/* RFC 5880 s6.7, before anything about this packet is believed: an
+	 * unverified packet must not refresh liveness, must not update the
+	 * peer's parameters, and must not be answered. Checked after the
+	 * demux above so a forged discriminator cannot reach the digest,
+	 * and before the state below so a failure leaves no trace of the
+	 * packet having arrived. */
+	struct auth_scratch *asc = NULL;
+
+	if (cfg && cfg->auth_type) {
+		__u32 azero = 0;
+
+		asc = bpf_map_lookup_elem(&auth_scratch, &azero);
+		if (!asc || !xdp_auth_fast(cfg) ||
+		    !xdp_auth_verify(bfd, cfg, st, asc, data_end)) {
+			count(BFD_STAT_AUTH_BAD);
+			return XDP_DROP;
+		}
+	}
+
 	__u64 now = bpf_ktime_get_ns();
 
 	/* Poll-aware detect basis (RFC 5880 s6.8.3): a peer that lowers
@@ -194,7 +214,7 @@ int bfd_observer(struct xdp_md *ctx)
 	 * userspace run the transition. */
 	if (cfg && cfg->enable && rstate >= 2) {
 	        return rx_clocked_tx(ctx, eth, iph, ip6, udp,
-	                             bfd, cfg, st, data, data_end);
+	                             bfd, cfg, st, asc, data, data_end);
 	}
 
 	return XDP_PASS;

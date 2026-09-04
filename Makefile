@@ -9,26 +9,32 @@ TRIPLE    := $(shell dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null \
 		     || gcc -dumpmachine)
 BPFFLAGS  := -O2 -g -Wall -target bpf -Iinclude -Isrc/xdp -I/usr/include/$(TRIPLE)
 
+# Every shared header, not one named by hand. include/ grew a digest and
+# an authentication layout that both planes compile, and a rule naming
+# only bfd_shared.h rebuilds neither when they change - the object then
+# disagrees with the source that produced it, silently.
+SHARED_HDRS := $(wildcard include/*.h)
+
 ENGINE_OBJS := src/engine/log.o src/engine/main.o src/engine/session.o src/engine/dplane.o src/engine/ktx.o src/engine/echo_tx.o src/engine/fsm.o src/engine/stats.o
 
 all: abi-check bfd_xdp.o bfd_loader bfd_tx
 
 # Layout pins for the shared structs, checked by both compilers.
 # Syntax-only: a divergence is a build error, there is nothing to run.
-abi-check: tests/unit/abi_check.c include/bfd_shared.h
+abi-check: tests/unit/abi_check.c $(SHARED_HDRS)
 	$(CC) $(CFLAGS) -fsyntax-only $<
 	$(CLANG) $(BPFFLAGS) -fsyntax-only $<
 
-bfd_xdp.o: src/xdp/bfd_xdp.c include/bfd_shared.h $(wildcard src/xdp/*.h)
+bfd_xdp.o: src/xdp/bfd_xdp.c $(SHARED_HDRS) $(wildcard src/xdp/*.h)
 	$(CLANG) $(BPFFLAGS) -c $< -o $@
 
-bfd_loader: src/loader/bfd_loader.c include/bfd_shared.h
+bfd_loader: src/loader/bfd_loader.c $(SHARED_HDRS)
 	$(CC) $(CFLAGS) $< -o $@ -lbpf
 
 bfd_tx: $(ENGINE_OBJS)
 	$(CC) $(CFLAGS) $^ -o $@ -lbpf
 
-%.o: %.c include/bfd_shared.h $(wildcard src/engine/*.h)
+%.o: %.c $(SHARED_HDRS) $(wildcard src/engine/*.h)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
@@ -37,7 +43,7 @@ clean:
 
 # Same flags and headers as bfd_xdp.o. Test-only: never shipped, never
 # loaded outside tests/unit/xdp_run.
-tests/unit/bfd_xdp_test.o: tests/unit/bfd_xdp_test.c include/bfd_shared.h \
+tests/unit/bfd_xdp_test.o: tests/unit/bfd_xdp_test.c $(SHARED_HDRS) \
 			   $(wildcard src/xdp/*.h)
 	$(CLANG) $(BPFFLAGS) -c $< -o $@
 
@@ -46,7 +52,7 @@ tests/unit/bfd_xdp_test.o: tests/unit/bfd_xdp_test.c include/bfd_shared.h \
 # run stale against the old expectations.
 TEST_HDRS := $(wildcard tests/unit/*.h)
 
-tests/unit/xdp_run: tests/unit/xdp_run.c include/bfd_shared.h $(TEST_HDRS)
+tests/unit/xdp_run: tests/unit/xdp_run.c $(SHARED_HDRS) $(TEST_HDRS)
 	$(CC) $(CFLAGS) -Itests/unit $< -o $@ -lbpf
 
 # Links against the real fsm.o with three stubs; no root, no BPF.
@@ -102,7 +108,7 @@ test-fsm: tests/unit/fsm_run
 
 # The shared digest on the host. The same vectors go through the kernel
 # in test-xdp; this one needs neither root nor BPF.
-tests/unit/hmac_run: tests/unit/hmac_run.c include/hmac_sha1.h $(TEST_HDRS)
+tests/unit/hmac_run: tests/unit/hmac_run.c $(SHARED_HDRS) $(TEST_HDRS)
 	$(CC) $(CFLAGS) -Itests/unit $< -o $@
 
 test-hmac: tests/unit/hmac_run

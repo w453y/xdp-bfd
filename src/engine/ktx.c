@@ -285,17 +285,13 @@ void ktx_mirror(struct session *s)
 	 * userspace instead, which still answers a Poll with a Final and
 	 * stays silent otherwise. Polls are rare and the session is idle by
 	 * construction, so the slow path is the right place for them. */
-	/* The fast path cannot authenticate yet: it would answer from
-	 * tx_config with no section at all, and the peer would drop every
-	 * reply. Until the digest moves into the program, an authenticated
-	 * session is served entirely from userspace - the packets still
-	 * reach it, because tx_config carries auth_type and the parser
-	 * stops rejecting the A bit on its account. */
 	struct tx_cfg c = {
 		.echo_iv_us = s->echo_tx_us,
 		.min_echo_rx_us = s->min_echo_rx_us,
 		.min_ttl   = s->min_ttl,
-		.auth_type = s->auth_type,
+		.auth_type = auth_fast_capable(s) ? s->auth_type : 0,
+		.auth_keyid = s->auth_keyid,
+		.auth_keylen = s->auth_keylen,
 		.enable    = ktx_answers(s),
 		.demand      = demand_bit_out(s),
 		.demand_hold = demand_detect_held(s),
@@ -310,8 +306,34 @@ void ktx_mirror(struct session *s)
 		.poll      = (s->polling && s->state == ST_UP) ? 1 : 0,
 		.poll_seq  = s->poll_seq,
 	};
+	memcpy(c.auth_kpad, s->auth_kpad, sizeof(c.auth_kpad));
 	if (s->pushed_valid && !memcmp(&c, &s->pushed_cfg, sizeof(c)))
 		return;
+
+	/* Hand the transmit sequence over before the program is told to
+	 * answer, never after. The kernel owns it from that moment - two
+	 * writers would hand the peer a sequence that goes backwards, and
+	 * a meticulous peer rejects everything after that until the
+	 * session resets. Ordering is what makes this safe rather than a
+	 * lock: enable is still 0 in the map, so nothing is transmitting
+	 * from the fast path while the value is written.
+	 *
+	 * Read-modify-write because the rest of session_state is the
+	 * kernel's and must survive. */
+	if (c.enable && s->auth_type && !s->auth_seeded) {
+		struct session_key sk = {};
+		struct session_state ms;
+
+		sk.peer = s->peer;
+		sk.local = s->local;
+		if (!bpf_map_lookup_elem(sess_fd, &sk, &ms)) {
+			ms.auth_tx_seq = s->auth_tx_seq;
+			ms.auth_rx_seq = s->auth_rx_seq;
+			ms.auth_rx_seen = s->auth_rx_seen;
+			if (!bpf_map_update_elem(sess_fd, &sk, &ms, 0))
+				s->auth_seeded = 1;
+		}
+	}
 	struct session_key k = {};
 	k.peer  = s->peer;
 	k.local = s->local;
@@ -412,6 +434,18 @@ void ktx_poll_map(struct session *s, uint64_t t)
 		s->r_state = ms.remote_state;
 	if (ms.detect_iv_us)
 		s->detect_iv_us = ms.detect_iv_us;
+	/* The fast path has been transmitting and receiving under this
+	 * session's key, so its sequence numbers are ahead of ours. Take
+	 * them back, or the first packet userspace sends after the hold
+	 * lifts repeats one the peer has already seen. */
+	if (s->auth_type) {
+		if (ms.auth_tx_seq > s->auth_tx_seq)
+			s->auth_tx_seq = ms.auth_tx_seq;
+		if (ms.auth_rx_seen) {
+			s->auth_rx_seq = ms.auth_rx_seq;
+			s->auth_rx_seen = 1;
+		}
+	}
 	if (ms.mac_valid) {
 		memcpy(s->peer_mac, ms.peer_mac, 6);
 		s->mac_valid = 1;

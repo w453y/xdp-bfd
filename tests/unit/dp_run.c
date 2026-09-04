@@ -433,6 +433,47 @@ static void case_update_keeps_disc(void)
 	report("add-update-keeps-wire-disc", bad, "1 session");
 }
 
+/* A session message from a control plane that predates the
+ * authentication fields.
+ *
+ * The header carries the length and that is the contract: the fields
+ * after BFFDP_SESSION_MSG_MIN are optional. Requiring the whole struct
+ * makes every ADD from an older daemon unparseable, and the failure is
+ * silence - no session, no error, nothing on the wire - which is the
+ * worst shape a compatibility break can take.
+ *
+ * Sent at exactly the pre-extension length, so this fails the moment
+ * anything new is added to the message and treated as mandatory.
+ */
+static void case_add_without_auth(void)
+{
+	unsigned char buf[256];
+	size_t full = build_add(buf, 0x5150, "10.0.0.1", "10.0.0.2");
+	size_t short_len = sizeof(struct bfddp_message_header) +
+			   BFFDP_SESSION_MSG_MIN;
+	struct bfddp_message_header *h = (void *)buf;
+	struct session *s;
+
+	int bad = 0;
+
+	(void)full;
+	h->length = htons((uint16_t)short_len);
+
+	sessions_clear();
+	feed(buf, short_len);
+	dp_read();
+
+	s = sess_by_lid(0x5150);
+	if (!s) {
+		printf("     no session from a pre-auth ADD\n");
+		bad = 1;
+	} else if (s->auth_type || s->auth_keylen) {
+		printf("     auth read from bytes that were never sent\n");
+		bad = 1;
+	}
+	report("add-without-auth", bad, "session up, unauthenticated");
+}
+
 /* An ADD for an existing lid may move the address pair. The old pair's
  * map entries would otherwise stay behind with enable=1 and keep being
  * answered by the fast path. */
@@ -521,6 +562,7 @@ int main(void)
 	case_fresh();
 	case_fresh_v6();
 	case_update_keeps_disc();
+	case_add_without_auth();
 	case_address_move();
 	case_flags();
 

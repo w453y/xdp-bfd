@@ -29,6 +29,7 @@
 #include <time.h>
 #include "detect_vectors.h"
 #include "hmac_sha1.h"
+#include "bfd_auth.h"
 #include "hmac_vectors.h"
 
 static struct bpf_object *obj;
@@ -1784,6 +1785,137 @@ static void case_sweep(const char *name, unsigned int iv_us, unsigned int mult,
 	bpf_map_delete_elem(sweep_cfg_fd, &k);
 }
 
+/* The rejection paths.
+ *
+ * Everything else about authentication is checked by watching a session
+ * stay up, which only ever exercises the accept path. These are the
+ * cases the feature exists for: a forged digest, a replayed sequence, a
+ * key id that is not ours. Each has to be refused, and refused without
+ * touching the session - an accepted forgery that merely fails later is
+ * still a forgery that refreshed liveness.
+ *
+ * Built as a real keyed-SHA1 packet and then damaged, so every case
+ * differs from a packet that would have been accepted by exactly the
+ * thing under test.
+ */
+static void arm_session_auth(__u8 type, __u8 keyid, const char *key)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct tx_cfg cfg = {0};
+	struct session_state st = {0};
+	unsigned n = (unsigned)strlen(key);
+
+	cfg.enable    = 1;
+	cfg.my_disc   = 0x22222222;
+	cfg.your_disc = 0x11111111;
+	cfg.min_tx_us = 10000;
+	cfg.min_rx_us = 10000;
+	cfg.state     = ST_UP;
+	cfg.mult      = 3;
+	cfg.min_ttl   = 255;
+	cfg.auth_type = type;
+	cfg.auth_keyid = keyid;
+	cfg.auth_keylen = (__u8)n;
+	memcpy(cfg.auth_kpad, key, n);
+
+	st.remote_state = ST_UP;
+
+	if (bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY) ||
+	    bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
+		fprintf(stderr, "  auth map update failed: %s\n", strerror(errno));
+		fails++;
+	}
+}
+
+/* A keyed-SHA1 packet signed with `key`, sequence `seq`. */
+static void build_sha1_auth(struct frame *f, const char *key, __u8 keyid,
+			    __u32 seq, __u8 type)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	__u8 pkt[BFD_MAX_LEN] = {0};
+	__u8 kpad[SHA1_BLOCK_LEN] = {0};
+
+	p.flags |= BFD_F_AUTH;
+	p.len = BFD_MIN_LEN + BFD_AUTH_SHA1_LEN;
+	memcpy(pkt, &p, BFD_MIN_LEN);
+	memcpy(kpad, key, strlen(key));
+	bfd_auth_build(pkt, type, keyid, (const __u8 *)key,
+		       (__u8)strlen(key), kpad, seq);
+
+	/* build_v4 lays down the 24-byte header and reserves the rest of
+	 * the payload; the signed section goes in behind it. */
+	build_v4(f, 255, BFD_PORT_1HOP, (const struct bfd_ctrl_pkt *)pkt,
+		 BFD_AUTH_SHA1_LEN);
+	memcpy(f->b + sizeof(struct ethhdr) + sizeof(struct iphdr) +
+	       sizeof(struct udphdr) + BFD_MIN_LEN,
+	       pkt + BFD_MIN_LEN, BFD_AUTH_SHA1_LEN);
+}
+
+static void case_auth_reject(const char *name, __u8 type, const char *key,
+			     __u8 keyid, __u32 seq, int corrupt_digest,
+			     __u32 pre_seq, int want_accept)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct session_state st;
+	struct frame f;
+	unsigned long long before;
+	int v, bad = 0;
+
+	map_reset();
+	arm_session_auth(type, 7, "topsecret");
+
+	/* A window the case can replay into. */
+	if (pre_seq) {
+		if (bpf_map_lookup_elem(sess_fd, &k, &st)) {
+			printf("FAIL %-40s no state\n", name);
+			fails++;
+			return;
+		}
+		st.auth_rx_seq = pre_seq;
+		st.auth_rx_seen = 1;
+		bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY);
+	}
+
+	build_sha1_auth(&f, key, keyid, seq, type);
+	if (corrupt_digest)
+		f.b[f.len - 1] ^= 0xff;
+
+	before = stat_get(BFD_STAT_AUTH_BAD);
+	v = run_frame(&f, NULL, NULL);
+
+	if (want_accept) {
+		if (v != XDP_TX) {
+			printf("     verdict %s, want TX\n",
+			       v < 0 ? "syscall-error" : verdict_str(v));
+			bad = 1;
+		}
+	} else {
+		if (v != XDP_DROP) {
+			printf("     verdict %s, want DROP\n",
+			       v < 0 ? "syscall-error" : verdict_str(v));
+			bad = 1;
+		}
+		if (stat_get(BFD_STAT_AUTH_BAD) != before + 1) {
+			printf("     auth-bad did not move\n");
+			bad = 1;
+		}
+		/* A refused packet must leave no trace of having arrived. */
+		if (!bpf_map_lookup_elem(sess_fd, &k, &st) && st.rx_pkts) {
+			printf("     rx_pkts moved on a refused packet\n");
+			bad = 1;
+		}
+	}
+
+	if (bad) {
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s %s\n", name,
+		       want_accept ? "accepted" : "DROP, no state write");
+	}
+	map_reset();
+}
+
 /* The shared HMAC-SHA1 through the kernel, on the vectors hmac_run
  * checks on the host. The BPF build inlines differently and answers to
  * the verifier, so agreeing with the host is not something to assume. */
@@ -2013,6 +2145,30 @@ static void run_sweep_matrix(void)
 	case_sweep_negative();
 	case_auth_required(0);
 	case_auth_required(1);
+
+	/* The control: a correctly signed packet is answered. Without it
+	 * every rejection below would pass on a build that refused
+	 * everything. */
+#define KS BFD_AUTH_KEYED_SHA1
+#define MS BFD_AUTH_METICULOUS_SHA1
+	case_auth_reject("auth-good-signature", KS, "topsecret", 7, 100, 0, 0, 1);
+	case_auth_reject("auth-wrong-key",      KS, "wrongkey!", 7, 100, 0, 0, 0);
+	case_auth_reject("auth-wrong-keyid",    KS, "topsecret", 9, 100, 0, 0, 0);
+	case_auth_reject("auth-bad-digest",     KS, "topsecret", 7, 100, 1, 0, 0);
+	/* Replay: the window already sits above this sequence. */
+	case_auth_reject("auth-replayed-seq",   KS, "topsecret", 7, 100, 0, 500, 0);
+
+	/* The one thing that separates the two SHA1 types. A sequence
+	 * equal to the window is a repeat: RFC 5880 s6.7.4 lets the plain
+	 * form take it - which is what allows a Final to answer a Poll
+	 * without burning a sequence - and requires meticulous to refuse
+	 * it. Same packet, same key, same window, opposite verdicts. */
+	case_auth_reject("auth-equal-seq-plain",      KS, "topsecret", 7, 100,
+			 0, 100, 1);
+	case_auth_reject("auth-equal-seq-meticulous", MS, "topsecret", 7, 100,
+			 0, 100, 0);
+#undef KS
+#undef MS
 
 	case_sweep_demand();
 

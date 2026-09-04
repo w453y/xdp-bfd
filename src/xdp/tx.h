@@ -22,6 +22,7 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx,
                 void *data, void *data_end)
 {
         	__u8 send_final = (bfd->flags & BFD_F_POLL) ? BFD_F_FINAL : 0;
+        	__u32 auth_sum = 0;
 
         	/* L2 swap */
         	__u8 tmp[6];
@@ -83,8 +84,12 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx,
         	bfd->detect_mult = cfg->mult;
         	bfd->len         = BFD_MIN_LEN;
         	if (cfg->auth_type) {
+        		__u32 alen = xdp_auth_len(cfg);
+
+        		if (!alen)
+        			return XDP_DROP;
         		bfd->flags |= BFD_F_AUTH;
-        		bfd->len    = BFD_MIN_LEN + BFD_AUTH_SHA1_LEN;
+        		bfd->len    = (__u8)alen;
         	}
         	bfd->my_disc     = bpf_htonl(cfg->my_disc);
         	bfd->your_disc   = bpf_htonl(cfg->your_disc);
@@ -98,7 +103,8 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx,
         	 * an empty section authenticates as garbage, and the peer
         	 * would drop it anyway after doing the work. */
         	if (cfg->auth_type &&
-        	    (!sc || !xdp_auth_build(bfd, cfg, st, sc, data_end)))
+        	    (!sc || !xdp_auth_build(ctx, iph ? BFD_OFF_V4 : BFD_OFF_V6,
+        	                            bfd, cfg, st, sc, &auth_sum)))
         		return XDP_DROP;
 
         	/* Echo exactly a 24-byte control packet: a longer peer
@@ -146,19 +152,15 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx,
         		w = (__u16 *)udp;              /* UDP hdr, check == 0 */
         		for (int i = 0; i < 4; i++)
         			csum += w[i];
-        		w = (__u16 *)bfd;              /* the BFD payload */
-        		for (int i = 0; i < BFD_MIN_LEN / 2; i++)
-        			csum += w[i];
-        		/* The authentication section is payload too. Folded in
-        		 * a second constant-bounded pass rather than by making
-        		 * the first one run to bfd->len, which is a runtime
-        		 * value and would cost the verifier a state per word. */
+        		/* The payload. With authentication its length varies
+        		 * and it may even be an odd number of bytes, so the sum
+        		 * comes back from the builder, which had it assembled
+        		 * in a fixed-size block already. */
         		if (cfg->auth_type) {
-        			if ((void *)((__u8 *)bfd + BFD_MIN_LEN +
-        			             BFD_AUTH_SHA1_LEN) > data_end)
-        				return XDP_DROP;
-        			for (int i = BFD_MIN_LEN / 2;
-        			     i < (BFD_MIN_LEN + BFD_AUTH_SHA1_LEN) / 2; i++)
+        			csum += auth_sum;
+        		} else {
+        			w = (__u16 *)bfd;
+        			for (int i = 0; i < BFD_MIN_LEN / 2; i++)
         				csum += w[i];
         		}
         		csum = (csum & 0xffff) + (csum >> 16);

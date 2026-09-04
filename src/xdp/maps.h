@@ -106,6 +106,9 @@ struct {
 struct auth_scratch {
 	__u8 blk[SHA1_BLOCK_LEN];
 	__u8 dig[SHA1_DIGEST_LEN];
+	__u8 rcv[SHA1_DIGEST_LEN];   /* the digest as it arrived, kept
+	                              * while blk's copy is zeroed to
+	                              * recompute over the same bytes */
 };
 
 struct {

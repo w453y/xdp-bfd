@@ -155,7 +155,8 @@ int bfd_observer(struct xdp_md *ctx)
 
 		asc = bpf_map_lookup_elem(&auth_scratch, &azero);
 		if (!asc || !xdp_auth_fast(cfg) ||
-		    !xdp_auth_verify(bfd, cfg, st, asc, data_end)) {
+		    !xdp_auth_verify(ctx, iph ? BFD_OFF_V4 : BFD_OFF_V6,
+				     bfd, cfg, st, asc)) {
 			count(BFD_STAT_AUTH_BAD);
 			return XDP_DROP;
 		}

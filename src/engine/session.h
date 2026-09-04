@@ -211,19 +211,18 @@ static inline int demand_detect_held(const struct session *s)
  * an authentication section yet; demand-held ones because they are
  * meant to be silent.
  */
-/* Which authentication the fast path can carry.
- *
- * Keyed SHA1 only, and not for want of trying: those packets are always
- * 52 bytes, so every copy in the program has a constant bound. A simple
- * password is 24 + 3 + the key length, and a copy bounded by a runtime
- * length is one the verifier walks an iteration at a time. Those
- * sessions stay in userspace, checked by the same shared code.
+/* Which authentication the fast path can carry: all of it. Which
+ * sessions keep RX-clocked TX should not depend on which authentication
+ * an operator configured - that is the property this engine exists to
+ * provide, and it would be a strange one to withdraw from the sessions
+ * that asked to be protected.
  *
  * Must agree with the program's xdp_auth_fast.
  */
 static inline int auth_fast_capable(const struct session *s)
 {
-	return !s->auth_type || s->auth_type == BFD_AUTH_KEYED_SHA1 ||
+	return !s->auth_type || s->auth_type == BFD_AUTH_SIMPLE ||
+	       s->auth_type == BFD_AUTH_KEYED_SHA1 ||
 	       s->auth_type == BFD_AUTH_METICULOUS_SHA1;
 }
 

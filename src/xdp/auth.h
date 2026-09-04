@@ -182,15 +182,28 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
  * treat as "send nothing": a packet with the A bit set and a section
  * full of zeroes is worse than no packet at all.
  */
-/* The 16-bit word sum of the assembled payload. The payload starts on
- * an even offset, so an even index is a high byte. */
+/* The 16-bit word sum of the assembled payload.
+ *
+ * Words are read exactly as the rest of the fold reads them - straight
+ * out of memory, not assembled byte by byte into a big-endian value.
+ * A ones-complement sum is only byte-order agnostic if every term is
+ * accumulated the same way; mixing the two conventions byte-swaps this
+ * contribution and the checksum comes out wrong. It costs nothing on
+ * IPv4, which sends no UDP checksum at all, and breaks every IPv6
+ * session, which must.
+ *
+ * A constant 26 words covers the longest payload. The block is zero
+ * past the section, and zeroes add nothing - which is also exactly the
+ * pad an odd-length payload needs.
+ */
 static __always_inline __u32 xdp_auth_sum(const __u8 *blk)
 {
+	const __u16 *w = (const __u16 *)blk;
 	__u32 sum = 0;
 	int i;
 
-	for (i = 0; i < BFD_MAX_LEN; i++)
-		sum += (i & 1) ? (__u32)blk[i] : ((__u32)blk[i] << 8);
+	for (i = 0; i < BFD_MAX_LEN / 2; i++)
+		sum += w[i];
 	return sum;
 }
 

@@ -238,6 +238,7 @@ def sessions():
             "my_disc": e["value"]["my_disc"],
             "min_ttl": e["value"].get("min_ttl", 255),
             "enable": e["value"]["enable"],
+            "auth_type": e["value"].get("auth_type", 0),
         })
     return out
 
@@ -252,14 +253,20 @@ def pick(sess):
         # Poll/Final pair above all - reads zero. Which session the map
         # hands back first is not stable between runs, so without this the
         # suite passes or fails depending on iteration order.
+        #
+        # Authenticated sessions are skipped for the same reason. Every
+        # frame this file builds is unauthenticated, which is exactly
+        # what such a session must discard (RFC 5880 s6.8.6), so picking
+        # one turns the whole matrix red - and only on the runs where the
+        # map happened to hand it back first.
         if (s["family"] == 4 and s["min_ttl"] == 255 and s["enable"]
-                and "v4" not in got):
+                and not s["auth_type"] and "v4" not in got):
             got["v4"] = s
         if (s["family"] == 6 and s["min_ttl"] == 255 and s["enable"]
-                and "v6" not in got):
+                and not s["auth_type"] and "v6" not in got):
             got["v6"] = s
         if (s["family"] == 4 and s["min_ttl"] < 255 and s["enable"]
-                and "mh4" not in got):
+                and not s["auth_type"] and "mh4" not in got):
             got["mh4"] = s
         # A configured peer nothing answers on: enable stays 0, so the
         # TX bounce never fires and its rx_pkts moves only when we
@@ -273,7 +280,7 @@ def pick(sess):
                 and "phantom6" not in got):
             got["phantom6"] = s
         if (s["family"] == 6 and s["min_ttl"] < 255 and s["enable"]
-                and "mh6" not in got):
+                and not s["auth_type"] and "mh6" not in got):
             got["mh6"] = s
     return got
 

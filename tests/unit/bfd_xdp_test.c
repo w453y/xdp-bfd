@@ -25,6 +25,7 @@
 #include <bpf/bpf_endian.h>
 
 #include "bfd_shared.h"
+#include "hmac_sha1.h"
 
 #include "tunables.h"
 #include "maps.h"
@@ -69,6 +70,45 @@ int sweep_once(struct xdp_md *ctx)
 	__u64 t = *now;
 
 	bpf_for_each_map_elem(&bfd_sessions, check_session, &t, 0);
+	return XDP_PASS;
+}
+
+/* The shared HMAC-SHA1, run through the kernel.
+ *
+ * Same header the engine compiles, same vectors hmac_run checks on the
+ * host. Worth its own entry point rather than trusting the host result:
+ * the BPF build is a different compilation with different inlining and
+ * its own stack and verifier constraints, and it is the one that decides
+ * whether an authenticated packet is accepted on the wire.
+ *
+ * Input and output live in a map because a BFD auth key is not packet
+ * data - on the fast path it comes from the session's configuration, and
+ * the message block is scratch the reflector assembles.
+ */
+struct hmac_scratch {
+	__u8  kpad[SHA1_BLOCK_LEN];
+	__u8  mblk[SHA1_BLOCK_LEN];
+	__u8  out[SHA1_DIGEST_LEN];
+	__u32 msglen;
+	__u32 ok;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct hmac_scratch);
+} hmac_scratch SEC(".maps");
+
+SEC("xdp")
+int hmac_once(struct xdp_md *ctx)
+{
+	__u32 zero = 0;
+	struct hmac_scratch *s = bpf_map_lookup_elem(&hmac_scratch, &zero);
+
+	if (!s)
+		return XDP_ABORTED;
+	s->ok = hmac_sha1_blocks(s->kpad, s->mblk, s->msglen, s->out);
 	return XDP_PASS;
 }
 

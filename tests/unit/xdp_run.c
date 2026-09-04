@@ -28,6 +28,8 @@
 #include "bfd_shared.h"
 #include <time.h>
 #include "detect_vectors.h"
+#include "hmac_sha1.h"
+#include "hmac_vectors.h"
 
 static struct bpf_object *obj;
 static int prog_fd = -1;
@@ -244,6 +246,7 @@ static int echo_peers_fd = -1, echo_disc_fd = -1;
  * Separate object on purpose: no test entry point in shipped bytecode. */
 static struct bpf_object *sweep_obj;
 static int sweep_prog_fd = -1, sweep_sess_fd = -1, sweep_cfg_fd = -1;
+static int hmac_prog_fd = -1, hmac_map_fd = -1;
 
 /* Keys are built from the arriving frame's point of view: peer is the
  * source, local is the destination. Getting this backwards produces a
@@ -1724,6 +1727,69 @@ static void case_sweep(const char *name, unsigned int iv_us, unsigned int mult,
 	bpf_map_delete_elem(sweep_cfg_fd, &k);
 }
 
+/* The shared HMAC-SHA1 through the kernel, on the vectors hmac_run
+ * checks on the host. The BPF build inlines differently and answers to
+ * the verifier, so agreeing with the host is not something to assume. */
+struct hmac_scratch_u {
+	__u8  kpad[SHA1_BLOCK_LEN];
+	__u8  mblk[SHA1_BLOCK_LEN];
+	__u8  out[SHA1_DIGEST_LEN];
+	__u32 msglen;
+	__u32 ok;
+};
+
+static void case_hmac(const struct hmac_vec *v)
+{
+	struct hmac_scratch_u sc = {0};
+	unsigned char in[64] = {0}, out[64] = {0};
+	__u32 zero = 0;
+
+	if (hmac_prog_fd < 0) {
+		printf("FAIL %-40s no hmac program\n", v->name);
+		fails++;
+		return;
+	}
+
+	memcpy(sc.kpad, v->key, v->keylen);
+	memcpy(sc.mblk, v->msg, v->msglen);
+	sc.msglen = v->msglen;
+	if (bpf_map_update_elem(hmac_map_fd, &zero, &sc, BPF_ANY)) {
+		printf("FAIL %-40s scratch put\n", v->name);
+		fails++;
+		return;
+	}
+
+	LIBBPF_OPTS(bpf_test_run_opts, topts,
+		    .data_in = in, .data_size_in = sizeof(in),
+		    .data_out = out, .data_size_out = sizeof(out),
+		    .repeat = 1);
+	if (bpf_prog_test_run_opts(hmac_prog_fd, &topts) ||
+	    bpf_map_lookup_elem(hmac_map_fd, &zero, &sc)) {
+		printf("FAIL %-40s test_run\n", v->name);
+		fails++;
+		return;
+	}
+	if (!sc.ok) {
+		printf("FAIL %-40s kernel refused key %u msg %u\n",
+		       v->name, v->keylen, v->msglen);
+		fails++;
+		return;
+	}
+	if (memcmp(sc.out, v->want, SHA1_DIGEST_LEN)) {
+		printf("     want ");
+		for (int i = 0; i < SHA1_DIGEST_LEN; i++)
+			printf("%02x", v->want[i]);
+		printf("\n     got  ");
+		for (int i = 0; i < SHA1_DIGEST_LEN; i++)
+			printf("%02x", sc.out[i]);
+		printf("\n");
+		printf("FAIL %-40s\n", v->name);
+		fails++;
+		return;
+	}
+	printf("ok   %-40s key %2u msg %2u\n", v->name, v->keylen, v->msglen);
+}
+
 /* Demand mode (RFC 5880 s6.6): the engine asked this peer to stop
  * transmitting, so the silence the sweep measures is the silence we
  * requested. Without the hold every demanding session is torn down one
@@ -1890,6 +1956,9 @@ static void run_sweep_matrix(void)
 	case_sweep_negative();
 	case_sweep_demand();
 
+	for (int i = 0; i < HMAC_NVECS; i++)
+		case_hmac(&hmac_vecs[i]);
+
 	case_demand_bit_out(0, 0, 0, 0, "demand-bit-off-not-set");
 	case_demand_bit_out(1, 0, 1, 0, "demand-bit-on-set");
 	case_demand_bit_out(1, BFD_F_POLL, 1, 1, "demand-bit-rides-with-final");
@@ -1944,6 +2013,13 @@ int main(void)
 								"bfd_sessions");
 			sweep_cfg_fd = bpf_object__find_map_fd_by_name(sweep_obj,
 							       "tx_config");
+			sp = bpf_object__find_program_by_name(sweep_obj,
+							      "hmac_once");
+			if (sp) {
+				hmac_prog_fd = bpf_program__fd(sp);
+				hmac_map_fd = bpf_object__find_map_fd_by_name(
+						sweep_obj, "hmac_scratch");
+			}
 		}
 	} else {
 		fprintf(stderr, "sweep object not loaded: %s\n", strerror(errno));

@@ -322,9 +322,15 @@ MALFORMED = (
 # Well-formed headers carrying a flag we cannot honour. Unlike the
 # malformed set these DROP rather than PASS: passing one hands it to a
 # userspace path that would accept it as plain unauthenticated BFD.
+# The counter differs: the M bit is a flag nothing can honour, while the
+# A bit is refused because this session has no key - a fact about the
+# session, not the packet, and worth telling apart when reading counters
+# on a box where some sessions do authenticate.
 UNSUPPORTED = (
-    ("auth-bit", "the A bit with no authentication configured", 0x04),
-    ("mp-bit", "the M bit is reserved for multipoint", 0x01),
+    ("auth-bit", "the A bit with no authentication configured", 0x04,
+     "auth-mismatch"),
+    ("mp-bit", "the M bit is reserved for multipoint", 0x01,
+     "unsupported-flags"),
 )
 
 
@@ -333,7 +339,7 @@ def unsupported_cases(sess, fam):
     malformed_cases: the check sits after the family branch, so running
     both exercises each parse path into it."""
     out = []
-    for cname, cdesc, fl in UNSUPPORTED:
+    for cname, cdesc, fl, counter in UNSUPPORTED:
         # ydisc naming no session, peer state Up: on a build WITHOUT the
         # flag check this is rejected by the demux (slot 3) instead of
         # reaching the session state update. That matters for the
@@ -343,8 +349,7 @@ def unsupported_cases(sess, fam):
         spec = dict(family=fam, src=sess["peer"], dst=sess["local"],
                     ttl=255, dport=3784, ydisc=0x11111111, state=3,
                     flags=fl)
-        out.append(("%s-v%d" % (cname, fam), cdesc, spec,
-                    "unsupported-flags", COUNT))
+        out.append(("%s-v%d" % (cname, fam), cdesc, spec, counter, COUNT))
     return out
 
 

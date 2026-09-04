@@ -88,7 +88,8 @@ static int rx_auth_ok(struct session *s, const __u8 *buf, __u8 len)
 
 	v = bfd_auth_check(buf, len, s->auth_type, s->auth_keyid,
 			   s->auth_key, s->auth_keylen, s->auth_kpad,
-			   &s->auth_rx_seq, &s->auth_rx_seen);
+			   &s->auth_rx_seq, &s->auth_rx_seen,
+			   s->r_mult ? s->r_mult : s->detect_mult);
 	if (v != BFD_AUTH_OK) {
 		log_debug("lid=%u authentication rejected a packet (%d)\n",
 			  s->lid, v);

@@ -434,14 +434,25 @@ void ktx_poll_map(struct session *s, uint64_t t)
 		s->r_state = ms.remote_state;
 	if (ms.detect_iv_us)
 		s->detect_iv_us = ms.detect_iv_us;
-	/* The fast path has been transmitting and receiving under this
-	 * session's key, so its sequence numbers are ahead of ours. Take
-	 * them back, or the first packet userspace sends after the hold
-	 * lifts repeats one the peer has already seen. */
+	/* Sequence numbers belong to whichever plane is handling the
+	 * session, and are only ever read back from the one that is.
+	 *
+	 * The transmit sequence always comes back: the fast path has been
+	 * emitting under this key, so ours is behind, and the first packet
+	 * userspace sends after taking over must not repeat one the peer
+	 * has already seen.
+	 *
+	 * The receive window only comes back while the fast path is still
+	 * answering. Once it is not, userspace owns that window - and it
+	 * has to, because the resync in fsm_detect clears it after the peer
+	 * goes quiet, and pulling the kernel's stale copy back in on the
+	 * very next pass would undo that every time. A peer that restarted
+	 * would then never be believed again.
+	 */
 	if (s->auth_type) {
 		if (ms.auth_tx_seq > s->auth_tx_seq)
 			s->auth_tx_seq = ms.auth_tx_seq;
-		if (ms.auth_rx_seen) {
+		if (ktx_answers(s) && ms.auth_rx_seen) {
 			s->auth_rx_seq = ms.auth_rx_seq;
 			s->auth_rx_seen = 1;
 		}

@@ -140,18 +140,14 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 	for (i = 0; i < 4; i++)
 		seq = (seq << 8) | blk[BFD_MIN_LEN + BFD_AUTH_SHA1_SEQ_OFF + i];
 
-	/* RFC 5880 s6.7.3. Meticulous demands strictly increasing; the
-	 * plain form tolerates a repeat, which is what lets a peer answer
-	 * a Poll without burning a sequence. The first packet has nothing
-	 * to be judged against and sets the window instead. */
-	if (st->auth_rx_seen) {
-		if (cfg->auth_type == BFD_AUTH_METICULOUS_SHA1) {
-			if (seq <= st->auth_rx_seq)
-				return 0;
-		} else if (seq < st->auth_rx_seq) {
-			return 0;
-		}
-	}
+	/* RFC 5880 s6.7.4, the same window the slow path applies. The first
+	 * packet has nothing to be judged against and sets the window
+	 * instead, which is what lets a peer that restarted resynchronise. */
+	if (st->auth_rx_seen &&
+	    !bfd_auth_seq_ok(seq, st->auth_rx_seq,
+			     cfg->auth_type == BFD_AUTH_METICULOUS_SHA1,
+			     st->detect_mult))
+		return 0;
 
 	for (i = 0; i < SHA1_DIGEST_LEN; i++) {
 		sc->rcv[i] = blk[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF + i];

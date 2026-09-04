@@ -1819,6 +1819,7 @@ static void arm_session_auth(__u8 type, __u8 keyid, const char *key)
 	memcpy(cfg.auth_kpad, key, n);
 
 	st.remote_state = ST_UP;
+	st.detect_mult  = 3;   /* window is 3 x this */
 
 	if (bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY) ||
 	    bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
@@ -2024,6 +2025,62 @@ static void case_sweep_demand(void)
 	bpf_map_delete_elem(sweep_cfg_fd, &k);
 }
 
+/* The receive window ages out (RFC 5880 s6.7).
+ *
+ * A peer that restarts picks a fresh random sequence, which will not sit
+ * inside the window its predecessor left behind. Nothing else recovers
+ * from that: the program validates authentication whether or not it is
+ * answering, so the packets never reach userspace to be reconsidered.
+ * Twice the detection time of silence is what the RFC gives for it, and
+ * the sweep is where the silence is already measured.
+ *
+ * Both edges, because a window that ages out too eagerly is a replay
+ * window that is not one.
+ */
+static void case_sweep_auth_resync(const char *name, unsigned long long silent_ns,
+				   unsigned int want_seen)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct session_state st = {0}, after = {0};
+	struct tx_cfg cfg = {0};
+	unsigned long long now = 1000ull * 1000 * 1000 * 60;
+
+	/* 10ms basis, mult 3: detection is 30ms, so the window ages at 60ms. */
+	st.last_seen_ns  = now - silent_ns;
+	st.detect_iv_us  = 10000;
+	st.detect_mult   = 3;
+	st.alive         = 1;
+	st.auth_rx_seen  = 1;
+	st.auth_rx_seq   = 12345;
+	cfg.min_rx_us    = 10000;
+	cfg.auth_type    = BFD_AUTH_KEYED_SHA1;
+
+	bpf_map_delete_elem(sweep_sess_fd, &k);
+	bpf_map_delete_elem(sweep_cfg_fd, &k);
+	if (!sweep_put(&k, &st, &cfg) || !sweep_at(now) ||
+	    bpf_map_lookup_elem(sweep_sess_fd, &k, &after)) {
+		printf("FAIL %-40s setup\n", name);
+		fails++;
+		return;
+	}
+
+	if (after.auth_rx_seen != want_seen) {
+		printf("     auth_rx_seen is %u, want %u\n",
+		       after.auth_rx_seen, want_seen);
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else if (!want_seen && after.auth_rx_seq) {
+		printf("     window cleared but the sequence was left behind\n");
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s auth_rx_seen %u\n", name, after.auth_rx_seen);
+	}
+
+	bpf_map_delete_elem(sweep_sess_fd, &k);
+	bpf_map_delete_elem(sweep_cfg_fd, &k);
+}
+
 /* now earlier than last_seen_ns. Without the signed guard the subtraction
  * wraps and every session looks silent for ~584 years. */
 static void case_sweep_negative(void)
@@ -2167,10 +2224,32 @@ static void run_sweep_matrix(void)
 			 0, 100, 1);
 	case_auth_reject("auth-equal-seq-meticulous", MS, "topsecret", 7, 100,
 			 0, 100, 0);
+	/* The window has an upper edge as well as a lower one (s6.7.4:
+	 * RcvAuthSeq to RcvAuthSeq+3*Detect Mult). Detect Mult is 3 here,
+	 * so 9 ahead is the last acceptable sequence and 10 is not. Without
+	 * the upper bound almost the entire number space is acceptable, and
+	 * a wrap leaves the session rejecting forever. */
+	case_auth_reject("auth-window-upper-edge", KS, "topsecret", 7, 109,
+			 0, 100, 1);
+	case_auth_reject("auth-window-past-upper", KS, "topsecret", 7, 110,
+			 0, 100, 0);
+
+	/* Circular, not linear. A sequence far below the watermark is not
+	 * "less than" in a 32-bit circular space, it is very far ahead -
+	 * and still outside the window, which is what must refuse it. */
+	case_auth_reject("auth-window-wrapped-far", KS, "topsecret", 7,
+			 0x10000000, 0, 0xF0000000, 0);
+	/* The same wrap, one step past the watermark, is inside it. */
+	case_auth_reject("auth-window-wraps-cleanly", KS, "topsecret", 7,
+			 0x00000002, 0, 0xFFFFFFFF, 1);
 #undef KS
 #undef MS
 
 	case_sweep_demand();
+	/* Detection is 30ms here, so the window survives 40ms of silence
+	 * and is forgotten after 80ms. */
+	case_sweep_auth_resync("sweep-auth-window-held", 40000000ull, 1);
+	case_sweep_auth_resync("sweep-auth-window-aged", 80000000ull, 0);
 
 	for (int i = 0; i < HMAC_NVECS; i++)
 		case_hmac(&hmac_vecs[i]);

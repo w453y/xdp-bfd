@@ -212,6 +212,36 @@ void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 
 void fsm_detect(struct session *s, uint64_t t)
 {
+	/* RFC 5880 s6.7: bfd.AuthSeqKnown is cleared after twice the
+	 * detection time without a packet, so that a peer which restarts
+	 * with a fresh random sequence can resynchronise.
+	 *
+	 * Without it a restart is a coin toss. The peer comes back with a
+	 * new random sequence, and if it lands below the watermark this
+	 * session rejects every packet it will ever send - the session
+	 * stays Down for good while every unauthenticated one beside it
+	 * recovers. Observed on the mesh: a peer restart left two of eight
+	 * authenticated sessions stuck.
+	 *
+	 * Ahead of the early returns below because a Down session is
+	 * exactly the one that needs this, and clearing the local copy is
+	 * not enough - auth_seeded going back to zero is what makes the
+	 * mirror hand the cleared window to the fast path when the session
+	 * next comes up.
+	 */
+	if (s->auth_type && s->auth_rx_seen && s->last_rx_us) {
+		uint64_t iv = s->detect_iv_us ? s->detect_iv_us
+			    : (s->r_min_tx > s->min_rx_us ? s->r_min_tx
+							  : s->min_rx_us);
+		uint8_t mult = s->r_mult ? s->r_mult : s->detect_mult;
+
+		if (iv && t - s->last_rx_us > 2ull * mult * iv) {
+			s->auth_rx_seen = 0;
+			s->auth_rx_seq = 0;
+			s->auth_seeded = 0;
+		}
+	}
+
 	if (s->state == ST_DOWN || s->state == ST_ADMINDOWN || !s->last_rx_us)
 		return;
 	/* We asked this peer to stop transmitting, so the gap since its

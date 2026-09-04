@@ -33,9 +33,6 @@ static long check_session(struct bpf_map *map, struct session_key *k,
 			return 0;
 	}
 
-	if (!st->alive)
-		return 0;
-
 	/* Effective interval is maintained by the RX path (poll-aware:
 	 * advertised decreases apply only once traffic actually paces at
 	 * the new rate). Fallback recompute for entries that predate the
@@ -54,6 +51,26 @@ static long check_session(struct bpf_map *map, struct session_key *k,
 	__s64 delta = (__s64)(now - st->last_seen_ns);
 	if (delta < 0)
 		return 0;   /* packet raced past our now-snapshot */
+
+	/* RFC 5880 s6.7: forget the receive sequence window after twice the
+	 * detection time without a packet, so a peer that restarts with a
+	 * fresh random sequence can resynchronise.
+	 *
+	 * Here and not only in the engine, because the program validates
+	 * authentication whether or not it is answering for the session: a
+	 * packet outside the window is dropped in the driver and userspace
+	 * never sees it, so a resync that lives only in the engine can
+	 * never fire. Ahead of the liveness check below for the same
+	 * reason - a session that is already down is exactly the one
+	 * waiting to resynchronise.
+	 */
+	if (st->auth_rx_seen && (__u64)delta > 2ull * detect_ns) {
+		st->auth_rx_seen = 0;
+		st->auth_rx_seq = 0;
+	}
+
+	if (!st->alive)
+		return 0;
 	if ((__u64)delta > detect_ns &&
 	    __sync_val_compare_and_swap(&st->alive, 1, 0) == 1)
 		emit(k, st, now, 0);

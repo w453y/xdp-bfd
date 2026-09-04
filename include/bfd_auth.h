@@ -98,6 +98,29 @@ static inline __u8 bfd_auth_build(__u8 *pkt, __u8 auth_type, __u8 keyid,
 	return len;
 }
 
+/* Is this sequence number inside the replay window?
+ *
+ * RFC 5880 s6.7.4: the sequence must lie in bfd.RcvAuthSeq to
+ * bfd.RcvAuthSeq+(3*Detect Mult) inclusive, or +1 to the same bound for
+ * the meticulous form, "when treated as an unsigned 32-bit circular
+ * number space". Unsigned subtraction gives that circularity for free:
+ * a sequence below the watermark wraps to an enormous distance and
+ * falls outside the span.
+ *
+ * The upper bound is what makes the window a window. Without it any
+ * sequence above the watermark is acceptable, which is most of the
+ * number space, and a wrap leaves the session rejecting forever.
+ */
+static inline int bfd_auth_seq_ok(__u32 seq, __u32 rx_seq, int meticulous,
+				  __u8 mult)
+{
+	__u32 lo = meticulous ? 1u : 0u;
+	__u32 span = 3u * (mult ? mult : 3u);
+	__u32 d = seq - rx_seq;   /* circular distance, deliberately unsigned */
+
+	return d >= lo && d <= span;
+}
+
 /* Why an authenticated packet was not accepted. */
 enum bfd_auth_verdict {
 	BFD_AUTH_OK = 0,
@@ -115,13 +138,12 @@ enum bfd_auth_verdict {
  * which is what bfdd does, and what lets a session survive the peer
  * restarting with a fresh random sequence.
  *
- * The watermark advances every `modulo` packets rather than every
- * packet, matching bfdd: 1 for meticulous, 5 otherwise.
+ * `mult` is the peer's detect multiplier, which sizes the window.
  */
 static inline int bfd_auth_check(const __u8 *pkt, __u8 len, __u8 auth_type,
 				 __u8 keyid, const __u8 *key, __u8 keylen,
 				 const __u8 kpad[SHA1_BLOCK_LEN],
-				 __u32 *rx_seq, int *seen)
+				 __u32 *rx_seq, int *seen, __u8 mult)
 {
 	const __u8 *a = pkt + BFD_MIN_LEN;
 	__u8 want = bfd_auth_pkt_len(auth_type, keylen);
@@ -151,14 +173,9 @@ static inline int bfd_auth_check(const __u8 *pkt, __u8 len, __u8 auth_type,
 	      ((__u32)a[BFD_AUTH_SHA1_SEQ_OFF + 2] << 8) |
 	      (__u32)a[BFD_AUTH_SHA1_SEQ_OFF + 3];
 
-	if (*seen) {
-		if (auth_type == BFD_AUTH_METICULOUS_SHA1) {
-			if (seq <= *rx_seq)
-				return BFD_AUTH_REPLAY;
-		} else if (seq < *rx_seq) {
-			return BFD_AUTH_REPLAY;
-		}
-	}
+	if (*seen && !bfd_auth_seq_ok(seq, *rx_seq, auth_type ==
+				     BFD_AUTH_METICULOUS_SHA1, mult))
+		return BFD_AUTH_REPLAY;
 
 	if (!bfd_auth_sha1(pkt, kpad, dig))
 		return BFD_AUTH_MALFORMED;
@@ -171,14 +188,13 @@ static inline int bfd_auth_check(const __u8 *pkt, __u8 len, __u8 auth_type,
 			return BFD_AUTH_BADDIGEST;
 	}
 
-	{
-		__u32 mod = auth_type == BFD_AUTH_METICULOUS_SHA1 ? 1 : 5;
-
-		if (!*seen || (seq % mod) == 0) {
-			*rx_seq = seq;
-			*seen = 1;
-		}
-	}
+	/* Advanced on every accepted packet. The RFC only states this for
+	 * the first one, which cannot be the whole rule: a watermark that
+	 * never moves puts every packet past 3*Detect Mult outside its own
+	 * window. Advancing also keeps the window as tight as the spec
+	 * intends, which a lagging watermark does not. */
+	*rx_seq = seq;
+	*seen = 1;
 	return BFD_AUTH_OK;
 }
 

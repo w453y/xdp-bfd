@@ -70,16 +70,22 @@ int bfd_observer(struct xdp_md *ctx)
 		count(BFD_STAT_MALFORMED);
 		return XDP_PASS;
 	}
-	int hv = bfd_hdr_verdict(bfd, udp);
+	/* Only track sessions the control plane configured, unless the
+	 * standalone loader asked for promiscuous observation. Stops
+	 * unsolicited packets from filling the session map.
+	 *
+	 * Looked up before the header is validated because one of the
+	 * acceptance rules is not a property of the packet: whether the A
+	 * bit belongs there depends on whether this session has a key. The
+	 * lookup keys on addresses that parse_l3 has already read, so
+	 * nothing in the BFD header is trusted to do it. */
+	struct tx_cfg *cfg = bpf_map_lookup_elem(&tx_config, &c.key);
+
+	int hv = bfd_hdr_verdict(bfd, udp, cfg ? cfg->auth_type : 0);
 	if (hv >= 0)
 		return hv;
 
 	count(BFD_STAT_WELL_FORMED);
-
-	/* Only track sessions the control plane configured, unless the
-	 * standalone loader asked for promiscuous observation. Stops
-	 * unsolicited packets from filling the session map. */
-	struct tx_cfg *cfg = bpf_map_lookup_elem(&tx_config, &c.key);
 
 	/* Deferred GTSM. A control packet that did not arrive at 255 is
 	 * acceptable only if it names a configured session whose minimum

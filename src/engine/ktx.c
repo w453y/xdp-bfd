@@ -285,12 +285,18 @@ void ktx_mirror(struct session *s)
 	 * userspace instead, which still answers a Poll with a Final and
 	 * stays silent otherwise. Polls are rare and the session is idle by
 	 * construction, so the slow path is the right place for them. */
-	int held = demand_tx_held(s);
+	/* The fast path cannot authenticate yet: it would answer from
+	 * tx_config with no section at all, and the peer would drop every
+	 * reply. Until the digest moves into the program, an authenticated
+	 * session is served entirely from userspace - the packets still
+	 * reach it, because tx_config carries auth_type and the parser
+	 * stops rejecting the A bit on its account. */
 	struct tx_cfg c = {
 		.echo_iv_us = s->echo_tx_us,
 		.min_echo_rx_us = s->min_echo_rx_us,
 		.min_ttl   = s->min_ttl,
-		.enable    = (s->state == ST_UP && !held),
+		.auth_type = s->auth_type,
+		.enable    = ktx_answers(s),
 		.demand      = demand_bit_out(s),
 		.demand_hold = demand_detect_held(s),
 		.my_disc   = s->wire_disc,

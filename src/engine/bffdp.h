@@ -22,6 +22,10 @@ enum bfddp_message_type {
 	BFD_SESSION_COUNTERS = 6,
 };
 
+/* Longest key the session message carries; must match bfdd's
+ * BFDDP_AUTH_KEY_MAX or every authenticated ADD is misread. */
+#define BFFDP_AUTH_KEY_MAX 64
+
 enum bfddp_session_flag {
 	SESSION_MULTIHOP = (1 << 0),
 	SESSION_DEMAND   = (1 << 1),
@@ -68,6 +72,14 @@ struct bfddp_session_msg {
 	uint16_t zero;
 	uint32_t ifindex;
 	char     ifname[64];
+	/* Authentication (RFC 5880 s6.7). Only the configuration crosses:
+	 * the sequence numbers belong to whoever sends and receives, which
+	 * for a delegated session is this engine. */
+	uint8_t  auth_type;
+	uint8_t  auth_keyid;
+	uint8_t  auth_keylen;
+	uint8_t  auth_zero;
+	char     auth_key[BFFDP_AUTH_KEY_MAX];
 } __attribute__((packed));
 
 struct bfddp_state_change {

@@ -13,6 +13,7 @@
  * by hand.
  */
 #include <bfd_shared.h>
+#include <hmac_sha1.h>
 #include <stddef.h>
 
 _Static_assert(sizeof(struct bfd_ctrl_pkt) == 24,
@@ -25,7 +26,7 @@ _Static_assert(sizeof(struct session_state) == 104,
 	       "sizeof(struct session_state)");
 _Static_assert(sizeof(struct bfd_event) == 56,
 	       "sizeof(struct bfd_event)");
-_Static_assert(sizeof(struct tx_cfg) == 48,
+_Static_assert(sizeof(struct tx_cfg) == 52,
 	       "sizeof(struct tx_cfg)");
 _Static_assert(offsetof(struct session_state, last_seen_ns) == 0,
 	       "offsetof(struct session_state, last_seen_ns)");
@@ -101,6 +102,8 @@ _Static_assert(offsetof(struct tx_cfg, min_echo_rx_us) == 40,
 	       "offsetof(struct tx_cfg, min_echo_rx_us)");
 _Static_assert(offsetof(struct tx_cfg, min_ttl) == 44,
 	       "offsetof(struct tx_cfg, min_ttl)");
+_Static_assert(offsetof(struct tx_cfg, auth_type) == 48,
+	       "offsetof(struct tx_cfg, auth_type)");
 _Static_assert(offsetof(struct bfd_event, ts_ns) == 0,
 	       "offsetof(struct bfd_event, ts_ns)");
 _Static_assert(offsetof(struct bfd_event, last_seen_ns) == 8,
@@ -117,6 +120,15 @@ _Static_assert(offsetof(struct bfd_ctrl_pkt, my_disc) == 4,
 	       "offsetof(struct bfd_ctrl_pkt, my_disc)");
 _Static_assert(offsetof(struct bfd_ctrl_pkt, min_echo_rx) == 20,
 	       "offsetof(struct bfd_ctrl_pkt, min_echo_rx)");
+
+/* The authentication section's shape, which both planes lay out and
+ * neither may lay out differently. BFD_MAX_LEN also bounds the digest:
+ * a keyed-SHA1 packet has to fit what hmac_sha1.h will hash in one go,
+ * or authenticated packets fail on a length rather than a key. */
+_Static_assert(BFD_AUTH_SHA1_LEN == 28, "BFD_AUTH_SHA1_LEN");
+_Static_assert(BFD_MAX_LEN == 52, "BFD_MAX_LEN");
+_Static_assert(BFD_MAX_LEN <= HMAC_SHA1_MAX_MSG + SHA1_DIGEST_LEN,
+	       "a keyed-SHA1 packet must fit the shared digest");
 
 /* Enum values cross the plane boundary the same way struct offsets do: the
  * engine writes tunables and reads stat slots by number, and the XDP program
@@ -146,4 +158,4 @@ _Static_assert(BFD_STAT_ECHO_TTL == 8, "BFD_STAT_ECHO_TTL");
 _Static_assert(BFD_STAT_UNSUPPORTED_FLAGS == 9, "BFD_STAT_UNSUPPORTED_FLAGS");
 _Static_assert(BFD_STAT_SWEEP_INIT_FAIL == 10, "BFD_STAT_SWEEP_INIT_FAIL");
 _Static_assert(BFD_STAT_IP_OPTIONS == 11, "BFD_STAT_IP_OPTIONS");
-_Static_assert(BFD_STAT_MAX == 12, "BFD_STAT_MAX");
+_Static_assert(BFD_STAT_MAX == 14, "BFD_STAT_MAX");

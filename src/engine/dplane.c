@@ -279,6 +279,42 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	s->min_ttl     = sm->ttl ? sm->ttl : 255;
 	s->is_mhop     = !!(flags & SESSION_MULTIHOP);
 	s->demand      = !!(flags & SESSION_DEMAND);
+
+	/* Authentication (RFC 5880 s6.7). bfdd sends the key itself,
+	 * because a data plane that transmits is the thing that has to
+	 * authenticate.
+	 *
+	 * A key that does not fit the digest leaves the session
+	 * unauthenticated rather than half-configured: the alternative is
+	 * a session that believes it is authenticating and fails every
+	 * packet, which reads exactly like a mismatched key on the peer.
+	 * The sequence number starts somewhere unpredictable, which
+	 * s6.7.3 asks for and which costs nothing here.
+	 */
+	{
+		uint8_t at = sm->auth_type, kl = sm->auth_keylen;
+
+		if (at && (kl == 0 || kl > sizeof(s->auth_kpad))) {
+			log_err("dplane: lid=%u auth type %u with a %u-byte key is unusable; session left unauthenticated\n",
+				lid, at, kl);
+			at = 0;
+			kl = 0;
+		}
+		if (at != s->auth_type || kl != s->auth_keylen ||
+		    memcmp(s->auth_key, sm->auth_key, kl)) {
+			memset(s->auth_key, 0, sizeof(s->auth_key));
+			memset(s->auth_kpad, 0, sizeof(s->auth_kpad));
+			memcpy(s->auth_key, sm->auth_key, kl);
+			memcpy(s->auth_kpad, sm->auth_key, kl);
+			s->auth_type  = at;
+			s->auth_keyid = sm->auth_keyid;
+			s->auth_keylen = kl;
+			s->auth_tx_seq = (uint32_t)random();
+			s->auth_rx_seq = 0;
+			s->auth_rx_seen = 0;
+		}
+	}
+
 	ktx_update_mhop_flag();
 
 	/* The fast path is attached to one interface. A single-hop session

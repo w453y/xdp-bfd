@@ -1204,8 +1204,11 @@ static void run_malformed_matrix(void)
 			       BFD_STAT_MALFORMED);
 		case_malformed(v6, "malformed-disc-zero", mut_disc_zero, XDP_PASS,
 			       BFD_STAT_MALFORMED);
-		case_malformed(v6, "unsupported-auth",    mut_auth, XDP_DROP,
-			       BFD_STAT_UNSUPPORTED_FLAGS);
+		/* Still dropped, but attributed to the session rather than
+		 * to the flag: the A bit is only unacceptable because this
+		 * session has no key. RFC 5880 s6.8.6. */
+		case_malformed(v6, "auth-bit-no-key",     mut_auth, XDP_DROP,
+			       BFD_STAT_AUTH_MISMATCH);
 		case_malformed(v6, "unsupported-mp",      mut_mp, XDP_DROP,
 			       BFD_STAT_UNSUPPORTED_FLAGS);
 	}
@@ -1290,6 +1293,60 @@ static void run_demux_matrix(void)
 		/* zero with the peer Up: not the restart case, rejected */
 		case_demux(v6, "demux-zero-peer-up", 0, ST_UP, XDP_DROP, 0);
 	}
+}
+
+/* The other half of RFC 5880 s6.8.6, and the half that matters: a
+ * session with a key must reject a packet that arrives without one.
+ * Without this rule a peer downgrades the session simply by omitting
+ * authentication, which is the whole attack authentication exists to
+ * stop - and it would look like an ordinary healthy session.
+ */
+static void case_auth_required(int v6)
+{
+	struct session_key k = v6 ? key_v6("fd00::2", "fd00::1")
+				  : key_v4("10.0.0.2", "10.0.0.1");
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct tx_cfg cfg = {0};
+	struct frame f;
+	unsigned long long before;
+	const char *name = v6 ? "auth-required-v6" : "auth-required-v4";
+	int v;
+
+	map_reset();
+	if (v6)
+		arm_session_v6();
+	else
+		arm_session();
+
+	/* Same session, now carrying a key. */
+	if (bpf_map_lookup_elem(cfg_fd, &k, &cfg)) {
+		printf("FAIL %-40s no cfg\n", name);
+		fails++;
+		return;
+	}
+	cfg.auth_type = BFD_AUTH_KEYED_SHA1;
+	bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY);
+
+	before = stat_get(BFD_STAT_AUTH_MISMATCH);
+	if (v6)
+		build_v6(&f, 255, BFD_PORT_1HOP, &p, 0);
+	else
+		build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+	v = run_frame(&f, NULL, NULL);
+
+	if (v != XDP_DROP) {
+		printf("     verdict %s, want DROP\n",
+		       v < 0 ? "syscall-error" : verdict_str(v));
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else if (stat_get(BFD_STAT_AUTH_MISMATCH) != before + 1) {
+		printf("     auth-mismatch did not move\n");
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s DROP\n", name);
+	}
+	map_reset();
 }
 
 /* IPv4 fragmentation.
@@ -1954,6 +2011,9 @@ static void run_sweep_matrix(void)
 	 * The guard returns early rather than letting the unsigned delta
 	 * wrap into an enormous silence. */
 	case_sweep_negative();
+	case_auth_required(0);
+	case_auth_required(1);
+
 	case_sweep_demand();
 
 	for (int i = 0; i < HMAC_NVECS; i++)

@@ -93,6 +93,22 @@ struct session {
 	uint8_t  demand_announced;    /* D bits actually put on the wire
 	                               * since entering Up; see
 	                               * demand_announce_due */
+	/* Authentication (RFC 5880 s6.7), from the ADD. */
+	uint8_t  auth_type;           /* BFD_AUTH_*, 0 = unauthenticated */
+	uint8_t  auth_keyid;
+	uint8_t  auth_keylen;
+	uint8_t  auth_key[BFFDP_AUTH_KEY_MAX];
+	uint8_t  auth_kpad[64];       /* the key in one SHA1 block, zero
+	                               * padded, which is what the digest
+	                               * takes and what the fast path will
+	                               * mirror */
+	uint32_t auth_tx_seq;         /* ours, incremented per transmission.
+	                               * Random at session start: RFC 5880
+	                               * s6.7.3 wants it unpredictable */
+	uint32_t auth_rx_seq;         /* highest accepted from the peer */
+	int      auth_rx_seen;        /* whether auth_rx_seq means anything
+	                               * yet - the first authenticated packet
+	                               * has nothing to be compared against */
 	uint8_t  iface_warned;        /* once per session, not once per ADD:
 	                               * bfdd re-sends one on every config
 	                               * touch */
@@ -177,6 +193,25 @@ static inline int demand_detect_held(const struct session *s)
 {
 	return s->demand && s->state == ST_UP && s->r_state == ST_UP &&
 	       !s->polling;
+}
+
+/* Whether the fast path answers for this session.
+ *
+ * This is exactly what ktx_mirror pushes as tx_cfg.enable, and fsm_tx
+ * has to ask the same question before it goes quiet: userspace stays
+ * silent only because the kernel is about to reply, so a session the
+ * kernel will not answer for has to keep transmitting from here. Two
+ * spellings of it means one of them holds its tongue waiting for a
+ * bounce that is never coming, and the session flaps at the peer's
+ * detection time.
+ *
+ * Authenticated sessions are excluded because the program cannot build
+ * an authentication section yet; demand-held ones because they are
+ * meant to be silent.
+ */
+static inline int ktx_answers(const struct session *s)
+{
+	return s->state == ST_UP && !s->auth_type && !demand_tx_held(s);
 }
 
 extern struct session sessions[MAX_SESSIONS];

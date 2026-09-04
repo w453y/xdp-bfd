@@ -26,7 +26,8 @@
  * before bfd is dereferenced here or after this returns.
  */
 static __always_inline int bfd_hdr_verdict(const struct bfd_ctrl_pkt *bfd,
-					   const struct udphdr *udp)
+					   const struct udphdr *udp,
+					   __u8 auth_expected)
 {
 	__u16 udp_len = bpf_ntohs(udp->len);
 	__u32 payload = udp_len >= sizeof(*udp) ? udp_len - sizeof(*udp) : 0;
@@ -35,23 +36,22 @@ static __always_inline int bfd_hdr_verdict(const struct bfd_ctrl_pkt *bfd,
 	 * an under-8 value would wrap and hand bfd_ctrl_check a payload
 	 * length of nearly 4G, which every length test would then pass. */
 	switch (bfd_ctrl_check(bfd->vers_diag, bfd->flags, bfd->detect_mult,
-			       bfd->len, bfd->my_disc, payload)) {
+			       bfd->len, bfd->my_disc, payload, auth_expected)) {
 	case BFD_CTRL_MALFORMED:
 		count(BFD_STAT_MALFORMED);
 		return XDP_PASS;
 	case BFD_CTRL_UNSUPPORTED:
-		/* RFC 5880 s6.8.6: the M bit MUST be discarded (multipoint
-		 * is not this protocol), and the A bit MUST be discarded
-		 * when no authentication is configured. s6.7 is
-		 * unimplemented here, so that is every session - an
-		 * authenticated peer's packets were being accepted as
-		 * though they carried no auth section at all.
-		 *
-		 * If auth is ever implemented this becomes "PASS to
-		 * userspace when the session has auth configured, DROP
-		 * otherwise". Keyed digests do not belong in the verifier.
-		 */
+		/* RFC 5880 s6.8.6: the M bit is discarded, multipoint being
+		 * a different protocol. */
 		count(BFD_STAT_UNSUPPORTED_FLAGS);
+		return XDP_DROP;
+	case BFD_CTRL_AUTH_MISMATCH:
+		/* The A bit and the session disagree, in either direction.
+		 * Dropped rather than passed: a packet claiming
+		 * authentication we cannot check, or omitting the
+		 * authentication we require, is not something the stack
+		 * should get a second opinion on. */
+		count(BFD_STAT_AUTH_MISMATCH);
 		return XDP_DROP;
 	}
 

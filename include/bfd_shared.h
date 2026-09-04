@@ -93,7 +93,9 @@ struct bfd_ctrl_pkt {
 	X(ECHO_TTL,          "echo-ttl")           /* unreachable: see below */         \
 	X(UNSUPPORTED_FLAGS, "unsupported-flags")  /* A or M bit */        \
 	X(SWEEP_INIT_FAIL,   "sweep-init-fail")    /* sweeper never armed */ \
-	X(IP_OPTIONS,        "ip-options")         /* any UDP with options */
+	X(IP_OPTIONS,        "ip-options")         /* any UDP with options */ \
+	X(AUTH_MISMATCH,     "auth-mismatch")      /* A bit vs session */   \
+	X(AUTH_BAD,          "auth-bad")           /* key, digest or seq */
 
 /* Load-time tunables, written by userspace between load and attach and
  * read-only to the program thereafter. Their own map rather than
@@ -120,11 +122,36 @@ enum bfd_stat {
 	BFD_STAT_MAX
 };
 
+/* Authentication section (RFC 5880 s6.7). Only the types FRR can
+ * actually produce are listed: keyed MD5 (2) and meticulous keyed MD5
+ * (3) exist in the RFC and in bfdd's enum, but bfdd maps no keychain
+ * algorithm onto them, so nothing ever sends one. */
+#define BFD_AUTH_NONE            0
+#define BFD_AUTH_SIMPLE          1
+#define BFD_AUTH_KEYED_SHA1      4
+#define BFD_AUTH_METICULOUS_SHA1 5
+
+/* type, length, key id, then the key itself. */
+#define BFD_AUTH_SIMPLE_HDR   3
+#define BFD_AUTH_SIMPLE_MAXKEY 16
+
+/* type, length, key id, reserved, 4-byte sequence, 20-byte digest. */
+#define BFD_AUTH_SHA1_LEN     28
+#define BFD_AUTH_SHA1_SEQ_OFF 4
+#define BFD_AUTH_SHA1_DIG_OFF 8
+
+/* Longest control packet either plane will handle: the mandatory
+ * section plus the largest authentication section above. Also the most
+ * the shared digest can hash in one block, which is not a coincidence -
+ * a keyed-SHA1 packet is 52 bytes. */
+#define BFD_MAX_LEN (BFD_MIN_LEN + BFD_AUTH_SHA1_LEN)
+
 /* Why a control packet was not accepted (RFC 5880 s6.8.6). */
 enum bfd_ctrl_verdict {
 	BFD_CTRL_ACCEPT = 0,
 	BFD_CTRL_MALFORMED,     /* header does not parse */
 	BFD_CTRL_UNSUPPORTED,   /* well formed, carries a flag we cannot honour */
+	BFD_CTRL_AUTH_MISMATCH, /* the A bit and the session disagree */
 };
 
 /* The acceptance rule, shared so the kernel fast path and the userspace
@@ -139,7 +166,8 @@ enum bfd_ctrl_verdict {
  * Caller counts and decides the disposition; this only classifies.
  */
 static inline int bfd_ctrl_check(__u8 vers_diag, __u8 flags, __u8 mult,
-				 __u8 len, __u32 my_disc, __u32 payload_len)
+				 __u8 len, __u32 my_disc, __u32 payload_len,
+				 __u8 auth_expected)
 {
 	if (((vers_diag >> 5) & 0x7) != BFD_VERSION)
 		return BFD_CTRL_MALFORMED;
@@ -147,8 +175,15 @@ static inline int bfd_ctrl_check(__u8 vers_diag, __u8 flags, __u8 mult,
 		return BFD_CTRL_MALFORMED;
 	if (mult == 0 || my_disc == 0)
 		return BFD_CTRL_MALFORMED;
-	if (flags & (BFD_F_AUTH | BFD_F_MP))
+	if (flags & BFD_F_MP)
 		return BFD_CTRL_UNSUPPORTED;
+
+	/* RFC 5880 s6.8.6 discards in both directions: an authenticated
+	 * packet on a session with no key, and a bare packet on a session
+	 * that has one. The second half is the one that matters - without
+	 * it, a peer can strip authentication simply by not offering it. */
+	if (!!(flags & BFD_F_AUTH) != !!auth_expected)
+		return BFD_CTRL_AUTH_MISMATCH;
 
 	return BFD_CTRL_ACCEPT;
 }
@@ -258,6 +293,12 @@ struct tx_cfg {
 	                      * the configured minimum-ttl for multihop, so
 	                      * one comparison covers both. 0 means unset
 	                      * and is treated as 255. */
+	__u8  auth_type;     /* BFD_AUTH_*, 0 when the session has no key.
+	                      * The fast path needs this before it validates
+	                      * a header, because whether the A bit is
+	                      * acceptable is a property of the session
+	                      * rather than of the packet. */
+	__u8  auth_pad[3];
 };
 
 #endif /* BFD_SHARED_H */

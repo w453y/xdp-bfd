@@ -26,7 +26,7 @@ _Static_assert(sizeof(struct session_state) == 120,
 	       "sizeof(struct session_state)");
 _Static_assert(sizeof(struct bfd_event) == 56,
 	       "sizeof(struct bfd_event)");
-_Static_assert(sizeof(struct tx_cfg) == 116,
+_Static_assert(sizeof(struct tx_cfg) == 1208,
 	       "sizeof(struct tx_cfg)");
 _Static_assert(offsetof(struct session_state, last_seen_ns) == 0,
 	       "offsetof(struct session_state, last_seen_ns)");

@@ -21,11 +21,17 @@ enum bfddp_message_type {
 	BFD_STATE_CHANGE = 4,
 	DP_REQUEST_SESSION_COUNTERS = 5,
 	BFD_SESSION_COUNTERS = 6,
+	DP_SESSION_AUTH = 7,
 };
 
-/* Longest key the session message carries; must match bfdd's
- * BFDDP_AUTH_KEY_MAX or every authenticated ADD is misread. */
+/* Longest key a DP_SESSION_AUTH carries; must match bfdd's
+ * BFDDP_AUTH_KEY_MAX or every key is misread. */
 #define BFFDP_AUTH_KEY_MAX 64
+
+/* Most keys one DP_SESSION_AUTH carries; must match bfdd's
+ * BFDDP_AUTH_KEY_COUNT_MAX. The message is variable length, but the
+ * array is declared in full so a message can be read in place. */
+#define BFFDP_AUTH_KEY_COUNT_MAX 16
 
 /* How much of a session message has to be there.
  *
@@ -36,7 +42,7 @@ enum bfddp_message_type {
  * absent-means-unset. Requiring the whole struct instead would make
  * every ADD from an older daemon unparseable, and the failure would be
  * silence - no sessions, no error, nothing on the wire. */
-#define BFFDP_SESSION_MSG_MIN offsetof(struct bfddp_session_msg, auth_type)
+#define BFFDP_SESSION_MSG_MIN sizeof(struct bfddp_session_msg)
 
 enum bfddp_session_flag {
 	SESSION_MULTIHOP = (1 << 0),
@@ -46,6 +52,10 @@ enum bfddp_session_flag {
 	SESSION_IPV6     = (1 << 4),
 	SESSION_PASSIVE  = (1 << 5),
 	SESSION_SHUTDOWN = (1 << 6),
+	/* The session authenticates. The keys arrive separately, in a
+	 * DP_SESSION_AUTH; this is what says whether they are expected at
+	 * all, so it clearing is how the control plane withdraws them. */
+	SESSION_AUTH     = (1 << 7),
 };
 
 /* Peer's bits as bfdd expects them in bfddp_state_change.remote_flags.
@@ -84,15 +94,45 @@ struct bfddp_session_msg {
 	uint16_t zero;
 	uint32_t ifindex;
 	char     ifname[64];
-	/* Authentication (RFC 5880 s6.7). Only the configuration crosses:
-	 * the sequence numbers belong to whoever sends and receives, which
-	 * for a delegated session is this engine. */
-	uint8_t  auth_type;
-	uint8_t  auth_keyid;
-	uint8_t  auth_keylen;
-	uint8_t  auth_zero;
-	char     auth_key[BFFDP_AUTH_KEY_MAX];
 } __attribute__((packed));
+
+/* When a key may be used. Seconds since the epoch, with a start of zero
+ * meaning always and an end of -1 meaning never expires, which is how
+ * bfdd's key chain spells a key configured without lifetimes. */
+struct bfddp_key_lifetime {
+	int64_t start;
+	int64_t end;
+} __attribute__((packed));
+
+/* One key, with the periods that decide when it is ours to use.
+ *
+ * The two overlap during a rollover: a key stops being used to transmit
+ * before it stops being accepted, so a packet already in flight still
+ * verifies. Honouring that is the whole reason the periods are here
+ * rather than the control plane simply naming the key of the moment. */
+struct bfddp_auth_key {
+	uint8_t  type;
+	uint8_t  key_id;
+	uint8_t  key_len;
+	uint8_t  zero[5];
+	struct bfddp_key_lifetime send;
+	struct bfddp_key_lifetime accept;
+	char     key[BFFDP_AUTH_KEY_MAX];
+} __attribute__((packed));
+
+/* DP_SESSION_AUTH payload: every key the session's chain holds.
+ *
+ * Only `key_count` entries are on the wire, so the message is shorter
+ * than this and the header length is what bounds it. */
+struct bfddp_session_auth {
+	uint32_t lid;
+	uint16_t key_count;
+	uint16_t zero;
+	struct bfddp_auth_key keys[BFFDP_AUTH_KEY_COUNT_MAX];
+} __attribute__((packed));
+
+/* How much of a DP_SESSION_AUTH has to be there before the keys. */
+#define BFFDP_SESSION_AUTH_MIN offsetof(struct bfddp_session_auth, keys)
 
 struct bfddp_state_change {
 	uint32_t lid;

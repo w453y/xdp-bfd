@@ -49,6 +49,7 @@ void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local,
 	(void)peer; (void)local; (void)wire_disc;
 }
 void ktx_update_mhop_flag(void) { }
+void ktx_mirror(struct session *s) { (void)s; }
 void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip)
 {
 	(void)peer; (void)skip;

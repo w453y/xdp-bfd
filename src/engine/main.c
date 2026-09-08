@@ -79,15 +79,35 @@ static int tick_fd = -1;
 static int rx_auth_ok(struct session *s, const __u8 *buf, __u8 len)
 {
 	const struct bfd_ctrl_pkt *h = (const struct bfd_ctrl_pkt *)buf;
+	const struct auth_key *k;
 	int v;
 
-	if (!!(h->flags & BFD_F_AUTH) != !!s->auth_type)
+	/* Whether the session authenticates is a property of the session,
+	 * not of whichever key happens to be usable now: a session with no
+	 * key it may currently send under still expects authenticated
+	 * packets, and must not silently accept bare ones. */
+	if (!!(h->flags & BFD_F_AUTH) != !!s->auth_present)
 		return 0;
-	if (!s->auth_type)
+	if (!s->auth_present)
 		return 1;
 
-	v = bfd_auth_check(buf, len, s->auth_type, s->auth_keyid,
-			   s->auth_key, s->auth_keylen, s->auth_kpad,
+	if (len < BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR)
+		return 0;
+
+	/* The peer names the key it signed with, and any key still inside
+	 * its accept period is a valid answer. Comparing against the key we
+	 * transmit under instead would refuse the peer for the whole of a
+	 * rollover, which is the breakage the accept period exists to
+	 * prevent. */
+	k = session_auth_key_for(s, buf[BFD_MIN_LEN + 2], (int64_t)time(NULL));
+	if (!k) {
+		log_debug("lid=%u no key %u is currently accepted\n", s->lid,
+			  buf[BFD_MIN_LEN + 2]);
+		return 0;
+	}
+
+	v = bfd_auth_check(buf, len, k->type, k->key_id,
+			   k->kpad, k->keylen, k->kpad,
 			   &s->auth_rx_seq, &s->auth_rx_seen,
 			   h->detect_mult);
 	if (v != BFD_AUTH_OK) {
@@ -118,6 +138,42 @@ uint64_t loop_rx_wakeups;
  * average cannot tell a steady period from fast passes plus stalls, and
  * four explanations for the observed rate have already been wrong. */
 uint64_t loop_gap_us[24];
+
+/* Re-choose keys whose periods have moved on.
+ *
+ * The control plane sends the whole chain once and lets this side follow
+ * the clock, so nothing arrives to prompt a rollover: it has to be
+ * noticed. Sessions are few and the periods are in whole seconds, so a
+ * pass a second costs nothing and is well inside the resolution anyone
+ * can configure.
+ */
+static void auth_rollover_tick(void)
+{
+	static int64_t last;
+	int64_t now = (int64_t)time(NULL);
+	int i;
+
+	if (now == last)
+		return;
+	last = now;
+
+	for (i = 0; i < MAX_SESSIONS; i++) {
+		struct session *s = &sessions[i];
+
+		if (!s->used || !s->auth_nkeys)
+			continue;
+		/* Nothing changes until the next boundary, and a session
+		 * whose keys never expire has none. */
+		if (s->auth_next_change == 0 || now < s->auth_next_change)
+			continue;
+		if (session_auth_evaluate(s, now))
+			log_info("lid=%u authentication key %u is now in use\n",
+				 s->lid, s->auth_keyid);
+		/* The acceptable set is evaluated here too, so the program
+		 * is refreshed whether or not the transmit key moved. */
+		ktx_mirror(s);
+	}
+}
 
 int main(int argc, char **argv)
 {
@@ -454,6 +510,8 @@ int main(int argc, char **argv)
 	}
 
 	for (;;) {
+		auth_rollover_tick();
+
 		/* Anything that did not fit the socket last pass. Cheap when
 		 * the queue is empty, which is the normal case. */
 		dp_flush();

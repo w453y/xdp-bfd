@@ -107,22 +107,60 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 {
 	__u8 *blk = sc->blk;
 	__u8 *dig = sc->dig;
-	__u32 want = xdp_auth_len(cfg);
-	__u32 seq = 0;
+	const struct xdp_auth_key *k;
+	__u32 len = bfd->len;
+	__u32 want, idx, seq = 0;
+	__u8 key_id, type;
 	__u8 diff = 0;
-	int i;
+	int i, found = -1;
 
-	/* The peer's length must be the one this session produces. Checked
-	 * before anything is read, so a packet claiming a different shape
-	 * never reaches the copy. */
-	if (want < BFD_MIN_LEN || want > BFD_MAX_LEN || bfd->len != want)
+	/* Bounded before anything is read, so a packet claiming a shape we
+	 * could not hold never reaches the copy. */
+	if (len < BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR || len > BFD_MAX_LEN)
 		return 0;
-	if (!xdp_auth_load(ctx, boff, want, blk))
+	if (!xdp_auth_load(ctx, boff, len, blk))
 		return 0;
 
-	if (blk[BFD_MIN_LEN] != cfg->auth_type ||
-	    blk[BFD_MIN_LEN + 1] != want - BFD_MIN_LEN ||
-	    blk[BFD_MIN_LEN + 2] != cfg->auth_keyid)
+	type = blk[BFD_MIN_LEN];
+	key_id = blk[BFD_MIN_LEN + 2];
+	if (blk[BFD_MIN_LEN + 1] != len - BFD_MIN_LEN)
+		return 0;
+
+	/* The peer names the key it signed with. Anything the engine left
+	 * here is acceptable now, which during a rollover includes the key
+	 * we have already stopped transmitting under. */
+	for (i = 0; i < BFD_AUTH_ACCEPT_MAX; i++) {
+		if (i >= cfg->auth_nkeys)
+			break;
+		if (cfg->auth_accept[i].key_id == key_id &&
+		    cfg->auth_accept[i].type == type) {
+			found = i;
+			break;
+		}
+	}
+	if (found < 0)
+		return 0;
+
+	/* Masked rather than merely bounded by the loop, so the verifier
+	 * can see the access is in range without tracking the search. */
+	idx = (__u32)found & (BFD_AUTH_ACCEPT_MAX - 1);
+	k = &cfg->auth_accept[idx];
+
+	/* Copied out before it is used, so everything below works from a
+	 * fixed offset. \see auth_scratch.kpad */
+	for (i = 0; i < SHA1_BLOCK_LEN; i++)
+		sc->kpad[i] = k->kpad[i];
+
+	/* The length the named key produces, which is what the packet must
+	 * have claimed. */
+	if (type == BFD_AUTH_SIMPLE) {
+		if (!k->keylen || k->keylen > BFD_AUTH_SIMPLE_MAXKEY)
+			return 0;
+		want = BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR + k->keylen;
+	} else {
+		want = BFD_MIN_LEN + BFD_AUTH_SHA1_LEN;
+	}
+	if (len != want)
 		return 0;
 
 	/* Simple password: no digest and no sequence, just the secret in
@@ -130,10 +168,10 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 	 * field rather than the configured length - both sides are zero
 	 * past the key, and a compare that stops early leaks the password
 	 * a byte at a time to anyone who can time it. */
-	if (cfg->auth_type == BFD_AUTH_SIMPLE) {
+	if (type == BFD_AUTH_SIMPLE) {
 		for (i = 0; i < BFD_AUTH_SIMPLE_MAXKEY; i++)
 			diff |= (__u8)(blk[BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR + i] ^
-				       cfg->auth_kpad[i]);
+				       sc->kpad[i]);
 		return diff == 0;
 	}
 
@@ -145,7 +183,7 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 	 * instead, which is what lets a peer that restarted resynchronise. */
 	if (st->auth_rx_seen &&
 	    !bfd_auth_seq_ok(seq, st->auth_rx_seq,
-			     cfg->auth_type == BFD_AUTH_METICULOUS_SHA1,
+			     type == BFD_AUTH_METICULOUS_SHA1,
 			     bfd->detect_mult))
 		return 0;
 
@@ -153,7 +191,7 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 		sc->rcv[i] = blk[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF + i];
 		blk[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF + i] = 0;
 	}
-	if (!hmac_sha1_blocks(cfg->auth_kpad, blk,
+	if (!hmac_sha1_blocks(sc->kpad, blk,
 			      BFD_MIN_LEN + BFD_AUTH_SHA1_LEN, dig))
 		return 0;
 

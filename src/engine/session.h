@@ -24,6 +24,47 @@
 
 
 /* ---------- session ---------- */
+/* One key as the control plane sent it.
+ *
+ * `send` says when it may be used to sign, `accept` when a packet signed
+ * with it may still be believed. The two overlap during a rollover so a
+ * packet already in flight is not refused, which is why both travel. */
+struct auth_key {
+	uint8_t  type;
+	uint8_t  key_id;
+	uint8_t  keylen;
+	uint8_t  kpad[64];
+	int64_t  send_start;
+	int64_t  send_end;
+	int64_t  accept_start;
+	int64_t  accept_end;
+};
+
+/* Is `now` inside the period?
+ *
+ * A start of zero means the key has always been valid and an end of -1
+ * that it never expires, which is how bfdd's key chain spells a key
+ * configured without lifetimes. Both sentinels have to be honoured or a
+ * key configured the simple way is never usable. */
+static inline int auth_within(int64_t start, int64_t end, int64_t now)
+{
+	if (start == 0)
+		return 1;
+	if (start > now)
+		return 0;
+	return end == -1 || end >= now;
+}
+
+static inline int auth_key_sendable(const struct auth_key *k, int64_t now)
+{
+	return auth_within(k->send_start, k->send_end, now);
+}
+
+static inline int auth_key_acceptable(const struct auth_key *k, int64_t now)
+{
+	return auth_within(k->accept_start, k->accept_end, now);
+}
+
 struct session {
 	int      used;
 	uint32_t lid;
@@ -93,7 +134,23 @@ struct session {
 	uint8_t  demand_announced;    /* D bits actually put on the wire
 	                               * since entering Up; see
 	                               * demand_announce_due */
-	/* Authentication (RFC 5880 s6.7), from the ADD. */
+	/* Authentication (RFC 5880 s6.7).
+	 *
+	 * The keys arrive in a DP_SESSION_AUTH with the periods in which
+	 * each may be used, and this side decides which applies. The
+	 * control plane cannot: it does not see the packets, and a key
+	 * chain rolls over on a clock rather than on a configuration
+	 * change. */
+	uint8_t  auth_present;        /* the session is meant to authenticate */
+	uint8_t  auth_nkeys;
+	struct auth_key auth_keys[BFFDP_AUTH_KEY_COUNT_MAX];
+	int64_t  auth_next_change;    /* soonest a lifetime boundary passes,
+	                               * 0 when none of them ever will */
+
+	/* The key in use for transmission, chosen from the set above and
+	 * refreshed as the periods pass. Zero type means nothing may be
+	 * sent, which for a session that is meant to authenticate means
+	 * sending nothing at all. */
 	uint8_t  auth_type;           /* BFD_AUTH_*, 0 = unauthenticated */
 	uint8_t  auth_keyid;
 	uint8_t  auth_keylen;
@@ -234,6 +291,9 @@ static inline int ktx_answers(const struct session *s)
 extern struct session sessions[MAX_SESSIONS];
 
 struct session *sess_alloc(void);
+int session_auth_evaluate(struct session *s, int64_t now);
+const struct auth_key *session_auth_key_for(const struct session *s,
+					    uint8_t key_id, int64_t now);
 struct session *sess_by_lid(uint32_t lid);
 struct session *sess_by_wire(uint32_t disc);
 void sm_addrs(const struct bfddp_session_msg *sm,

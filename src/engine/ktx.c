@@ -7,6 +7,7 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <stdint.h>
 #include <unistd.h>
 #include <errno.h>
@@ -307,6 +308,31 @@ void ktx_mirror(struct session *s)
 		.poll_seq  = s->poll_seq,
 	};
 	memcpy(c.auth_kpad, s->auth_kpad, sizeof(c.auth_kpad));
+
+	/* Leave the program every key a packet may currently be signed
+	 * with, not just the one we transmit under. The lifetimes are
+	 * evaluated here because the program has no clock: it can compare
+	 * a key id, it cannot decide whether a period has passed. */
+	{
+		int64_t now = (int64_t)time(NULL);
+		unsigned i;
+
+		for (i = 0; i < s->auth_nkeys && c.auth_nkeys < BFD_AUTH_ACCEPT_MAX;
+		     i++) {
+			const struct auth_key *k = &s->auth_keys[i];
+
+			if (!s->auth_present || !auth_key_acceptable(k, now))
+				continue;
+
+			c.auth_accept[c.auth_nkeys].type = k->type;
+			c.auth_accept[c.auth_nkeys].key_id = k->key_id;
+			c.auth_accept[c.auth_nkeys].keylen = k->keylen;
+			memcpy(c.auth_accept[c.auth_nkeys].kpad, k->kpad,
+			       sizeof(c.auth_accept[0].kpad));
+			c.auth_nkeys++;
+		}
+	}
+
 	if (s->pushed_valid && !memcmp(&c, &s->pushed_cfg, sizeof(c)))
 		return;
 

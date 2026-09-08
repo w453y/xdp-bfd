@@ -293,32 +293,24 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	 * s6.7.3 asks for and which costs nothing here.
 	 */
 	{
-		int have = plen >= sizeof(*sm);
-		uint8_t at = have ? sm->auth_type : 0;
-		uint8_t kl = have ? sm->auth_keylen : 0;
+		int authed = !!(flags & SESSION_AUTH);
 
-		if (at && (kl == 0 || kl > sizeof(s->auth_kpad))) {
-			log_err("dplane: lid=%u auth type %u with a %u-byte key is unusable; session left unauthenticated\n",
-				lid, at, kl);
-			at = 0;
-			kl = 0;
+		/* The flag says whether the session authenticates at all.
+		 * The keys arrive separately, so it clearing is how the
+		 * control plane withdraws them: holding on to them would
+		 * keep authenticating a session no longer meant to. */
+		if (!authed && s->auth_present) {
+			memset(s->auth_keys, 0, sizeof(s->auth_keys));
+			s->auth_nkeys = 0;
 		}
-		if (at != s->auth_type || kl != s->auth_keylen ||
-		    (kl && memcmp(s->auth_key, sm->auth_key, kl))) {
-			memset(s->auth_key, 0, sizeof(s->auth_key));
-			memset(s->auth_kpad, 0, sizeof(s->auth_kpad));
-			if (kl) {
-				memcpy(s->auth_key, sm->auth_key, kl);
-				memcpy(s->auth_kpad, sm->auth_key, kl);
-			}
-			s->auth_type  = at;
-			s->auth_keyid = have ? sm->auth_keyid : 0;
-			s->auth_keylen = kl;
+		if (authed != s->auth_present) {
+			s->auth_present = (uint8_t)authed;
 			s->auth_tx_seq = (uint32_t)random();
 			s->auth_rx_seq = 0;
 			s->auth_rx_seen = 0;
 			s->auth_seeded = 0;
 		}
+		session_auth_evaluate(s, (int64_t)time(NULL));
 	}
 
 	ktx_update_mhop_flag();
@@ -522,6 +514,65 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h,
 	dp_send(&m, sizeof(m));
 }
 
+/* Take the session's authentication keys.
+ *
+ * Every key the chain holds arrives, with the periods that say when each
+ * may be used, and choosing between them is this side's job. A key chain
+ * rolls over on a clock, so a control plane that named the key of the
+ * moment would have to keep telling us, which is the traffic that
+ * delegating the session was meant to avoid.
+ */
+static void dp_session_auth(const struct bfddp_session_auth *sa, size_t plen)
+{
+	uint32_t lid = ntohl(sa->lid);
+	uint16_t count = ntohs(sa->key_count);
+	struct session *s = sess_by_lid(lid);
+	unsigned i, kept = 0;
+
+	if (!s)
+		return;
+
+	/* The message is only as long as the keys it carries. */
+	if (count > BFFDP_AUTH_KEY_COUNT_MAX ||
+	    plen < BFFDP_SESSION_AUTH_MIN + (size_t)count * sizeof(sa->keys[0])) {
+		log_err("dplane: lid=%u malformed authentication message, %u keys in %zu bytes\n",
+			lid, count, plen);
+		return;
+	}
+
+	memset(s->auth_keys, 0, sizeof(s->auth_keys));
+
+	for (i = 0; i < count; i++) {
+		const struct bfddp_auth_key *k = &sa->keys[i];
+		struct auth_key *dst = &s->auth_keys[kept];
+		uint8_t kl = k->key_len;
+
+		/* A key too long for the digest is dropped rather than
+		 * truncated: a truncated key authenticates nothing and
+		 * fails every packet, which reads like a mismatch on the
+		 * peer. */
+		if (kl == 0 || kl > sizeof(dst->kpad)) {
+			log_err("dplane: lid=%u key id %u has an unusable length %u, ignored\n",
+				lid, k->key_id, kl);
+			continue;
+		}
+
+		dst->type = k->type;
+		dst->key_id = k->key_id;
+		dst->keylen = kl;
+		memcpy(dst->kpad, k->key, kl);
+		dst->send_start = (int64_t)be64toh((uint64_t)k->send.start);
+		dst->send_end = (int64_t)be64toh((uint64_t)k->send.end);
+		dst->accept_start = (int64_t)be64toh((uint64_t)k->accept.start);
+		dst->accept_end = (int64_t)be64toh((uint64_t)k->accept.end);
+		kept++;
+	}
+
+	s->auth_nkeys = (uint8_t)kept;
+	if (session_auth_evaluate(s, (int64_t)time(NULL)))
+		ktx_mirror(s);
+}
+
 static void dp_process(const uint8_t *buf, size_t len)
 {
 	const struct bfddp_message_header *h = (const void *)buf;
@@ -531,6 +582,10 @@ static void dp_process(const uint8_t *buf, size_t len)
 	uint64_t t = now_us();
 
 	switch (type) {
+	case DP_SESSION_AUTH:
+		if (plen >= BFFDP_SESSION_AUTH_MIN)
+			dp_session_auth((const void *)payload, plen);
+		break;
 	case DP_ADD_SESSION:
 		if (plen >= BFFDP_SESSION_MSG_MIN)
 			dp_handle_add(h, (const void *)payload, t, plen);

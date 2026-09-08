@@ -268,6 +268,23 @@ struct bfd_event {
 };
 
 /* What to say when we speak: written by userspace FSM. */
+/* Most keys the program will hold for one session.
+ *
+ * A power of two so the index found by searching can be masked back into
+ * range, which is what lets the verifier see the array access is safe. A
+ * rollover needs two; the rest is room for a chain configured without
+ * lifetimes, where every key is acceptable at once. */
+#define BFD_AUTH_ACCEPT_MAX 16
+
+/* One acceptable key, in the shape the digest wants it. */
+struct xdp_auth_key {
+	__u8 type;
+	__u8 key_id;
+	__u8 keylen;
+	__u8 pad;
+	__u8 kpad[64];
+};
+
 struct tx_cfg {
 	__u32 enable;        /* 1 = kernel replies to each RX (Up only) */
 	__u32 my_disc;
@@ -315,6 +332,19 @@ struct tx_cfg {
 	                      * length is a loop the verifier walks one
 	                      * iteration at a time, and the digest wants it
 	                      * in this shape regardless. */
+
+	/* Every key a received packet may currently be signed with.
+	 *
+	 * A key chain rolls over with an overlap on purpose: the peer goes
+	 * on using the old key for a while after we have moved to the new
+	 * one, so a receiver holding only the key it transmits under
+	 * refuses exactly the packets the overlap exists to keep. The
+	 * engine evaluates the lifetimes and leaves the set that applies
+	 * now, so the program only has to match on the key id the packet
+	 * names. */
+	__u8  auth_nkeys;
+	__u8  auth_nkeys_pad[3];
+	struct xdp_auth_key auth_accept[BFD_AUTH_ACCEPT_MAX];
 };
 
 #endif /* BFD_SHARED_H */

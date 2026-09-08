@@ -109,6 +109,15 @@ struct auth_scratch {
 	__u8 rcv[SHA1_DIGEST_LEN];   /* the digest as it arrived, kept
 	                              * while blk's copy is zeroed to
 	                              * recompute over the same bytes */
+	__u8 kpad[SHA1_BLOCK_LEN];   /* the chosen key, copied here so the
+	                              * digest is handed a pointer at a
+	                              * fixed offset. Reading it straight
+	                              * out of the map array instead means
+	                              * a variable offset, and the verifier
+	                              * then walks the whole compression
+	                              * again for every state that pointer
+	                              * could be in, which is millions of
+	                              * instructions rather than thousands. */
 };
 
 struct {

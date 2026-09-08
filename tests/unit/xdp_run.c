@@ -2067,7 +2067,7 @@ static void case_sweep_demand(void)
  * window that is not one.
  */
 static void case_sweep_auth_resync(const char *name, unsigned long long silent_ns,
-				   unsigned int want_seen)
+				   unsigned int want_seen, int demand_hold)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
 	struct session_state st = {0}, after = {0};
@@ -2083,6 +2083,7 @@ static void case_sweep_auth_resync(const char *name, unsigned long long silent_n
 	st.auth_rx_seq   = 12345;
 	cfg.min_rx_us    = 10000;
 	cfg.auth_type    = BFD_AUTH_KEYED_SHA1;
+	cfg.demand_hold  = demand_hold;
 
 	bpf_map_delete_elem(sweep_sess_fd, &k);
 	bpf_map_delete_elem(sweep_cfg_fd, &k);
@@ -2302,8 +2303,14 @@ static void run_sweep_matrix(void)
 	case_sweep_demand();
 	/* Detection is 30ms here, so the window survives 40ms of silence
 	 * and is forgotten after 80ms. */
-	case_sweep_auth_resync("sweep-auth-window-held", 40000000ull, 1);
-	case_sweep_auth_resync("sweep-auth-window-aged", 80000000ull, 0);
+	case_sweep_auth_resync("sweep-auth-window-held", 40000000ull, 1, 0);
+	case_sweep_auth_resync("sweep-auth-window-aged", 80000000ull, 0, 0);
+	/* Under demand hold the sweep leaves `alive` alone, but the window
+	 * must still age: a peer we asked to stop transmitting can restart
+	 * inside a silence no detection timer ends, and a window that
+	 * outlives it rejects every packet the peer will ever send. */
+	case_sweep_auth_resync("sweep-auth-window-aged-demand", 80000000ull, 0, 1);
+	case_sweep_auth_resync("sweep-auth-window-held-demand", 40000000ull, 1, 1);
 
 	for (int i = 0; i < HMAC_NVECS; i++)
 		case_hmac(&hmac_vecs[i]);

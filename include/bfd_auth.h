@@ -138,7 +138,10 @@ enum bfd_auth_verdict {
  * which is what bfdd does, and what lets a session survive the peer
  * restarting with a fresh random sequence.
  *
- * `mult` is the peer's detect multiplier, which sizes the window.
+ * `mult` is the Detect Mult carried by the packet being checked. RFC
+ * 5880 names the local state variable bfd.DetectMult and the header
+ * field Detect Mult, and s6.7.4 asks for the latter; bfd_ctrl_check has
+ * already rejected the packet if that field is zero.
  */
 static inline int bfd_auth_check(const __u8 *pkt, __u8 len, __u8 auth_type,
 				 __u8 keyid, const __u8 *key, __u8 keylen,

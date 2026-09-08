@@ -1798,6 +1798,11 @@ static void case_sweep(const char *name, unsigned int iv_us, unsigned int mult,
  * differs from a packet that would have been accepted by exactly the
  * thing under test.
  */
+/* The local detect multiplier the next armed session gets. The replay
+ * window is sized from the packet's Detect Mult, so a case sets this
+ * apart from the packet's value to prove which of the two is used. */
+static __u8 arm_local_mult = 3;
+
 static void arm_session_auth(__u8 type, __u8 keyid, const char *key)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
@@ -1819,7 +1824,7 @@ static void arm_session_auth(__u8 type, __u8 keyid, const char *key)
 	memcpy(cfg.auth_kpad, key, n);
 
 	st.remote_state = ST_UP;
-	st.detect_mult  = 3;   /* window is 3 x this */
+	st.detect_mult  = arm_local_mult;
 
 	if (bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY) ||
 	    bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
@@ -2233,6 +2238,16 @@ static void run_sweep_matrix(void)
 			 0, 100, 1);
 	case_auth_reject("auth-window-past-upper", KS, "topsecret", 7, 110,
 			 0, 100, 0);
+
+	/* RFC 5880 names the local state variable bfd.DetectMult and the
+	 * header field Detect Mult, and s6.7.4 asks for the latter. With a
+	 * local multiplier of 1 the window would stop at 3, so a distance of
+	 * 9 only passes if the packet's own Detect Mult of 3 is what sized
+	 * it. */
+	arm_local_mult = 1;
+	case_auth_reject("auth-window-mult-from-packet", KS, "topsecret", 7, 109,
+			 0, 100, 1);
+	arm_local_mult = 3;
 
 	/* Circular, not linear. A sequence far below the watermark is not
 	 * "less than" in a 32-bit circular space, it is very far ahead -

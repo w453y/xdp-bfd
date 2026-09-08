@@ -146,7 +146,7 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 	if (st->auth_rx_seen &&
 	    !bfd_auth_seq_ok(seq, st->auth_rx_seq,
 			     cfg->auth_type == BFD_AUTH_METICULOUS_SHA1,
-			     st->detect_mult))
+			     bfd->detect_mult))
 		return 0;
 
 	for (i = 0; i < SHA1_DIGEST_LEN; i++) {

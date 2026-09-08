@@ -1803,6 +1803,11 @@ static void case_sweep(const char *name, unsigned int iv_us, unsigned int mult,
  * apart from the packet's value to prove which of the two is used. */
 static __u8 arm_local_mult = 3;
 
+/* A second key left in the accept set, as a rollover leaves the key the
+ * peer has not stopped using yet. Zero id means only one key. */
+static __u8 arm_extra_keyid;
+static const char *arm_extra_key = "";
+
 static void arm_session_auth(__u8 type, __u8 keyid, const char *key)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
@@ -1822,6 +1827,25 @@ static void arm_session_auth(__u8 type, __u8 keyid, const char *key)
 	cfg.auth_keyid = keyid;
 	cfg.auth_keylen = (__u8)n;
 	memcpy(cfg.auth_kpad, key, n);
+
+	/* What the engine leaves for the receive side: every key a packet
+	 * may currently be signed with. One here, unless a case says
+	 * otherwise. */
+	cfg.auth_nkeys = 1;
+	cfg.auth_accept[0].type = type;
+	cfg.auth_accept[0].key_id = keyid;
+	cfg.auth_accept[0].keylen = (__u8)n;
+	memcpy(cfg.auth_accept[0].kpad, key, n);
+
+	if (arm_extra_keyid) {
+		unsigned m = (unsigned)strlen(arm_extra_key);
+
+		cfg.auth_nkeys = 2;
+		cfg.auth_accept[1].type = type;
+		cfg.auth_accept[1].key_id = arm_extra_keyid;
+		cfg.auth_accept[1].keylen = (__u8)m;
+		memcpy(cfg.auth_accept[1].kpad, arm_extra_key, m);
+	}
 
 	st.remote_state = ST_UP;
 	st.detect_mult  = arm_local_mult;
@@ -2257,6 +2281,21 @@ static void run_sweep_matrix(void)
 	/* The same wrap, one step past the watermark, is inside it. */
 	case_auth_reject("auth-window-wraps-cleanly", KS, "topsecret", 7,
 			 0x00000002, 0, 0xFFFFFFFF, 1);
+	/* A rollover leaves the peer signing with a key we have stopped
+	 * transmitting under, and refusing it is the breakage the accept
+	 * period exists to prevent. The session transmits under key 7 and
+	 * still accepts key 9. */
+	arm_extra_keyid = 9;
+	arm_extra_key = "otherkey1";
+	case_auth_reject("auth-rollover-old-key", KS, "otherkey1", 9, 100,
+			 0, 0, 1);
+	/* A key that is not in the set at all is still refused, so the
+	 * lookup has not simply become permissive. */
+	case_auth_reject("auth-rollover-unknown-key", KS, "otherkey1", 11, 100,
+			 0, 0, 0);
+	arm_extra_keyid = 0;
+	arm_extra_key = "";
+
 #undef KS
 #undef MS
 

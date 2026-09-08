@@ -65,7 +65,7 @@ tests/unit/dp_run: tests/unit/dp_run.c src/engine/dplane.o src/engine/log.o \
 	$(CC) $(CFLAGS) tests/unit/dp_run.c src/engine/dplane.o \
 		src/engine/session.o src/engine/fsm.o src/engine/log.o -o $@
 
-# The bffdp parser under libFuzzer. Needs clang, not $(CC): gcc has no
+# The bfddp parser under libFuzzer. Needs clang, not $(CC): gcc has no
 # -fsanitize=fuzzer. Not part of `check` - a fuzz run is open-ended, and
 # the enumerable edges are already covered by dp_run.
 #

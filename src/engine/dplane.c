@@ -23,7 +23,7 @@
 #include <bpf/bpf.h>
 
 #include "bfd_shared.h"
-#include "bffdp.h"
+#include "bfddp.h"
 #include "util.h"
 #include "log.h"
 #include "session.h"
@@ -533,8 +533,8 @@ static void dp_session_auth(const struct bfddp_session_auth *sa, size_t plen)
 		return;
 
 	/* The message is only as long as the keys it carries. */
-	if (count > BFFDP_AUTH_KEY_COUNT_MAX ||
-	    plen < BFFDP_SESSION_AUTH_MIN + (size_t)count * sizeof(sa->keys[0])) {
+	if (count > BFDDP_AUTH_KEY_COUNT_MAX ||
+	    plen < BFDDP_SESSION_AUTH_MIN + (size_t)count * sizeof(sa->keys[0])) {
 		log_err("dplane: lid=%u malformed authentication message, %u keys in %zu bytes\n",
 			lid, count, plen);
 		return;
@@ -583,15 +583,15 @@ static void dp_process(const uint8_t *buf, size_t len)
 
 	switch (type) {
 	case DP_SESSION_AUTH:
-		if (plen >= BFFDP_SESSION_AUTH_MIN)
+		if (plen >= BFDDP_SESSION_AUTH_MIN)
 			dp_session_auth((const void *)payload, plen);
 		break;
 	case DP_ADD_SESSION:
-		if (plen >= BFFDP_SESSION_MSG_MIN)
+		if (plen >= BFDDP_SESSION_MSG_MIN)
 			dp_handle_add(h, (const void *)payload, t, plen);
 		break;
 	case DP_DELETE_SESSION:
-		if (plen >= BFFDP_SESSION_MSG_MIN)
+		if (plen >= BFDDP_SESSION_MSG_MIN)
 			dp_handle_delete((const void *)payload);
 		break;
 	case ECHO_REQUEST:

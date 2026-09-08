@@ -7,7 +7,7 @@
 #include <netinet/in.h>
 
 #include "bfd_shared.h"
-#include "bffdp.h"
+#include "bfddp.h"
 #include "session.h"
 
 struct session sessions[MAX_SESSIONS];

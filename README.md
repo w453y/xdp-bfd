@@ -26,7 +26,7 @@ an implementation.
 | `your_disc` demux validation (s6.8.6) | implemented |
 | FRR distributed-BFD data plane (bfddp) | implemented, stock FRR, no patches |
 | Graceful control-plane restart (`--dp-hold`) | implemented |
-| Authentication (s6.7), simple password and keyed SHA1 | implemented in the fast path; needs the bffdp key extension |
+| Authentication (s6.7), simple password and keyed SHA1 | implemented in the fast path; needs the bfddp key extension |
 | Concurrent sessions | 64, architectural cap |
 
 ## Build
@@ -92,7 +92,7 @@ peers add them via vtysh after the data plane connects rather than from
 ## Testing
 
 ```
-make check          # ABI pins, FSM table, bffdp parser, XDP program
+make check          # ABI pins, FSM table, bfddp parser, XDP program
 sudo make check-netns   # end-to-end on veth and network namespaces
 sudo make check-frr     # scenarios against stock FRR bfdd in containers
 ```
@@ -112,7 +112,7 @@ There is no guard either, so stock bfdd will offload an authenticated
 session and then send it unauthenticated while `show bfd peer` reports
 authentication enabled. This engine fails closed against that: it drops
 packets whose A bit disagrees with the session, so such a session simply
-never comes up. Running authenticated sessions needs the bffdp extension
+never comes up. Running authenticated sessions needs the bfddp extension
 that carries the key; without it, keep authenticated sessions off the
 data plane.
 

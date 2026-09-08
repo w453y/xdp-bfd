@@ -12,7 +12,7 @@
 #include <netinet/in.h>
 
 #include "bfd_shared.h"
-#include "bffdp.h"
+#include "bfddp.h"
 
 #define PORT_CTRL    BFD_PORT_1HOP
 #define SRC_PORT     BFD_SRC_PORT
@@ -143,7 +143,7 @@ struct session {
 	 * change. */
 	uint8_t  auth_present;        /* the session is meant to authenticate */
 	uint8_t  auth_nkeys;
-	struct auth_key auth_keys[BFFDP_AUTH_KEY_COUNT_MAX];
+	struct auth_key auth_keys[BFDDP_AUTH_KEY_COUNT_MAX];
 	int64_t  auth_next_change;    /* soonest a lifetime boundary passes,
 	                               * 0 when none of them ever will */
 
@@ -154,7 +154,7 @@ struct session {
 	uint8_t  auth_type;           /* BFD_AUTH_*, 0 = unauthenticated */
 	uint8_t  auth_keyid;
 	uint8_t  auth_keylen;
-	uint8_t  auth_key[BFFDP_AUTH_KEY_MAX];
+	uint8_t  auth_key[BFDDP_AUTH_KEY_MAX];
 	uint8_t  auth_kpad[64];       /* the key in one SHA1 block, zero
 	                               * padded, which is what the digest
 	                               * takes and what the fast path

@@ -31,7 +31,7 @@
 
 #include "session.h"
 #include "dplane.h"
-#include "bffdp.h"
+#include "bfddp.h"
 
 /* ---------- stubs ---------- */
 
@@ -133,7 +133,7 @@ static void sessions_clear(void)
 
 /* A DP_ADD_SESSION for one v4 peer.
  *
- * bffdp.h carries addresses as struct in6_addr for both families and
+ * bfddp.h carries addresses as struct in6_addr for both families and
  * marks the family by the SESSION_IPV6 flag. For v4 that bit is clear
  * and sm_addrs takes the first four bytes. */
 static size_t build_add(unsigned char *buf, uint32_t lid, const char *local,
@@ -494,7 +494,7 @@ static void case_update_keeps_disc(void)
  * authentication fields.
  *
  * The header carries the length and that is the contract: the fields
- * after BFFDP_SESSION_MSG_MIN are optional. Requiring the whole struct
+ * after BFDDP_SESSION_MSG_MIN are optional. Requiring the whole struct
  * makes every ADD from an older daemon unparseable, and the failure is
  * silence - no session, no error, nothing on the wire - which is the
  * worst shape a compatibility break can take.
@@ -507,7 +507,7 @@ static void case_add_without_auth(void)
 	unsigned char buf[256];
 	size_t full = build_add(buf, 0x5150, "10.0.0.1", "10.0.0.2");
 	size_t short_len = sizeof(struct bfddp_message_header) +
-			   BFFDP_SESSION_MSG_MIN;
+			   BFDDP_SESSION_MSG_MIN;
 	struct bfddp_message_header *h = (void *)buf;
 	struct session *s;
 

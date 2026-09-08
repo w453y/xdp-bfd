@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
-/* bffdp.h - FRR distributed-BFD dataplane protocol.
+/* bfddp.h - FRR distributed-BFD dataplane protocol.
  *
  * Adapted from FRR bfdd/bfddp_packet.h (MIT licensed,
  * Copyright (C) 2020 NetDEF, Rafael F. Zalamena). All fields are
  * network byte order; 64-bit fields big-endian.
  */
-#ifndef BFD_ENGINE_BFFDP_H
-#define BFD_ENGINE_BFFDP_H
+#ifndef BFD_ENGINE_BFDDP_H
+#define BFD_ENGINE_BFDDP_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -26,12 +26,12 @@ enum bfddp_message_type {
 
 /* Longest key a DP_SESSION_AUTH carries; must match bfdd's
  * BFDDP_AUTH_KEY_MAX or every key is misread. */
-#define BFFDP_AUTH_KEY_MAX 64
+#define BFDDP_AUTH_KEY_MAX 64
 
 /* Most keys one DP_SESSION_AUTH carries; must match bfdd's
  * BFDDP_AUTH_KEY_COUNT_MAX. The message is variable length, but the
  * array is declared in full so a message can be read in place. */
-#define BFFDP_AUTH_KEY_COUNT_MAX 16
+#define BFDDP_AUTH_KEY_COUNT_MAX 16
 
 /* How much of a session message has to be there.
  *
@@ -42,7 +42,7 @@ enum bfddp_message_type {
  * absent-means-unset. Requiring the whole struct instead would make
  * every ADD from an older daemon unparseable, and the failure would be
  * silence - no sessions, no error, nothing on the wire. */
-#define BFFDP_SESSION_MSG_MIN sizeof(struct bfddp_session_msg)
+#define BFDDP_SESSION_MSG_MIN sizeof(struct bfddp_session_msg)
 
 enum bfddp_session_flag {
 	SESSION_MULTIHOP = (1 << 0),
@@ -117,7 +117,7 @@ struct bfddp_auth_key {
 	uint8_t  zero[5];
 	struct bfddp_key_lifetime send;
 	struct bfddp_key_lifetime accept;
-	char     key[BFFDP_AUTH_KEY_MAX];
+	char     key[BFDDP_AUTH_KEY_MAX];
 } __attribute__((packed));
 
 /* DP_SESSION_AUTH payload: every key the session's chain holds.
@@ -128,11 +128,11 @@ struct bfddp_session_auth {
 	uint32_t lid;
 	uint16_t key_count;
 	uint16_t zero;
-	struct bfddp_auth_key keys[BFFDP_AUTH_KEY_COUNT_MAX];
+	struct bfddp_auth_key keys[BFDDP_AUTH_KEY_COUNT_MAX];
 } __attribute__((packed));
 
 /* How much of a DP_SESSION_AUTH has to be there before the keys. */
-#define BFFDP_SESSION_AUTH_MIN offsetof(struct bfddp_session_auth, keys)
+#define BFDDP_SESSION_AUTH_MIN offsetof(struct bfddp_session_auth, keys)
 
 struct bfddp_state_change {
 	uint32_t lid;
@@ -159,4 +159,4 @@ struct bfddp_counters {
 	uint64_t echo_output_packets;
 } __attribute__((packed));
 
-#endif /* BFD_ENGINE_BFFDP_H */
+#endif /* BFD_ENGINE_BFDDP_H */

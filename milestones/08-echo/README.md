@@ -7,7 +7,7 @@ liveness off the return. Both roles are pure engine work; neither requires FRR c
 The reflector (section 3) and the originator/detector (section 5) are
 both implemented and validated; section 5 records what the
 implementation changed relative to the spec, and what is still open. A separate, optional protocol track
-(section 6) proposes carrying echo over the bffdp dplane protocol so
+(section 6) proposes carrying echo over the bfddp dplane protocol so
 any dataplane, not just this engine, can be delegated echo by bfdd.
 
 The milestone opens from wire evidence, not the RFC text: a known-good
@@ -27,14 +27,14 @@ the neighbor and back without involving the neighbor's software, which
 is the entire point of echo and the reason it belongs in a dataplane
 rather than a daemon.
 
-BFD echo is not part of the bffdp dplane protocol. There is no echo
-message type in bfdd/bffdp_packet.h, and bfdd/dplane.c has no echo
+BFD echo is not part of the bfddp dplane protocol. There is no echo
+message type in bfdd/bfddp_packet.h, and bfdd/dplane.c has no echo
 handling. bfdd sends and receives echo from its own sockets
 (bfd_packet.c), with no dependence on whether the session is
 distributed. So in distributed mode echo is orphaned: the control
 plane is offloaded to the dataplane while echo stays in the daemon,
 transmitting from a socket that has nothing to do with the offload
-engine. (Note: the bffdp ECHO_REQUEST/ECHO_REPLY message types are the
+engine. (Note: the bfddp ECHO_REQUEST/ECHO_REPLY message types are the
 dplane control-channel keepalive between bfdd and the dataplane, an
 unrelated use of the word "echo".)
 
@@ -483,7 +483,7 @@ says whether echo is on, `min_echo_tx` gives the transmit interval, and
 Nothing new was needed on the wire.
 
 That was not the original plan. The design started from the assumption
-that delegating echo would need a new bffdp message carrying the echo
+that delegating echo would need a new bfddp message carrying the echo
 configuration, to be proposed to the protocol's author before any code
 was written. Reading the code showed otherwise: `struct bfddp_session`
 already carries both echo intervals, `SESSION_ECHO` is already a

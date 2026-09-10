@@ -17,7 +17,7 @@ the reasons it was wrong are reusable.
 `dp_read()` in `src/engine/dplane.c` reads past the end of `dp_buf`, a 4096
 byte static buffer, while parsing a byte stream from bfdd.
 
-**Trigger.** A bffdp message that causes the engine to reply, arriving while
+**Trigger.** A bfddp message that causes the engine to reply, arriving while
 the output queue is already full.
 
 **Chain.**

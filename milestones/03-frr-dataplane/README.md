@@ -1,6 +1,6 @@
 # FRR data plane integration
 
-First session driven end to end by stock FRR bfdd over the bffdp
+First session driven end to end by stock FRR bfdd over the bfddp
 distributed-BFD protocol, with this engine as the data plane and no FRR
 patches.
 

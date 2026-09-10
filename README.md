@@ -25,13 +25,14 @@ In the order they happened.
 |---|---|
 | [01-baseline](milestones/01-baseline/) | Userspace BFD (FRR bfdd) under stress: the problem, measured. |
 | [02-tx-bakeoff](milestones/02-tx-bakeoff/) | Five transmit architectures under RT starvation. |
-| [03-frr-dataplane](milestones/03-frr-dataplane/) | First session driven by stock FRR bfdd over bffdp. |
+| [03-frr-dataplane](milestones/03-frr-dataplane/) | First session driven by stock FRR bfdd over bfddp. |
 | [04-hardening](milestones/04-hardening/) | Spoofing, GTSM, demux validation. |
 | [05-abi-refactor](milestones/05-abi-refactor/) | One shared kernel/userspace ABI, and the review pass that followed. |
 | [06-multisession](milestones/06-multisession/) | Many sessions on one engine. |
 | [07-ipv6](milestones/07-ipv6/) | IPv6, one shared key and one fast path. |
 | [08-echo](milestones/08-echo/) | Echo mode: reflector in XDP, originator in userspace. |
 | [09-multihop](milestones/09-multihop/) | Multihop (RFC 5883) and per-session minimum TTL. |
+| [10-auth](milestones/10-auth/) | Authentication (RFC 5880 s6.7): a keyed digest in the driver, and the key chain that feeds it. |
 
 ## Investigations
 
@@ -48,7 +49,7 @@ Questions asked after the fact, each answered with a measurement.
 | [multi-interface](investigations/multi-interface/) | Attaching the fast path to more than one interface. |
 | [v6-echo](investigations/v6-echo/) | IPv6 echo origination, and the assumption it corrected. |
 | [netns-rig](investigations/netns-rig/) | Testing the userspace receive path in namespaces. |
-| [dp-fuzz](investigations/dp-fuzz/) | An out-of-bounds read in the bffdp parser, found by fuzzing. |
+| [dp-fuzz](investigations/dp-fuzz/) | An out-of-bounds read in the bfddp parser, found by fuzzing. |
 
 ## Review
 

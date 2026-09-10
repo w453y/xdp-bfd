@@ -1,0 +1,118 @@
+{
+ "stats": {
+  "auth-bad": 0,
+  "auth-mismatch": 279,
+  "declined": 0,
+  "echo-returns": 84708,
+  "echo-ttl": 0,
+  "ip-options": 0,
+  "malformed": 0,
+  "not-self": 48648,
+  "reflected": 48810,
+  "rejected": 0,
+  "seen": 1399908,
+  "sweep-init-fail": 0,
+  "unsupported-flags": 0,
+  "well-formed": 1213469
+ },
+ "total": 64,
+ "up": 64,
+ "watched": {
+  "10.66.0.10": {
+   "demand": {
+    "detect_held": false,
+    "on": false,
+    "peer": false,
+    "tx_held": false
+   },
+   "down_events": 1,
+   "last_reason": "peer sent Init",
+   "my_disc": 314605252,
+   "remote_disc": 2613750140,
+   "rx": 2,
+   "state": "Up",
+   "tx": 361,
+   "up_events": 2
+  },
+  "10.66.0.11": {
+   "demand": {
+    "detect_held": false,
+    "on": false,
+    "peer": false,
+    "tx_held": false
+   },
+   "down_events": 33,
+   "last_reason": "peer sent Init",
+   "my_disc": 2429021966,
+   "remote_disc": 1391631902,
+   "rx": 193,
+   "state": "Up",
+   "tx": 462,
+   "up_events": 34
+  },
+  "10.66.0.18": {
+   "demand": {
+    "detect_held": false,
+    "on": false,
+    "peer": false,
+    "tx_held": false
+   },
+   "down_events": 1,
+   "last_reason": "peer sent Init",
+   "my_disc": 1570617761,
+   "remote_disc": 1743163858,
+   "rx": 2,
+   "state": "Up",
+   "tx": 362,
+   "up_events": 2
+  },
+  "10.66.0.22": {
+   "demand": {
+    "detect_held": false,
+    "on": false,
+    "peer": true,
+    "tx_held": true
+   },
+   "down_events": 1,
+   "last_reason": "peer sent Init",
+   "my_disc": 3327385179,
+   "remote_disc": 1709882039,
+   "rx": 754,
+   "state": "Up",
+   "tx": 85,
+   "up_events": 2
+  },
+  "10.66.0.24": {
+   "demand": {
+    "detect_held": true,
+    "on": true,
+    "peer": true,
+    "tx_held": true
+   },
+   "down_events": 1,
+   "last_reason": "peer sent Init",
+   "my_disc": 1172284459,
+   "remote_disc": 1170540322,
+   "rx": 3,
+   "state": "Up",
+   "tx": 10,
+   "up_events": 2
+  },
+  "10.66.0.25": {
+   "demand": {
+    "detect_held": true,
+    "on": true,
+    "peer": false,
+    "tx_held": false
+   },
+   "down_events": 28,
+   "last_reason": "peer up",
+   "my_disc": 266508744,
+   "remote_disc": 389659311,
+   "rx": 170,
+   "state": "Up",
+   "tx": 23463,
+   "up_events": 29
+  }
+ }
+}

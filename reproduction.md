@@ -229,7 +229,102 @@ to the dplane listener as a fake bfdd and sends an invalid-length
 header; expect "bad frame length ... dropping connection" in the engine
 log and an orderly close on the harness socket.
 
-## 7. Pitfalls encountered, so you skip them
+## 7. Authentication (RFC 5880 s6.7)
+
+Two things have to be true before any of this works, and neither is
+obvious from a failing session.
+
+**bfdd needs the key extension.** Stock `bfddp_session_msg` has no field
+for a key — upstream it is a `/* TODO: missing authentication. */` — and
+no guard either, so stock bfdd offloads an authenticated session and then
+transmits it in the clear while `show bfd peer` reports authentication
+enabled. The engine fails closed against that and the session simply
+never comes up. Build bfdd from `bfddp-auth-lifetimes` on the fork, which
+adds a `DP_SESSION_AUTH` message carrying every key in the chain with its
+send and accept periods.
+
+**The peer needs three merged-or-pending bfdd fixes** for the restart
+cases to behave: FRRouting/frr#23281 (sequence window), #23282 (a
+keychain with no usable key), #23284 (`your_disc == 0` tested against the
+packet's State field). Everything in milestones/10-auth was measured
+against a peer carrying all three.
+
+Configure the key chain on both ends. The algorithm is the trap:
+
+```
+key chain bfdkeys
+ key 1
+  key-string sixteenbytekey01
+  cryptographic-algorithm hmac-sha-1
+ !
+!
+bfd
+ peer 10.66.0.24
+  key-chain bfdkeys
+ !
+!
+```
+
+`cryptographic-algorithm` is not optional in practice. A key defaults to
+no algorithm and bfdd only selects one that is `cleartext` or
+`hmac-sha-1`, so `key-string` alone leaves the session unauthenticated
+while `show bfd peer` still reports authentication configured. That is a
+quiet way to believe a link is protected, and it cost more time here than
+anything else in the milestone.
+
+Verify from the wire rather than from either daemon. Simple password is
+auth type 1 and 35-byte packets; keyed SHA1 is type 4 and 52 bytes;
+meticulous keyed SHA1 is type 5:
+
+```
+tshark -r cap.pcap -T fields -e ip.src -e bfd.auth.type -e bfd.auth.key \
+                   -e bfd.auth.seq_num -e frame.len
+```
+
+Expect the sequence numbers to increase by exactly one per packet from
+whatever seed userspace handed over, and the source port to be a per-slot
+port (65472-65535), which is how you tell the fast path is signing rather
+than userspace. On IPv6 also check `udp sum ok`: the payload is part of
+the mandatory checksum, and getting the fold wrong there presents as a
+flapping session with both authentication counters flat.
+
+Engine counters, via `kill -USR1`:
+
+- `auth-bad` — a digest, key id or sequence number that did not verify.
+  Should be 0 in steady state; a non-zero value climbing against a flat
+  `rx_pkts` on the same session is the signature of a stale receive
+  window.
+- `auth-mismatch` — the A bit and the session disagree. A small number at
+  bring-up is the window between a session being added over bfddp and its
+  keys arriving in the following message; it should stop climbing.
+
+For a rollover, give the chain two keys with adjacent lifetimes and let
+the clock run. The `accept` period of the outgoing key must outlast the
+`send` period, or packets already in flight are refused at the handover:
+
+```
+ key 2
+  key-string sixteenbytekey02
+  cryptographic-algorithm hmac-sha-1
+  send-lifetime 10:00:00 Jan 1 2026 11:00:00 Jan 1 2026
+  accept-lifetime 10:00:00 Jan 1 2026 11:05:00 Jan 1 2026
+```
+
+Expect the key id on the wire to change with no state change and no gap
+larger than the session interval. `milestones/10-auth/keyroll.pcap.gz` is
+one such handover across 329 seconds.
+
+Do not expect a demanding session to notice a key change at all. Neither
+side transmits, so neither receives anything to reject, and detection is
+held on both. Pair demand with echo if the session needs to notice
+anything.
+
+The flap matrix is driven by `milestones/10-auth/eventA.sh` and
+`eventB.sh`, which capture on the hypervisor bridge and snapshot both
+ends either side of the restart. `timeline.sh` turns either capture into
+a per-session state timeline.
+
+## 8. Pitfalls encountered, so you skip them
 
 - Heredocs with tab-indented content get mangled by interactive bash (tab completion fires mid-paste). Use `sh`, or files, for multi-line pastes.
 - vtysh changes are live but volatile: `write memory` before any restart.

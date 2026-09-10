@@ -1,0 +1,44 @@
+=== sym-demand+auth   engine=10.66.0.124 peer=10.66.0.24 ===
+    10.4439  engine -> Down      my=0x45dfa42b your=0x00000000
+    10.4439  peer   -> Down      my=0x36159c43 your=0x00000000
+    10.4442  engine -> Init      my=0x45dfa42b your=0x36159c43
+    10.4442  peer   -> Up        my=0x36159c43 your=0x45dfa42b
+    10.4446  engine -> Up        my=0x45dfa42b your=0x36159c43
+=== engine-demands+noauth   engine=10.66.0.125 peer=10.66.0.25 ===
+     0.0166  engine -> Up        my=0x0fe299c8 your=0x67680b1e
+     4.5455  peer   -> Down      my=0x67680b1e your=0x00000000
+    10.4444  engine -> Down      my=0x0fe299c8 your=0x00000000
+    11.0101  peer   -> Init      my=0x67680b1e your=0x0fe299c8
+    11.0103  engine -> Up        my=0x0fe299c8 your=0x67680b1e
+    11.0103  peer   -> Up        my=0x67680b1e your=0x0fe299c8
+=== peer-demands+auth-mh   engine=10.66.0.122 peer=10.66.0.22 ===
+     0.1430  peer   -> Up        my=0xd779f263 your=0xc653de5b
+    10.4443  engine -> Down      my=0xc653de5b your=0x00000000
+    10.4443  peer   -> Down      my=0xd779f263 your=0x00000000
+    10.4447  engine -> Init      my=0xc653de5b your=0xd779f263
+    10.4448  peer   -> Up        my=0xd779f263 your=0xc653de5b
+    10.4449  engine -> Up        my=0xc653de5b your=0xd779f263
+=== async+meticulous   engine=10.66.0.110 peer=10.66.0.10 ===
+     0.0000  peer   -> Up        my=0x95ebb8e9 your=0x12c07ec4
+     0.0001  engine -> Up        my=0x12c07ec4 your=0x95ebb8e9
+     4.5686  peer   -> Down      my=0x95ebb8e9 your=0x00000000
+    10.4445  engine -> Down      my=0x12c07ec4 your=0x00000000
+    10.8616  peer   -> Init      my=0x95ebb8e9 your=0x12c07ec4
+    10.8617  engine -> Up        my=0x12c07ec4 your=0x95ebb8e9
+    10.8617  peer   -> Up        my=0x95ebb8e9 your=0x12c07ec4
+=== async+auth+echo   engine=10.66.0.118 peer=10.66.0.18 ===
+     0.0385  peer   -> Up        my=0x19836563 your=0x5d9db9a1
+     0.0385  engine -> Up        my=0x5d9db9a1 your=0x19836563
+     4.5543  peer   -> Down      my=0x19836563 your=0x00000000
+    10.4442  engine -> Down      my=0x5d9db9a1 your=0x00000000
+    10.5695  peer   -> Init      my=0x19836563 your=0x5d9db9a1
+    10.5696  engine -> Up        my=0x5d9db9a1 your=0x19836563
+    10.5697  peer   -> Up        my=0x19836563 your=0x5d9db9a1
+=== async+noauth   engine=10.66.0.111 peer=10.66.0.11 ===
+     0.0419  peer   -> Up        my=0x29c1e130 your=0x90c7ef0e
+     0.0420  engine -> Up        my=0x90c7ef0e your=0x29c1e130
+     4.5488  peer   -> Down      my=0x29c1e130 your=0x00000000
+    10.4440  engine -> Down      my=0x90c7ef0e your=0x00000000
+    10.8783  peer   -> Init      my=0x29c1e130 your=0x90c7ef0e
+    10.8784  engine -> Up        my=0x90c7ef0e your=0x29c1e130
+    10.8784  peer   -> Up        my=0x29c1e130 your=0x90c7ef0e

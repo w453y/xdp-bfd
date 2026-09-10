@@ -1,0 +1,13 @@
+TOTAL 64 up of 64
+10.66.0.122    up     id=1709882039  rid=3327385179  up 10 minute(s), 51 second(s)
+10.66.0.125    up     id=389659311   rid=266508744   up 10 minute(s), 51 second(s)
+10.66.0.111    up     id=1391631902  rid=2429021966  up 10 minute(s), 51 second(s)
+10.66.0.110    up     id=2613750140  rid=314605252   up 10 minute(s), 51 second(s)
+10.66.0.124    up     id=1170540322  rid=1172284459  up 10 minute(s), 50 second(s)
+10.66.0.118    up     id=1743163858  rid=1570617761  up 10 minute(s), 51 second(s)
+10.66.0.122    in=3002     out=3716     rxfail=0      down_events=0
+10.66.0.125    in=14561    out=2        rxfail=0      down_events=0
+10.66.0.111    in=14924    out=14711    rxfail=0      down_events=0
+10.66.0.110    in=14919    out=14718    rxfail=0      down_events=0
+10.66.0.124    in=7        out=4        rxfail=0      down_events=0
+10.66.0.118    in=14916    out=14714    rxfail=0      down_events=0

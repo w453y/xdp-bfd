@@ -900,7 +900,12 @@ int main(int argc, char **argv)
 			if (ms && (mttl < 0 || mttl < (int)ms->min_ttl))
 				continue;
 			if (ms && rx_auth_ok(ms, pm_buf, pm.len))
-				fsm_rx(ms, &pm, now_us());
+				/* `t`, like the other three drains. This one
+				 * read the clock again, so packets taken in
+				 * one pass were stamped a few microseconds
+				 * apart from their siblings for no reason.
+				 * The drains are meant to be the same code. */
+				fsm_rx(ms, &pm, t);
 		}
 
 		/* rx6_sock >= 0 is redundant with rd6, which is only set from a

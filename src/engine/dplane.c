@@ -383,7 +383,14 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 		 * at the end of bfd_set_polling, for the same reason. */
 		if (s->demand)
 			s->last_rx_us = t;
-	} else {
+	} else if (!s->polling) {
+		/* Not while a Poll is outstanding. A repeated ADD carrying
+		 * the values the previous one already applied compares equal
+		 * here, so it lands in this branch, and assigning the new
+		 * min_tx would slow transmission to a rate the peer has not
+		 * accepted yet. s6.8.3 holds the old interval until the poll
+		 * terminates, and it is fsm_rx and ktx_poll_map that end it
+		 * on the peer's Final. */
 		s->applied_tx_us = s->min_tx_us;
 	}
 	if (fresh) {

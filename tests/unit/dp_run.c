@@ -534,6 +534,94 @@ static void case_add_without_auth(void)
 /* An ADD for an existing lid may move the address pair. The old pair's
  * map entries would otherwise stay behind with enable=1 and keep being
  * answered by the fast path. */
+/* A repeated ADD must not slow transmission mid-Poll.
+ *
+ * Raising min_tx on an Up session starts a Poll sequence and deliberately
+ * keeps transmitting at the old interval until the peer answers with a
+ * Final, which is what s6.8.3 requires. A second ADD carrying the same
+ * values compares equal against what the first one stored, so it misses
+ * the parameter-change branch entirely and used to fall through to a bare
+ * assignment, applying the slower rate while the poll was still open. The
+ * peer would then time out against an interval it had not agreed to.
+ */
+static void case_repeated_add_during_poll(void)
+{
+	unsigned char buf[256];
+	struct session *s;
+	size_t n;
+	int bad = 0;
+
+	sessions_clear();
+	n = build_add(buf, 0x4009, "10.0.0.1", "10.0.0.40");
+	((struct bfddp_session_msg *)(buf + sizeof(struct bfddp_message_header)))
+		->min_tx = htonl(10000);
+	feed(buf, n);
+	dp_read();
+
+	s = sess_by_lid(0x4009);
+	if (!s) {
+		printf("     session missing after the first add\n");
+		printf("FAIL %-44s\n", "repeated-add-holds-applied-tx");
+		fails++;
+		return;
+	}
+	s->state = ST_UP;
+	s->applied_tx_us = 10000;
+
+	/* Raise it: poll opens, the applied rate stays where it was. */
+	n = build_add(buf, 0x4009, "10.0.0.1", "10.0.0.40");
+	((struct bfddp_session_msg *)(buf + sizeof(struct bfddp_message_header)))
+		->min_tx = htonl(50000);
+	feed(buf, n);
+	dp_read();
+
+	s = sess_by_lid(0x4009);
+	if (!s->polling) {
+		printf("     no poll sequence after the increase\n");
+		bad = 1;
+	}
+	if (s->applied_tx_us != 10000) {
+		printf("     applied_tx_us %u after the increase, want 10000\n",
+		       s->applied_tx_us);
+		bad = 1;
+	}
+
+	/* The same message again, before any Final. */
+	n = build_add(buf, 0x4009, "10.0.0.1", "10.0.0.40");
+	((struct bfddp_session_msg *)(buf + sizeof(struct bfddp_message_header)))
+		->min_tx = htonl(50000);
+	feed(buf, n);
+	dp_read();
+
+	s = sess_by_lid(0x4009);
+	if (!s->polling) {
+		printf("     the repeat ended the poll\n");
+		bad = 1;
+	}
+	if (s->applied_tx_us != 10000) {
+		printf("     applied_tx_us %u after the repeat, want 10000\n",
+		       s->applied_tx_us);
+		bad = 1;
+	}
+
+	/* The peer answers: now it may apply. */
+	s->polling = 0;
+	s->applied_tx_us = s->min_tx_us;
+	if (s->applied_tx_us != 50000) {
+		printf("     applied_tx_us %u after the final, want 50000\n",
+		       s->applied_tx_us);
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL %-44s\n", "repeated-add-holds-applied-tx");
+		fails++;
+	} else {
+		printf("ok   %-44s held 10000 until the final\n",
+		       "repeated-add-holds-applied-tx");
+	}
+}
+
 static void case_address_move(void)
 {
 	unsigned char buf[256];
@@ -721,6 +809,7 @@ int main(void)
 	case_fresh_v6();
 	case_update_keeps_disc();
 	case_add_without_auth();
+	case_repeated_add_during_poll();
 	case_address_move();
 	case_flags();
 

@@ -190,6 +190,23 @@ void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 	s->r_mult   = p->detect_mult;
 	s->r_flags  = nfl;
 
+	/* Only in Up, deliberately.
+	 *
+	 * This is a BFD_STATE_CHANGE message, and below Up the state is
+	 * about to change anyway: a session that is Down or Init is on its
+	 * way somewhere, and state_transition notifies unconditionally with
+	 * whatever the remote parameters are by then. So nothing is lost
+	 * here, only deferred to an event already on its way.
+	 *
+	 * Widening it would cost more than it buys. The first packet of a
+	 * session populates every remote field from zero, so every session
+	 * coming up would send a state change whose state had not changed,
+	 * immediately before the transition that says the same thing -
+	 * during bring-up, which is when the control plane is busiest.
+	 *
+	 * ktx_poll_map has the same rule by construction: it returns early
+	 * unless the session is Up.
+	 */
 	if (s->state == ST_UP && rparams_changed)
 		dp_notify_state(s);
 

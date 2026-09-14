@@ -60,7 +60,7 @@ jobs:
         run: make CLANG=clang-21
 
       - name: unit suites
-        run: make CLANG=clang-21 check
+        run: sudo make CLANG=clang-21 check
 
       - name: fuzz regressions
         run: |
@@ -261,7 +261,7 @@ jobs:
         run: make CC=${{ matrix.cc }} CLANG=clang-21
 
       - name: unit suites
-        run: make CC=${{ matrix.cc }} CLANG=clang-21 check
+        run: sudo make CC=${{ matrix.cc }} CLANG=clang-21 check
 
       # --status-bugs makes any finding fail the job.
       - name: static analysis

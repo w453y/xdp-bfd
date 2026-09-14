@@ -63,7 +63,8 @@ tests/unit/fsm_run: tests/unit/fsm_run.c src/engine/fsm.o src/engine/log.o \
 	$(CC) $(CFLAGS) tests/unit/fsm_run.c src/engine/fsm.o src/engine/log.o -o $@
 
 tests/unit/dp_run: tests/unit/dp_run.c src/engine/dplane.o src/engine/log.o \
-		   src/engine/session.o src/engine/fsm.o $(wildcard src/engine/*.h)
+		   src/engine/session.o src/engine/fsm.o $(wildcard src/engine/*.h) \
+		   $(TEST_HDRS)
 	$(CC) $(CFLAGS) tests/unit/dp_run.c src/engine/dplane.o \
 		src/engine/session.o src/engine/fsm.o src/engine/log.o -o $@
 
@@ -80,15 +81,26 @@ tests/unit/dp_fuzz: tests/unit/dp_fuzz.c $(wildcard src/engine/*.c) \
 		    $(wildcard src/engine/*.h) $(TEST_HDRS)
 	$(FUZZ_CC) $(FUZZ_FLAGS) -Iinclude -Isrc/engine \
 		tests/unit/dp_fuzz.c src/engine/dplane.c src/engine/session.c \
-		src/engine/fsm.c src/engine/log.c -o $@ -lbpf
+		src/engine/fsm.c src/engine/log.c -o $@
 
 test-dp: tests/unit/dp_run
 	./tests/unit/dp_run
 
-# Everything that runs without a testbed. Ordered cheapest and least
-# privileged first, so a developer without sudo still gets three suites
-# and a clear failure on the fourth.
-check: all test-hmac test-fsm test-dp test-xdp
+# What a contributor with nothing installed can run: no libbpf, no clang
+# beyond the one abi-check needs for its syntax pass, no root, no NIC.
+#
+# This exists because `check` depended on `all`, and `all` builds the BPF
+# object and links two binaries against libbpf, so someone without
+# libbpf-dev got none of it - not even the digest vectors or the state
+# machine table, which need neither. The whole of check-host runs in about
+# three seconds from cold.
+check-host: abi-check test-hmac test-fsm test-dp
+	@echo "host suites passed"
+
+# Everything that runs without a testbed, which is the above plus the XDP
+# program itself. Ordered cheapest and least privileged first, so a failure
+# arrives before the parts that need root.
+check: check-host all test-xdp
 	@echo "all suites passed"
 
 # End-to-end on veth and network namespaces. Needs root and pytest, and
@@ -119,7 +131,12 @@ test-hmac: tests/unit/hmac_run
 # Needs root to load the object; not part of `all`. bfd_xdp_test.o is a
 # prerequisite because xdp_run opens it by path at runtime - without it
 # the sweep half of the suite runs against stale bytecode.
+# Needs root, because it loads the program through BPF_PROG_TEST_RUN.
+# Invoked as `sudo make test-xdp`, like check-netns and check-frr, rather
+# than reaching for sudo from inside a recipe: a Makefile that escalates on
+# its own gives a contributor no way to run the rest without it, and it is
+# why `make check` prompted for a password on a tree that had not built yet.
 test-xdp: tests/unit/xdp_run bfd_xdp.o tests/unit/bfd_xdp_test.o
-	sudo ./tests/unit/xdp_run
+	./tests/unit/xdp_run
 
-.PHONY: all clean abi-check check test-xdp test-fsm test-dp test-hmac check-netns check-frr
+.PHONY: all clean abi-check check check-host test-xdp test-fsm test-dp test-hmac check-netns check-frr

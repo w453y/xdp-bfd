@@ -27,39 +27,7 @@
 #include "bfddp.h"
 #include "log.h"
 
-/* Same stub group dp_run uses, plus the three dplane.c references that
- * only surface when linking from source rather than the prebuilt .o. */
-int use_ktx;
-int sess_fd = -1;
-
-int ktx_covers(int ifindex) { (void)ifindex; return 0; }
-int ktx_attach_if(int ifindex, const char *ifname)
-{
-	(void)ifindex; (void)ifname; return 0;
-}
-void ktx_mirror(struct session *s) { (void)s; }
-void ktx_forget(struct session *s) { (void)s; }
-/* No program, no sweep, no ring; fsm_detect keeps the whole budget.
- *
- * dp_run.c carries its own copy of this group rather than sharing one,
- * because the two disagree on purpose - ktx_attach_if returns 0 here and
- * -1 there. The cost of that is this: fsm.c gained a call, dp_run.c was
- * given the stub, and nothing linked dp_fuzz until CI did. `check` builds
- * dp_run and not dp_fuzz, since the latter needs a clang with
- * -fsanitize=fuzzer that a developer may not have. */
-int ktx_events_fd(void) { return -1; }
-void ktx_update_mhop_flag(void) { }
-void ktx_poll_map(struct session *s, uint64_t t) { (void)s; (void)t; }
-void ktx_clear(struct session *s) { (void)s; }
-void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local,
-		   uint32_t wire_disc)
-{
-	(void)peer; (void)local; (void)wire_disc;
-}
-void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip)
-{
-	(void)peer; (void)skip;
-}
+#include "ktx_stubs.h"
 
 static const uint8_t *feed_p;
 static size_t feed_left;
@@ -79,6 +47,11 @@ static ssize_t feed_recv(int fd, void *buf, size_t len)
 
 int LLVMFuzzerInitialize(int *argc, char ***argv)
 {
+	/* Let an ADD naming any interface succeed, so the parser under test
+	 * is not steered down the uncovered branch by a stub. dp_run wants
+	 * the opposite, and that is the whole of the difference. */
+	ktx_stub_attach_rc = 0;
+
 	(void)argc; (void)argv;
 	dp_recv_hook = feed_recv;
 

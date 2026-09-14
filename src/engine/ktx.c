@@ -771,6 +771,33 @@ void ktx_clear(struct session *s)
 }
 
 
+/* The kernel's packet counters for one session, 0 when there are none.
+ *
+ * Here rather than in dplane.c, which is the only reason that file
+ * included libbpf at all: one lookup pulled the whole library into the
+ * bfddp parser, so dp_run had to link -lbpf and then hand-stub
+ * bpf_map_lookup_elem to shadow the real symbol, dp_fuzz needed its own
+ * copy of the ktx stub group, and a contributor without libbpf-dev could
+ * run neither. Map access belongs on this side of the wall.
+ */
+void ktx_session_counters(const struct session *s, uint64_t *rx, uint64_t *tx)
+{
+	struct session_key k = {};
+	struct session_state ms;
+
+	*rx = 0;
+	*tx = 0;
+	if (!use_ktx || sess_fd < 0)
+		return;
+
+	k.peer = s->peer;
+	k.local = s->local;
+	if (!bpf_map_lookup_elem(sess_fd, &k, &ms)) {
+		*rx = ms.rx_pkts;
+		*tx = ms.tx_pkts;
+	}
+}
+
 void ktx_poll_map(struct session *s, uint64_t t)
 {
 	if (!use_ktx || s->state != ST_UP)

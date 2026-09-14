@@ -19,8 +19,6 @@
 #include <sys/un.h>
 #include <netinet/in.h>
 #include <time.h>
-#include <bpf/libbpf.h>
-#include <bpf/bpf.h>
 
 #include "bfd_shared.h"
 #include "bfddp.h"
@@ -479,18 +477,9 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h,
 	m.h.length  = htons(sizeof(m));
 	m.c.lid     = htonl(lid);
 	if (s) {
-		uint64_t krx = 0, ktx = 0;
+		uint64_t krx, ktx;
 
-		if (use_ktx) {
-			struct session_key k = {};
-			k.peer  = s->peer;
-			k.local = s->local;
-			struct session_state ms;
-			if (!bpf_map_lookup_elem(sess_fd, &k, &ms)) {
-				krx = ms.rx_pkts;
-				ktx = ms.tx_pkts;
-			}
-		}
+		ktx_session_counters(s, &krx, &ktx);
 
 		/* Both halves of each direction: establishment runs in
 		 * userspace and the steady state in the kernel, so reporting

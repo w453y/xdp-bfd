@@ -29,6 +29,37 @@ void stats_on_signal(int sig)
 	stats_wanted = 1;
 }
 
+/* Emit a string as a JSON value, escaping what the grammar forbids.
+ *
+ * Every value passed here today is a code literal, so nothing needs it
+ * yet. last_reason is twenty-four bytes of copied-anything by design
+ * though, and an interface name comes from the control plane, so the first
+ * caller to format an address or an errno into one would silently produce
+ * a document that the tests consuming this file cannot parse. Cheaper to
+ * escape than to rely on every future caller knowing.
+ */
+static void json_str(FILE *f, const char *v)
+{
+	fputc('"', f);
+	for (; *v; v++) {
+		unsigned char c = (unsigned char)*v;
+
+		switch (c) {
+		case '"':  fputs("\\\"", f); break;
+		case '\\': fputs("\\\\", f); break;
+		case '\n': fputs("\\n", f); break;
+		case '\r': fputs("\\r", f); break;
+		case '\t': fputs("\\t", f); break;
+		default:
+			if (c < 0x20)
+				fprintf(f, "\\u%04x", c);
+			else
+				fputc(c, f);
+		}
+	}
+	fputc('"', f);
+}
+
 /* Sum a per-CPU stat slot. Zero when the map is absent, which is the
  * honest answer without kernel TX rather than an error. */
 static unsigned long long slot_total(__u32 key, int ncpu)
@@ -64,8 +95,10 @@ static void one_session(FILE *f, const struct session *s, int first)
 		s->wire_disc, s->rdisc);
 	fprintf(f, " \"up_events\": %u, \"down_events\": %u,",
 		s->up_events, s->down_events);
-	fprintf(f, " \"last_transition_us\": %llu, \"last_reason\": \"%s\",",
-		(unsigned long long)s->last_transition_us, s->last_reason);
+	fprintf(f, " \"last_transition_us\": %llu, \"last_reason\": ",
+		(unsigned long long)s->last_transition_us);
+	json_str(f, s->last_reason);
+	fputc(',', f);
 	fprintf(f, " \"last_rx_us\": %llu,",
 		(unsigned long long)s->last_rx_us);
 	fprintf(f, " \"last_detect_us\": %u, \"last_overshoot_us\": %u,",
@@ -162,6 +195,7 @@ void stats_dump(void)
 	fprintf(f, "  \"xdp_ifindex\": %d,\n", ktx_ifindex);
 	fprintf(f, "  \"sessions_configured\": %d,\n", configured);
 	fprintf(f, "  \"sessions_up\": %d,\n", up);
+	fprintf(f, "  \"map_poll\": \"%s\",\n", ktx_poll_mode());
 	fprintf(f, "  \"loop_passes\": %llu, \"loop_rx_wakeups\": %llu,\n",
 		(unsigned long long)loop_passes,
 		(unsigned long long)loop_rx_wakeups);

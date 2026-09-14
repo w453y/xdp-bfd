@@ -74,6 +74,19 @@ static __u32 poll_n;
  * already taught us to distrust. */
 static int poll_batch_unsupported;
 
+/* Which way ktx_poll_map is reading the session map.
+ *
+ * The fallback is correct but it is the syscall storm the batch lookup
+ * exists to avoid, and the only witness was one log line at the moment it
+ * happened. On a kernel without batch support that line scrolls away and
+ * the condition persists for the life of the process, so a later timing
+ * anomaly has nothing to point at. The stats snapshot is the artifact this
+ * project already collects when something looks wrong. */
+const char *ktx_poll_mode(void)
+{
+	return poll_batch_unsupported ? "single" : "batch";
+}
+
 void ktx_poll_all(void)
 {
 	poll_n = 0;

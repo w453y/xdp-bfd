@@ -364,10 +364,26 @@ int main(int argc, char **argv)
 				dp_set_peer_uid((uid_t)v);
 			}
 		}
+		/* Before the positional arguments, or a mistyped option lands
+		 * in one of them. `--dead-man-us 50000` reported "static: bad
+		 * IPv4 address", and an option whose value was left off was
+		 * dropped without a word, so the engine started on the
+		 * default having been told otherwise. Both are configuration
+		 * silently not taking effect, which is the failure this whole
+		 * program exists to avoid elsewhere. */
+		else if (argv[i][0] == '-') {
+			log_err("unrecognised option '%s', or an option"
+				" missing its value\n", argv[i]);
+			return 1;
+		}
 		else if (!static_local)
 			static_local = argv[i];
 		else if (!static_peer)
 			static_peer = argv[i];
+		else {
+			log_err("unexpected argument '%s'\n", argv[i]);
+			return 1;
+		}
 	}
 	/* One address without the other: the guard below only demands a
 	 * pair when --dplane is absent, so `--dplane <p> <one-address>`

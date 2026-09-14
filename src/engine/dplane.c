@@ -720,7 +720,13 @@ void dp_set_peer_uid(uid_t uid)
  */
 static int dp_peer_allowed(int fd)
 {
-	struct sockaddr_storage ss;
+	/* Zeroed, so the family this branches on is AF_UNSPEC rather than
+	 * whatever was on the stack if either query below ever fails. The
+	 * returns already cover that, but scan-build does not model
+	 * getsockname as an initialiser and reads ss.ss_family as garbage,
+	 * and this decides whether a peer may take over the control
+	 * connection - not a place to answer a checker with a comment. */
+	struct sockaddr_storage ss = {0};
 	socklen_t sslen = sizeof(ss);
 
 	/* Ask the socket what it is rather than inferring it from a failed

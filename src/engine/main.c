@@ -227,6 +227,28 @@ int main(int argc, char **argv)
 			}
 			ktx_sweep_ns = v * 1000ull;
 		}
+		else if (!strcmp(argv[i], "--deadman-us") && i + 1 < argc) {
+			const char *a = argv[++i];
+			char *end;
+			unsigned long long v = strtoull(a, &end, 10);
+
+			/* 0 is the documented off switch, so it is not a
+			 * range error. Above zero the floor is 50ms: the
+			 * worst loop gap measured over 651347 passes was in
+			 * the 16-32ms bucket, and a bound inside the range
+			 * the engine legitimately reaches would hold real
+			 * sessions down. The ceiling is a minute, past which
+			 * the gate is not bounding anything a human would
+			 * wait for. */
+			if (end == a || *end ||
+			    (v && (v < 50000 || v > 60000000))) {
+				log_err(
+					"--deadman-us: expected 0 (off) or 50000-60000000, got '%s'\n",
+					a);
+				return 1;
+			}
+			ktx_deadman_ns = v * 1000ull;
+		}
 		else if (!strcmp(argv[i], "--log-level") && i + 1 < argc) {
 			const char *a = argv[++i];
 
@@ -337,6 +359,7 @@ int main(int argc, char **argv)
 			"       [--stats-dump <path>]   (SIGUSR1 writes it)\n"
 			"       [--sweep-us <500-100000>]\n"
 			"       [--tick-us <200-100000>]\n"
+			"       [--deadman-us <0|50000-60000000>]  (0 = off)\n"
 			"       [--log-level error|info|debug]\n",
 			argv[0], argv[0]);
 		return 1;
@@ -662,6 +685,15 @@ int main(int argc, char **argv)
 		 * analyser run as a gate with no findings to excuse. */
 		uint64_t t = now_us();
 		loop_passes++;
+		/* Still here. The fast path answers on our behalf only for
+		 * as long as this keeps moving; see the gate in bfd_xdp.c.
+		 *
+		 * Here rather than at the top of the pass, because the top
+		 * is on the other side of poll(), and a pass that blocks
+		 * forever in poll is one of the wedges worth catching. This
+		 * is the first point at which the loop has demonstrably come
+		 * round again. */
+		ktx_heartbeat(t);
 		{
 			static uint64_t prev;
 			if (prev) {

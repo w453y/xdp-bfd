@@ -199,6 +199,12 @@ void stats_dump(void)
 
 	fprintf(f, "{\n  \"now_us\": %llu,\n", (unsigned long long)now_us());
 	fprintf(f, "  \"kernel_tx\": %s,\n", use_ktx ? "true" : "false");
+	/* What is actually in force, not what was asked for: a bound that
+	 * failed to reach the map, or a heartbeat that failed to map, zero
+	 * this on the way through, so a snapshot saying 0 means the fast
+	 * path really will answer for a wedged engine. */
+	fprintf(f, "  \"deadman_us\": %llu,\n",
+		(unsigned long long)(ktx_deadman_ns / 1000));
 	fprintf(f, "  \"xdp_ifindex\": %d,\n", ktx_ifindex);
 	fprintf(f, "  \"sessions_configured\": %d,\n", configured);
 	fprintf(f, "  \"sessions_up\": %d,\n", up);

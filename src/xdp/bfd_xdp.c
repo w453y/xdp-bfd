@@ -256,6 +256,29 @@ int bfd_observer(struct xdp_md *ctx)
 	 * Never echo Up at a peer that just said Down/AdminDown; let
 	 * userspace run the transition. */
 	if (cfg && cfg->enable && rstate >= 2) {
+	        /* Unless the engine has stopped saying it is there.
+	         *
+	         * Answering from softirq is what makes detection independent
+	         * of the loop, and it is also what lets a wedged engine lie:
+	         * the program keeps replying on the peer's clock whether or
+	         * not anything upstairs is still running, so a control plane
+	         * that is alive but making no progress presents Up sessions
+	         * to the whole network indefinitely. Measured, not supposed -
+	         * with the engine held in T state for twenty seconds, 57 of
+	         * 64 sessions stayed Up with the peer receiving at full rate.
+	         * That is exactly the lie BFD exists to prevent, arriving by
+	         * way of the optimisation.
+	         *
+	         * So the fast path answers on the engine's behalf only while
+	         * the engine is there to be answered for. Withholding the
+	         * reply does not take the session down here; it lets the peer
+	         * reach its own conclusion by its own detection timer, which
+	         * is the peer's decision to make and needs no new protocol.
+	         */
+	        if (deadman_tripped(now)) {
+	                count(BFD_STAT_DEADMAN_HOLD);
+	                return XDP_PASS;
+	        }
 	        return rx_clocked_tx(ctx, eth, iph, ip6, udp,
 	                             bfd, cfg, st, asc, data, data_end);
 	}

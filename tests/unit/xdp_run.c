@@ -239,6 +239,7 @@ static void expect(const char *name, int got, int want)
 /* ---------- map state ---------- */
 
 static int cfg_fd = -1, sess_fd = -1, stats_fd = -1;
+static int tune_fd = -1, hb_fd = -1;
 static int flags_fd = -1;
 static int echo_peers_fd = -1, echo_disc_fd = -1;
 /* The sweep lives behind a bpf_timer, which does not fire under
@@ -859,6 +860,71 @@ static void case_demand_bit_out(uint8_t cfg_demand, uint8_t in_flags,
 	} else {
 		printf("ok   %-40s D %u F %u\n", name, got, gotf);
 	}
+	map_reset();
+}
+
+/* The dead-man gate: the fast path answers on the engine's behalf only
+ * while the engine is still saying it is there.
+ *
+ * `age_us` is how stale the heartbeat is made, relative to the bound. The
+ * program reads bpf_ktime_get_ns itself, so the heartbeat is written as an
+ * offset from the same clock rather than the clock being controlled - the
+ * margins here are whole seconds against a test that takes microseconds,
+ * so the drift between writing it and the program reading it cannot reach
+ * a verdict.
+ *
+ * A bound of zero is the gate switched off, and a heartbeat of zero is an
+ * engine that has not written one yet; both must answer, and both are
+ * checked, because they are the two ways the gate could be armed against a
+ * healthy system.
+ */
+static void case_deadman(const char *name, __u64 bound_ns, __u64 hb_ns,
+			 int want_tx)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	unsigned char out[FRAME_MAX];
+	unsigned int out_len = 0;
+	struct frame f;
+	unsigned long long held0, held1;
+	__u32 zero = 0;
+	__u32 tk = BFD_TUNE_DEADMAN_NS;
+	int v, want;
+
+	if (tune_fd < 0 || hb_fd < 0) {
+		printf("FAIL %-40s no tunables/heartbeat map\n", name);
+		fails++;
+		return;
+	}
+	map_reset();
+	arm_session();
+	bpf_map_update_elem(tune_fd, &tk, &bound_ns, BPF_ANY);
+	bpf_map_update_elem(hb_fd, &zero, &hb_ns, BPF_ANY);
+
+	held0 = stat_get(BFD_STAT_DEADMAN_HOLD);
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+	v = run_frame(&f, out, &out_len);
+	held1 = stat_get(BFD_STAT_DEADMAN_HOLD);
+
+	/* Withholding the reply is XDP_PASS, which is also what an
+	 * unconfigured session gets, so the verdict alone would pass if the
+	 * gate were deleted and the session simply failed to arm. The
+	 * counter is the witness that this packet reached the gate. */
+	want = want_tx ? XDP_TX : XDP_PASS;
+	if (v != want || (held1 - held0) != (unsigned long long)!want_tx) {
+		printf("FAIL %-40s want %s hold+%d, got %s hold+%llu\n",
+		       name, verdict_str(want), !want_tx,
+		       v < 0 ? "syscall-error" : verdict_str(v),
+		       held1 - held0);
+		fails++;
+	} else {
+		printf("ok   %-40s %s, hold+%llu\n", name, verdict_str(v),
+		       held1 - held0);
+	}
+
+	bound_ns = 0;
+	hb_ns = 0;
+	bpf_map_update_elem(tune_fd, &tk, &bound_ns, BPF_ANY);
+	bpf_map_update_elem(hb_fd, &zero, &hb_ns, BPF_ANY);
 	map_reset();
 }
 
@@ -2526,6 +2592,25 @@ static void run_sweep_matrix(void)
 	for (int i = 0; i < HMAC_NVECS; i++)
 		case_hmac(&hmac_vecs[i]);
 
+	/* One second bound throughout, the shipped default. */
+#define DM_BOUND (1000ull * 1000 * 1000)
+	/* Armed and the engine is current: answer as always. */
+	case_deadman("deadman-fresh", DM_BOUND, mono_ns(), 1);
+	/* Armed and the engine went quiet two bounds ago: withhold. */
+	case_deadman("deadman-stale", DM_BOUND, mono_ns() - 2 * DM_BOUND, 0);
+	/* Just inside the bound is not stale. Half a bound is 500ms of
+	 * margin either side of a test that runs in microseconds. */
+	case_deadman("deadman-within-bound", DM_BOUND,
+		     mono_ns() - DM_BOUND / 2, 1);
+	/* Bound zero is the off switch, and a heartbeat old enough to trip
+	 * any armed gate must not trip this one. */
+	case_deadman("deadman-disarmed", 0, mono_ns() - 60ull * DM_BOUND, 1);
+	/* Heartbeat zero is the window between program load and the
+	 * engine's first pass. Tripping there holds every session down at
+	 * startup, so it reads as healthy. */
+	case_deadman("deadman-never-beaten", DM_BOUND, 0, 1);
+#undef DM_BOUND
+
 	case_demand_bit_out(0, 0, 0, 0, "demand-bit-off-not-set");
 	case_demand_bit_out(1, 0, 1, 0, "demand-bit-on-set");
 	case_demand_bit_out(1, BFD_F_POLL, 1, 1, "demand-bit-rides-with-final");
@@ -2561,6 +2646,8 @@ int main(void)
 	cfg_fd  = bpf_object__find_map_fd_by_name(obj, "tx_config");
 	sess_fd = bpf_object__find_map_fd_by_name(obj, "bfd_sessions");
 	stats_fd = bpf_object__find_map_fd_by_name(obj, "bfd_stats");
+	tune_fd = bpf_object__find_map_fd_by_name(obj, "tunables");
+	hb_fd = bpf_object__find_map_fd_by_name(obj, "heartbeat");
 	flags_fd = bpf_object__find_map_fd_by_name(obj, "prog_flags");
 	echo_peers_fd = bpf_object__find_map_fd_by_name(obj, "echo_peers");
 	echo_disc_fd = bpf_object__find_map_fd_by_name(obj, "echo_disc");

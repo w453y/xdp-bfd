@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <net/if.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <linux/if_packet.h>
@@ -45,6 +46,13 @@ const char *ktx_obj_path;   /* --bpf-obj, or NULL for the default search */
 unsigned int ktx_xdp_flags = XDP_FLAGS_DRV_MODE;
 /* --sweep-us, in nanoseconds; 0 leaves the compiled default. */
 __u64 ktx_sweep_ns;
+/* --deadman-us, in nanoseconds; 0 switches the gate off entirely. */
+__u64 ktx_deadman_ns = BFD_DEADMAN_NS_DEFAULT;
+/* The heartbeat cell, mapped into our address space so saying "still
+ * here" is a store and not a syscall. NULL if the mapping failed, which
+ * leaves the cell at zero and the gate reading healthy forever - the same
+ * fail-open the program takes before the first pass. */
+static __u64 *ktx_hb;
 /* One entry per attached interface. The link fd is held for the life of
  * the process: closing it detaches the program, which is the whole point,
  * so we never close one deliberately. link_fd -1 means that interface fell
@@ -159,6 +167,24 @@ void ktx_drain_events(void)
 		ring_buffer__consume(sweep_rb);
 }
 
+/* Still here.
+ *
+ * A plain store into the mapped cell: the program only ever compares it
+ * against its own clock, and a __u64 store is single-copy atomic on every
+ * target this runs on, so a reader either sees the old reading or the new
+ * one and both are equally true. Nothing to order it against - there is
+ * no second field whose meaning depends on this one.
+ *
+ * Microseconds in, nanoseconds out. The engine keeps CLOCK_MONOTONIC in
+ * microseconds throughout and bpf_ktime_get_ns reads the same clock in
+ * nanoseconds, so this is the whole of the conversion.
+ */
+void ktx_heartbeat(uint64_t now)
+{
+	if (ktx_hb)
+		*ktx_hb = now * 1000ull;
+}
+
 void ktx_poll_all(void)
 {
 	poll_n = 0;
@@ -234,6 +260,55 @@ int ktx_load(void)
 		}
 	}
 
+	/* The dead-man bound, written before attach for the same reason as
+	 * the sweep interval: the first packet through must not be judged
+	 * against a value we are still in the middle of setting.
+	 *
+	 * Failing to write it disarms the gate rather than leaving it at the
+	 * program's default of zero and pretending otherwise, so what the
+	 * engine reports is what is actually in force. */
+	if (ktx_deadman_ns) {
+		int tune_fd = bpf_object__find_map_fd_by_name(bpf_obj,
+							      "tunables");
+		__u32 k = BFD_TUNE_DEADMAN_NS;
+
+		if (tune_fd < 0 ||
+		    bpf_map_update_elem(tune_fd, &k, &ktx_deadman_ns, 0)) {
+			log_err(
+				"kernel-tx: dead-man bound NOT applied, the "
+				"fast path will answer for a wedged engine\n");
+			ktx_deadman_ns = 0;
+		}
+	}
+
+	/* Map the heartbeat cell. Must come before attach too: the first
+	 * packet can arrive the instant the program is on the interface, and
+	 * a cell nobody has written yet reads as zero, which the program
+	 * treats as healthy - so the ordering is a safety margin rather than
+	 * a correctness requirement, and the store below closes it. */
+	if (ktx_deadman_ns) {
+		int hb_fd = bpf_object__find_map_fd_by_name(bpf_obj,
+							    "heartbeat");
+		void *m = MAP_FAILED;
+
+		if (hb_fd >= 0)
+			m = mmap(NULL, sysconf(_SC_PAGESIZE),
+				 PROT_READ | PROT_WRITE, MAP_SHARED, hb_fd, 0);
+		if (m == MAP_FAILED) {
+			log_err(
+				"kernel-tx: heartbeat not mapped (%s), "
+				"dead-man gate disarmed\n", strerror(errno));
+			ktx_deadman_ns = 0;
+		} else {
+			ktx_hb = m;
+			/* Beat once now. Between here and the first loop
+			 * pass the engine is still bringing sessions up,
+			 * and that is the one stretch where the cell being
+			 * zero and the cell being fresh look the same. */
+			ktx_heartbeat(now_us());
+		}
+	}
+
 	ktx_prog = bpf_object__find_program_by_name(bpf_obj, "bfd_observer");
 	if (!ktx_prog) {
 		log_err("bfd_observer not found in %s\n", obj);
@@ -262,6 +337,13 @@ int ktx_load(void)
 		if (!sweep_rb)
 			log_err("kernel-tx: no sweep event ring, detection falls back to the loop\n");
 	}
+
+	if (ktx_deadman_ns)
+		log_info("kernel-tx: dead-man gate at %lluus\n",
+		       (unsigned long long)(ktx_deadman_ns / 1000));
+	else
+		log_info("kernel-tx: dead-man gate off, the fast path will "
+			 "answer for a wedged engine\n");
 
 	if (ktx_sweep_ns)
 		log_info("kernel-tx: sweep interval %lluus (default %lluus)\n",

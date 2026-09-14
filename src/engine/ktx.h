@@ -10,6 +10,8 @@ extern const char *ktx_obj_path;
 extern unsigned int ktx_xdp_flags;
 extern int ktx_ifindex;
 extern __u64 ktx_sweep_ns;
+extern __u64 ktx_deadman_ns;
+void ktx_heartbeat(uint64_t now);
 extern int sess_fd;
 extern int echo_peers_fd;
 extern int echo_disc_fd;

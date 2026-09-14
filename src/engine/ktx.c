@@ -529,13 +529,23 @@ void ktx_poll_map(struct session *s, uint64_t t)
 		s->applied_tx_us = s->min_tx_us;
 		ktx_mirror(s);
 	}
+	/* The peer's detect multiplier belongs here with the intervals.
+	 * fsm_detect sizes the detection budget from r_mult, and once the
+	 * fast path is armed fsm_rx never runs again, so leaving it behind
+	 * means the engine keeps timing against whatever the peer was using
+	 * when the session handed over. A peer that raises it is then
+	 * declared down by the engine on a budget the kernel sweep, which
+	 * reads detect_mult straight from the map, knows is not up yet. */
 	if (ms.min_tx_us && (ms.min_tx_us != s->r_min_tx ||
 			     ms.min_rx_us != s->r_min_rx ||
 			     ms.remote_min_echo_us != s->r_min_echo ||
+			     (ms.detect_mult && ms.detect_mult != s->r_mult) ||
 			     ms.remote_flags != s->r_flags)) {
 		s->r_min_tx = ms.min_tx_us;
 		s->r_min_rx = ms.min_rx_us;
 		s->r_min_echo = ms.remote_min_echo_us;
+		if (ms.detect_mult)
+			s->r_mult = ms.detect_mult;
 		s->r_flags = ms.remote_flags;
 		dp_notify_state(s);
 	}

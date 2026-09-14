@@ -76,6 +76,28 @@ struct {
 	__type(value, __u64);
 } tunables SEC(".maps");
 
+/* Layouts that cross to the engine without a map to carry them into BTF.
+ *
+ * ktx_abi_check compares the program's recorded struct sizes against the
+ * engine's own, which is only possible for types BTF records - and BTF for
+ * a BPF object is built from map definitions and program signatures, so a
+ * struct named only inside a function body is pruned. session_key,
+ * session_state and tx_cfg are map key and value types and survive; these
+ * two do not, and both still cross the boundary. bfd_event crosses as ring
+ * bytes that the engine casts straight back to this struct, which is the
+ * shear surface exactly; bfd_ctrl_pkt is the wire format both halves build
+ * and parse independently.
+ *
+ * Declaring them by value rather than as pointers is the point: a pointer
+ * can be recorded against a forward declaration, and a forward declaration
+ * has no size to compare. Eighty bytes of .rodata to make a silent
+ * mismatch a startup refusal.
+ */
+static const struct {
+	struct bfd_event ev;
+	struct bfd_ctrl_pkt pkt;
+} bfd_abi_witness SEC(".rodata") __attribute__((used));
+
 /* The engine's heartbeat: the last CLOCK_MONOTONIC reading it took at the
  * top of a loop pass, in nanoseconds, directly comparable to
  * bpf_ktime_get_ns.

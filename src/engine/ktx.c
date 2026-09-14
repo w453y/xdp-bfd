@@ -20,6 +20,7 @@
 #include <linux/if_ether.h>
 #include <linux/if_link.h>
 #include <bpf/libbpf.h>
+#include <bpf/btf.h>
 #include <bpf/bpf.h>
 
 #include "bfd_shared.h"
@@ -231,6 +232,126 @@ static int flags_fd = -1;
 static struct bpf_object *bpf_obj;
 
 /* ---------- BPF plumbing ---------- */
+
+/* Do the two halves agree on what the maps contain?
+ *
+ * tests/unit/abi_check.c pins every shared struct at compile time, and
+ * cannot see the failure that actually happens: the engine and the program
+ * are separate artifacts, built at separate times, and only paired at
+ * runtime by a path. An engine built against a newer bfd_shared.h loading
+ * yesterday's bfd_xdp.o - an installed copy, a stale --bpf-obj, a build
+ * tree half-rebuilt - gets no complaint from anyone. The verifier has no
+ * opinion, the map accepts the key, and the two sides then read the same
+ * bytes as different structs. Fields shear silently; nothing logs.
+ *
+ * So compare, rather than declare. The object carries BTF, which is the
+ * program's own record of the layouts it was compiled against, and every
+ * struct below is one both halves write through a map. A version integer
+ * would work too and would have to be remembered; a size that is simply
+ * read off both sides cannot be forgotten to bump. Today's two edits are
+ * the argument: session_state grew by 8 bytes and BFD_STAT_MAX went from
+ * 14 to 15, and both would have sheared in exactly this way.
+ *
+ * Before load, not after. A refusal should cost nothing and leave nothing
+ * attached to unpick.
+ *
+ * BTF missing is not a refusal. It means the object was built without -g,
+ * which the Makefile never does but a packager might, and turning that
+ * into "will not start" trades a silent risk for a certain outage. Say so
+ * and carry on.
+ */
+static int ktx_abi_check(struct bpf_object *o, const char *path)
+{
+	static const struct {
+		const char *name;
+		size_t sz;
+	} want[] = {
+		{ "session_key",    sizeof(struct session_key) },
+		{ "session_state",  sizeof(struct session_state) },
+		{ "tx_cfg",         sizeof(struct tx_cfg) },
+		{ "bfd_event",      sizeof(struct bfd_event) },
+		{ "bfd_ctrl_pkt",   sizeof(struct bfd_ctrl_pkt) },
+	};
+	/* The enums, which have no struct to measure. Each is a map sized
+	 * directly by the enum, so the map's own max_entries is the
+	 * program's copy of the count - and a renumbering that leaves the
+	 * total alone is not a shear, because these are indices into the
+	 * same table on both sides. */
+	static const struct {
+		const char *map;
+		__u32 n;
+	} counts[] = {
+		{ "bfd_stats", BFD_STAT_MAX },
+		{ "tunables",  BFD_TUNE_MAX },
+	};
+	struct btf *btf = bpf_object__btf(o);
+	int bad = 0;
+
+	if (!btf) {
+		log_err("kernel-tx: %s carries no BTF, ABI not checked\n",
+			path);
+	} else {
+		for (unsigned i = 0; i < sizeof(want) / sizeof(want[0]); i++) {
+			__s32 id = btf__find_by_name_kind(btf, want[i].name,
+							  BTF_KIND_STRUCT);
+			__s64 got;
+
+			/* Absent, in an object that has BTF, is itself the
+			 * answer: maps.h carries a witness whose whole job
+			 * is to keep these five recorded, so an object
+			 * missing one was built before that existed. Not
+			 * the same as the no-BTF case above, which is an
+			 * object that can tell us nothing at all. */
+			if (id < 0) {
+				log_err(
+					"kernel-tx: %s has no BTF record of struct %s, so it predates this check\n",
+					path, want[i].name);
+				bad = 1;
+				continue;
+			}
+			got = btf__resolve_size(btf, id);
+			if (got < 0) {
+				log_err(
+					"kernel-tx: %s has an unresolvable struct %s (%lld)\n",
+					path, want[i].name, (long long)got);
+				bad = 1;
+			} else if (got != (__s64)want[i].sz) {
+				log_err(
+					"kernel-tx: %s was built with %s at %lld bytes, this engine has %zu\n",
+					path, want[i].name, (long long)got,
+					want[i].sz);
+				bad = 1;
+			}
+		}
+	}
+
+	for (unsigned i = 0; i < sizeof(counts) / sizeof(counts[0]); i++) {
+		struct bpf_map *m = bpf_object__find_map_by_name(o,
+								counts[i].map);
+		__u32 got;
+
+		if (!m) {
+			log_err("kernel-tx: %s has no map %s\n", path,
+				counts[i].map);
+			bad = 1;
+			continue;
+		}
+		got = bpf_map__max_entries(m);
+		if (got != counts[i].n) {
+			log_err(
+				"kernel-tx: %s sizes %s for %u entries, this engine expects %u\n",
+				path, counts[i].map, got, counts[i].n);
+			bad = 1;
+		}
+	}
+
+	if (bad)
+		log_err(
+			"kernel-tx: refusing to load %s - rebuild both halves from the same tree\n",
+			path);
+	return bad ? -1 : 0;
+}
+
 int ktx_load(void)
 {
 	if (bpf_obj)
@@ -239,7 +360,8 @@ int ktx_load(void)
 	const char *obj = bfd_obj_path(ktx_obj_path);
 
 	bpf_obj = bpf_object__open_file(obj, NULL);
-	if (!bpf_obj || bpf_object__load(bpf_obj)) {
+	if (!bpf_obj || ktx_abi_check(bpf_obj, obj) ||
+	    bpf_object__load(bpf_obj)) {
 		log_err("%s load failed\n", obj);
 		bpf_obj = NULL;
 		return -1;

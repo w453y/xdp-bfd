@@ -32,6 +32,11 @@
 struct session sessions[MAX_SESSIONS];
 int use_ktx;                 /* 0: the kernel-TX gate in fsm_tx stays shut */
 
+/* No program loaded here, so no sweep and no ring: fsm_detect keeps the
+ * whole detection budget rather than deferring to a verdict that will
+ * never arrive. */
+int ktx_events_fd(void) { return -1; }
+
 static int notify_calls;
 
 void dp_notify_state(struct session *s)

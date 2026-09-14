@@ -52,6 +52,8 @@ void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local,
 }
 void ktx_update_mhop_flag(void) { }
 void ktx_mirror(struct session *s) { (void)s; }
+/* No program, no sweep, no ring; fsm_detect keeps the whole budget. */
+int ktx_events_fd(void) { return -1; }
 void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip)
 {
 	(void)peer; (void)skip;

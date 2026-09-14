@@ -111,6 +111,14 @@ struct session {
 	struct session_key pushed_key;
 	uint64_t last_rx_us, next_tx_us;
 	uint64_t tx_pkts;             /* userspace-sent control packets */
+	uint32_t last_detect_lag_us;  /* between the sweep deciding a session
+	                               * was down and the loop acting on it.
+	                               * The verdict is the kernel's and
+	                               * carries its own timestamp, so this
+	                               * separates how long detection took
+	                               * from how late the loop was. */
+	uint32_t kernel_detects;      /* verdicts taken from the sweep rather
+	                               * than re-derived here */
 	uint64_t tx_fail;             /* sendto(2) refused the packet: it
 	                               * never reached the wire, and the
 	                               * state it would have consumed is

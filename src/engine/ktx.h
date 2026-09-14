@@ -27,6 +27,8 @@ void ktx_update_mhop_flag(void);
 void ktx_mirror(struct session *s);
 void ktx_clear(struct session *s);
 void ktx_poll_all(void);
+int ktx_events_fd(void);
+void ktx_drain_events(void);
 const char *ktx_poll_mode(void);
 void ktx_poll_map(struct session *s, uint64_t t);
 

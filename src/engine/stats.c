@@ -124,6 +124,8 @@ static void one_session(FILE *f, const struct session *s, int first)
 		(s->r_flags & BFD_F_DEMAND) ? "true" : "false",
 		demand_tx_held(s) ? "true" : "false",
 		demand_detect_held(s) ? "true" : "false");
+	fprintf(f, " \"kernel_detects\": %u, \"last_detect_lag_us\": %u,",
+		s->kernel_detects, s->last_detect_lag_us);
 	fprintf(f, " \"tx_fail\": %llu,",
 		(unsigned long long)s->tx_fail);
 	fprintf(f, " \"rx_pkts\": %llu, \"tx_pkts\": %llu,",

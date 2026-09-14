@@ -300,7 +300,29 @@ void fsm_detect(struct session *s, uint64_t t)
 	if (sd < 0)
 		sd = 0;
 	uint8_t mult = s->r_mult ? s->r_mult : s->detect_mult;
-	if ((uint64_t)sd > (uint64_t)mult * iv) {
+	uint64_t budget = (uint64_t)mult * iv;
+
+	/* For a session the fast path carries, the sweep is what detects.
+	 *
+	 * It computes the same verdict from the same map every
+	 * BFD_SWEEP_NS_DEFAULT and publishes it on the ring, and the loop
+	 * ticks faster than that, so deriving it here too simply means this
+	 * always won the race and the kernel's verdict was never used. Two
+	 * derivations of one fact is also how they come to disagree: the
+	 * peer's detect multiplier not being carried back made this time out
+	 * against a budget the sweep knew was longer.
+	 *
+	 * Not a hand-off though. If the ring stops delivering - a consumer
+	 * that never runs, a full ring, a sweep that failed to arm - nothing
+	 * else would ever take the session down, so this stays as a backstop
+	 * at twice the budget: late enough never to race the sweep, early
+	 * enough to bound the failure. kernel_detects staying flat while
+	 * sessions still go down is the witness that it happened.
+	 */
+	if (use_ktx && !s->ktx_uncovered && ktx_events_fd() >= 0)
+		budget *= 2;
+
+	if ((uint64_t)sd > budget) {
 		/* The transition below carries "detect timeout" as its
 		 * reason, so this line is a duplicate at INFO. */
 		log_debug("[%llu] lid=%u DETECT TIMEOUT (silent %.1fms)\n",

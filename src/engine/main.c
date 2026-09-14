@@ -605,7 +605,9 @@ int main(int argc, char **argv)
 		 * socket, so no socket waits out another's timeout. All four
 		 * drains below are non-blocking, and the drain budget rather
 		 * than the blocking discipline is what bounds a pass. */
-		struct pollfd pfd[7] = {0};
+		/* tick, four receive sockets, the dplane listener and its
+		 * connection, and the sweep event ring. */
+		struct pollfd pfd[8] = {0};
 		int dp_l = -1, dp_c = -1;
 
 		dp_fds(&dp_l, &dp_c);
@@ -614,6 +616,8 @@ int main(int argc, char **argv)
 			uint64_t exp;
 
 			pfd[np].fd = tick_fd; pfd[np++].events = POLLIN;
+			if (ktx_events_fd() >= 0)
+				{ pfd[np].fd = ktx_events_fd(); pfd[np++].events = POLLIN; }
 			if (rx_sock >= 0)
 				{ pfd[np].fd = rx_sock; pfd[np++].events = POLLIN; }
 			if (rx6_sock >= 0)
@@ -943,6 +947,12 @@ int main(int argc, char **argv)
 
 		/* One map fetch for the whole pass; each session reads its own
 		 * entry out of it below. */
+		/* The sweep's verdicts, before the per-session walk below,
+		 * so a session the kernel has already declared down is seen
+		 * as down by everything that follows in this pass rather
+		 * than the next one. */
+		ktx_drain_events();
+
 		ktx_poll_all();
 		for (int i = 0; i < MAX_SESSIONS; i++) {
 			struct session *cs = &sessions[i];

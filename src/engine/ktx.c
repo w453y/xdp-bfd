@@ -31,6 +31,9 @@
 #include "fsm.h"
 #include "echo_tx.h"
 
+/* The sweep publishes its detection verdicts here; see on_sweep_event. */
+static struct ring_buffer *sweep_rb;
+
 int use_ktx = 0;
 const char *ktx_obj_path;   /* --bpf-obj, or NULL for the default search */
 /* Attach mode. Native is the default and is what every measured
@@ -85,6 +88,75 @@ static int poll_batch_unsupported;
 const char *ktx_poll_mode(void)
 {
 	return poll_batch_unsupported ? "single" : "batch";
+}
+
+/* The sweep's verdict, taken rather than re-derived.
+ *
+ * The program computes a detection verdict every sweep and publishes it;
+ * until now nothing read it, and fsm_detect worked the same answer out
+ * again from last_rx_us on its own schedule. Two derivations of one fact
+ * is how they come to disagree - the peer's detect multiplier not being
+ * carried back was exactly that, and it made the engine time out against
+ * a budget the sweep knew was longer.
+ *
+ * What this does not do is make the reaction independent of the loop. The
+ * ring is drained here, so a starved loop still applies the verdict late
+ * and tells bfdd late. What it does is separate the two: the event carries
+ * the kernel's timestamp, so detection latency is reported as the sweep
+ * measured it and the loop's lateness is visible on its own as
+ * last_detect_lag_us, which is the distinction investigations/
+ * starved-detection could not draw.
+ *
+ * fsm_detect stays. Sessions the fast path does not carry - userspace-only,
+ * an uncovered interface, no kernel TX at all - never produce an event and
+ * are still detected there.
+ */
+static int on_sweep_event(void *ctx, void *data, size_t len)
+{
+	const struct bfd_event *ev = data;
+	struct session *s;
+	uint64_t decided_us, now;
+
+	(void)ctx;
+	if (len < sizeof(*ev) || ev->event != 0)
+		return 0;   /* ALIVE is carried by the map already */
+
+	s = sess_by_addr(&ev->key.peer, &ev->key.local);
+	if (!s || !s->used)
+		return 0;
+	if (s->state != ST_UP && s->state != ST_INIT)
+		return 0;   /* already down, or never came up */
+
+	/* The verdict may have been overtaken. A packet that arrived after
+	 * the sweep looked sets alive again in the map and is synced into
+	 * last_rx_us, so a session that has been heard from since is not
+	 * down however old the queued event is. */
+	decided_us = ev->last_seen_ns / 1000;
+	if (s->last_rx_us > decided_us)
+		return 0;
+
+	now = now_us();
+	decided_us = ev->ts_ns / 1000;
+	s->last_detect_lag_us = now > decided_us ? (uint32_t)(now - decided_us)
+						 : 0;
+	s->kernel_detects++;
+
+	/* The kernel's timestamp, not ours: state_transition bills the
+	 * silence against it, and billing it against now would charge
+	 * detection for however late the loop was. */
+	state_transition(s, ST_DOWN, 1, decided_us, "detect timeout (sweep)");
+	return 0;
+}
+
+int ktx_events_fd(void)
+{
+	return sweep_rb ? ring_buffer__epoll_fd(sweep_rb) : -1;
+}
+
+void ktx_drain_events(void)
+{
+	if (sweep_rb)
+		ring_buffer__consume(sweep_rb);
 }
 
 void ktx_poll_all(void)
@@ -176,6 +248,20 @@ int ktx_load(void)
 	echo_disc_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_disc");
 	flags_fd = bpf_object__find_map_fd_by_name(bpf_obj, "prog_flags");
 	stats_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_stats");
+
+	/* The sweep publishes its verdict here. Failing to open it is not
+	 * fatal: fsm_detect still derives the same answer, just without the
+	 * kernel timestamp that separates detection from loop latency. */
+	{
+		int ev_fd = bpf_object__find_map_fd_by_name(bpf_obj,
+							    "bfd_events");
+
+		if (ev_fd >= 0)
+			sweep_rb = ring_buffer__new(ev_fd, on_sweep_event,
+						    NULL, NULL);
+		if (!sweep_rb)
+			log_err("kernel-tx: no sweep event ring, detection falls back to the loop\n");
+	}
 
 	if (ktx_sweep_ns)
 		log_info("kernel-tx: sweep interval %lluus (default %lluus)\n",

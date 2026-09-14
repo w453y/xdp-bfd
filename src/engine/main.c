@@ -177,6 +177,22 @@ static void auth_rollover_tick(void)
 	}
 }
 
+/* SIGTERM and SIGINT ask for an orderly exit.
+ *
+ * Without this the process simply died. bpf_link detached the program,
+ * which is correct, but the peer then discovered the loss the slow way: a
+ * detect timeout, diag 1, after a full detection time. That is exactly the
+ * outcome fsm_announce_down exists to avoid, on the most common orderly
+ * shutdown there is - systemctl stop sends SIGTERM.
+ */
+static volatile sig_atomic_t shutdown_wanted;
+
+static void shutdown_on_signal(int sig)
+{
+	(void)sig;
+	shutdown_wanted = 1;
+}
+
 int main(int argc, char **argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);
@@ -478,10 +494,11 @@ int main(int argc, char **argv)
 		return 1;
 
 	srandom(getpid() ^ time(NULL));
-	/* The only signal the engine handles. It sets a flag; the dump
-	 * happens in the loop below, so nothing in it needs to be
-	 * async-signal-safe. */
+	/* Both handlers set a flag and nothing else; the work happens in
+	 * the loop below, so neither needs to be async-signal-safe. */
 	signal(SIGUSR1, stats_on_signal);
+	signal(SIGTERM, shutdown_on_signal);
+	signal(SIGINT, shutdown_on_signal);
 
 	if (static_local) {
 		struct session *s = sess_alloc();
@@ -541,6 +558,29 @@ int main(int argc, char **argv)
 		/* Anything that did not fit the socket last pass. Cheap when
 		 * the queue is empty, which is the normal case. */
 		dp_flush();
+
+		if (shutdown_wanted) {
+			/* Tell every peer before going, rather than leaving
+			 * each to time out. fsm_announce_down sends three
+			 * AdminDown packets because nothing retransmits once
+			 * we are gone, and it deliberately skips sessions the
+			 * dp-hold path has orphaned: those are meant to
+			 * survive a control-plane restart unnoticed, and this
+			 * is not that. */
+			int announced = 0;
+
+			for (int i = 0; i < MAX_SESSIONS; i++) {
+				struct session *cs = &sessions[i];
+
+				if (!cs->used || cs->orphaned)
+					continue;
+				fsm_announce_down(cs);
+				announced++;
+			}
+			log_info("shutdown: announced AdminDown on %d session(s)\n",
+				 announced);
+			break;
+		}
 
 		if (stats_wanted) {
 			stats_wanted = 0;

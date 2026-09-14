@@ -333,7 +333,12 @@ void ktx_mirror(struct session *s)
 		}
 	}
 
-	if (s->pushed_valid && !memcmp(&c, &s->pushed_cfg, sizeof(c)))
+	struct session_key k = {};
+
+	k.peer  = s->peer;
+	k.local = s->local;
+
+	if (!ktx_push_needed(s, &c, &k))
 		return;
 
 	/* Hand the transmit sequence over before the program is told to
@@ -360,11 +365,18 @@ void ktx_mirror(struct session *s)
 				s->auth_seeded = 1;
 		}
 	}
-	struct session_key k = {};
-	k.peer  = s->peer;
-	k.local = s->local;
-	bpf_map_update_elem(cfg_fd, &k, &c, 0);
+	/* Only a push that landed may be cached. Recording it after a
+	 * failed update would leave the engine believing the program has a
+	 * configuration it never received, and every later mirror would
+	 * compare equal and skip. */
+	if (bpf_map_update_elem(cfg_fd, &k, &c, 0)) {
+		log_err("ktx: lid=%u tx_config push failed: %s\n",
+			s->lid, strerror(errno));
+		s->pushed_valid = 0;
+		return;
+	}
 	s->pushed_cfg = c;
+	s->pushed_key = k;
 	s->pushed_valid = 1;
 }
 

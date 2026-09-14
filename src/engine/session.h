@@ -105,6 +105,10 @@ struct session {
 	                               * min_tx increase until poll ends */
 	int      pushed_valid;
 	struct tx_cfg pushed_cfg;
+	/* The map key the cached config was pushed under. Without it a
+	 * session whose address pair moves compares equal on the value
+	 * alone and never gets inserted under the new key. */
+	struct session_key pushed_key;
 	uint64_t last_rx_us, next_tx_us;
 	uint64_t tx_pkts;             /* userspace-sent control packets */
 	uint64_t rx_pkts;             /* userspace-received control packets;
@@ -286,6 +290,25 @@ static inline int auth_fast_capable(const struct session *s)
 static inline int ktx_answers(const struct session *s)
 {
 	return s->state == ST_UP && auth_fast_capable(s) && !demand_tx_held(s);
+}
+
+/* Whether the program still holds what this session last pushed.
+ *
+ * Both halves matter. An UPDATE that moves the address pair leaves every
+ * tx_cfg field identical, so a value-only comparison says nothing needs
+ * doing while the entry now lives under a key nobody will look up.
+ *
+ * Out here rather than inside ktx_mirror so it can be tested without a
+ * loaded program: the mirror is stubbed in the dplane harness, which is
+ * why an address move had no coverage of the thing that went wrong.
+ */
+static inline int ktx_push_needed(const struct session *s,
+				  const struct tx_cfg *c,
+				  const struct session_key *k)
+{
+	return !s->pushed_valid ||
+	       memcmp(c, &s->pushed_cfg, sizeof(*c)) != 0 ||
+	       memcmp(k, &s->pushed_key, sizeof(*k)) != 0;
 }
 
 extern struct session sessions[MAX_SESSIONS];

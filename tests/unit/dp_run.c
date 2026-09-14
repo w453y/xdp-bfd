@@ -544,6 +544,62 @@ static void case_add_without_auth(void)
  * assignment, applying the slower rate while the poll was still open. The
  * peer would then time out against an interval it had not agreed to.
  */
+/* The mirror cache is keyed as well as valued.
+ *
+ * ktx_mirror skips the map write when what it would push equals what it
+ * last pushed. An UPDATE that moves the address pair changes no tx_cfg
+ * field at all, so on the value alone the answer is "nothing to do" while
+ * the old entry has already been cleared and the new key has none. The
+ * session keeps running in userspace with nobody saying why.
+ *
+ * ktx_mirror itself is stubbed here, which is precisely how the address
+ * move case above passed while this went unnoticed, so the predicate is
+ * tested rather than the caller.
+ */
+static void case_mirror_cache_tracks_key(void)
+{
+	struct session_key k1 = {}, k2 = {};
+	struct tx_cfg c = {};
+	struct session s = {};
+	uint32_t a1 = inet_addr("10.0.0.41");
+	uint32_t a2 = inet_addr("10.0.0.42");
+	int bad = 0;
+
+	k1.peer.b[10] = k1.peer.b[11] = 0xff;
+	memcpy(&k1.peer.b[12], &a1, 4);
+	k2 = k1;
+	memcpy(&k2.peer.b[12], &a2, 4);
+
+	c.min_tx_us = 50000;
+
+	if (!ktx_push_needed(&s, &c, &k1)) {
+		printf("     nothing pushed yet and it says no push needed\n");
+		bad = 1;
+	}
+
+	/* Stand in for a push that landed. */
+	s.pushed_cfg = c;
+	s.pushed_key = k1;
+	s.pushed_valid = 1;
+
+	if (ktx_push_needed(&s, &c, &k1)) {
+		printf("     same key and same value still wants a push\n");
+		bad = 1;
+	}
+	if (!ktx_push_needed(&s, &c, &k2)) {
+		printf("     the address pair moved and it wants no push\n");
+		bad = 1;
+	}
+
+	c.min_tx_us = 10000;
+	if (!ktx_push_needed(&s, &c, &k1)) {
+		printf("     the value changed and it wants no push\n");
+		bad = 1;
+	}
+
+	report("mirror-cache-tracks-key", bad, "key and value both count");
+}
+
 static void case_repeated_add_during_poll(void)
 {
 	unsigned char buf[256];
@@ -809,6 +865,7 @@ int main(void)
 	case_fresh_v6();
 	case_update_keeps_disc();
 	case_add_without_auth();
+	case_mirror_cache_tracks_key();
 	case_repeated_add_during_poll();
 	case_address_move();
 	case_flags();

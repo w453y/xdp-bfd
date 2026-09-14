@@ -30,11 +30,19 @@ runs:
   steps:
     - shell: bash
       run: |
+        set -e
         sudo apt-get update
-        sudo apt-get install -y llvm libbpf-dev ${{ inputs.packages }}
+        sudo apt-get install -y llvm libbpf-dev
         if [ "${{ inputs.preinstalled }}" != "true" ]; then
           wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
           chmod +x /tmp/llvm.sh
           sudo /tmp/llvm.sh ${{ inputs.version }}
+        fi
+        # After llvm.sh, not with the packages above: anything versioned to
+        # match this clang lives on apt.llvm.org, and that repository is not
+        # in the sources list until llvm.sh puts it there. Installed in the
+        # first apt call, clang-tools-21 is simply "unable to locate".
+        if [ -n "${{ inputs.packages }}" ]; then
+          sudo apt-get install -y ${{ inputs.packages }}
         fi
         clang-${{ inputs.version }} --version | head -1

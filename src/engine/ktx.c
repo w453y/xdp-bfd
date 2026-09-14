@@ -562,6 +562,33 @@ void ktx_poll_map(struct session *s, uint64_t t)
 	}
 	if (ms.last_seen_ns / 1000 > s->last_rx_us)
 		s->last_rx_us = ms.last_seen_ns / 1000;
+	/* When the fast path last transmitted, from the count of replies
+	 * moving rather than from a timestamp the program stores.
+	 *
+	 * A timestamp was the obvious shape and does not fit: the verifier
+	 * charges one 512-byte budget across the whole call chain, and the
+	 * TX path has no room to either carry `now` down to the store or
+	 * call bpf_ktime_get_ns again there - both come back as "combined
+	 * stack size of 3 calls is 528. Too large". tx_pkts is already
+	 * maintained on exactly the path that transmits, so the fact is
+	 * already published; only the reading of it was missing.
+	 *
+	 * Stamped with last_rx_us, not the local clock. The reply is built
+	 * from the frame that triggered it, in the same softirq, so the
+	 * arrival the kernel timestamped IS the transmit instant - which
+	 * makes this identical to the arrival time it replaces for as long
+	 * as every accepted packet is answered, and different only when the
+	 * program declines to answer. That is the whole point of the change,
+	 * and it means no behaviour moves until something starts declining.
+	 *
+	 * Resolution is one poll pass, since a reply between two polls is
+	 * seen at the second. Against a `pace` of a peer's advertised
+	 * interval - tens of milliseconds - a pass of one to two is noise.
+	 */
+	if (ms.tx_pkts != s->ktx_tx_pkts) {
+		s->ktx_tx_pkts = ms.tx_pkts;
+		s->last_ktx_us = s->last_rx_us;
+	}
 	/* Once the fast path is armed userspace stops seeing packets, so
 	 * fsm_rx's last look at the peer's state is the bring-up packet
 	 * carrying Init and r_state would sit there for the life of the

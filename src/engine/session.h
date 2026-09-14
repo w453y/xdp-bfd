@@ -110,6 +110,14 @@ struct session {
 	 * alone and never gets inserted under the new key. */
 	struct session_key pushed_key;
 	uint64_t last_rx_us, next_tx_us;
+	uint64_t last_ktx_us;         /* when the fast path last transmitted
+	                               * for this session. What fsm_tx's
+	                               * backstop keys off, so it asks whether
+	                               * the kernel sent rather than inferring
+	                               * it from a packet having arrived. */
+	uint64_t ktx_tx_pkts;         /* the kernel's reply count as of the
+	                               * previous poll; the two differing is
+	                               * what says it transmitted. */
 	uint64_t tx_pkts;             /* userspace-sent control packets */
 	uint32_t last_detect_lag_us;  /* between the sweep deciding a session
 	                               * was down and the loop acting on it.

@@ -101,6 +101,11 @@ static void one_session(FILE *f, const struct session *s, int first)
 	fputc(',', f);
 	fprintf(f, " \"last_rx_us\": %llu,",
 		(unsigned long long)s->last_rx_us);
+	/* Beside last_rx_us because the pair is the measurement: while the
+	 * fast path answers every packet they track each other, and the gap
+	 * between them is how long the program has been declining to. */
+	fprintf(f, " \"last_ktx_us\": %llu,",
+		(unsigned long long)s->last_ktx_us);
 	fprintf(f, " \"last_detect_us\": %u, \"last_overshoot_us\": %u,",
 		s->last_detect_us, s->last_overshoot_us);
 	fprintf(f, " \"min_tx_us\": %u, \"min_rx_us\": %u, \"detect_mult\": %u,",

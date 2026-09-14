@@ -6,13 +6,31 @@ name: ci
 #   toolchain    the clang floor, asserted in both directions.
 #   kernel       unit suites under a chosen kernel in a microVM.
 #   cross        the BPF object builds for a non-host architecture.
-#   portability  hosted, stock machine: build and unit suites only.
+#   compilers    hosted, stock machine: build and unit suites under both
+#                compilers.
+#   static-analysis  scan-build over the engine, any finding fails.
 on:
   pull_request:
-  # A merge commit is a different tree from the branch that was tested, and
-  # a direct push has no pull-request run at all.
+  # Every branch, not just main. A merge commit is a different tree from the
+  # branch that was tested and a direct push has no pull-request run at all,
+  # which was the original reason for main being here - but restricting it to
+  # main meant a branch got no CI until someone opened a pull request, and a
+  # 27 commit branch reached merge having never been built by anything but
+  # its author. Two breakages arrived that way: the fuzz target stopped
+  # linking, and a static analysis finding sat unreported, both caught only
+  # at the first pull request.
+  #
+  # A branch that does have a pull request open is therefore built twice,
+  # once per event. That is deliberate and it costs the six hosted arms; the
+  # two self-hosted jobs skip push events below, so the shared VM is not
+  # contended for.
   push:
-    branches: [main]
+    branches: ['**']
+  workflow_dispatch:
+
+# Read-only. Nothing here comments, tags, or publishes.
+permissions:
+  contents: read
 
 # `full` and `kernel` share one self-hosted VM, so concurrent runs on a ref
 # serialise. Cancel the older one rather than queue behind it.
@@ -23,6 +41,11 @@ concurrency:
 jobs:
   full:
     runs-on: [self-hosted, Linux, X64]
+    # One VM, shared with `kernel`. A push to a branch gets the hosted arms
+    # and leaves this for the pull request, so a branch under active work
+    # does not hold the machine.
+    if: github.event_name != 'push'
+    timeout-minutes: 30
     env:
       BFD_CONTAINER_RUNTIME: podman
       # Suites run under sudo, so anything Python writes lands root-owned and
@@ -95,12 +118,17 @@ jobs:
   # on that specific error rather than on some unrelated breakage.
   toolchain:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         include:
+          # ubuntu-latest ships this one, and this arm's whole job is a
+          # build that must fail, so installing a compiler to prove it
+          # would cost longer than the proof.
           - llvm: 18
             expect: fail
+            preinstalled: "true"
           - llvm: 19
             expect: fail
           - llvm: 20
@@ -110,14 +138,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: install clang-${{ matrix.llvm }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y llvm libbpf-dev
-          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh ${{ matrix.llvm }}
-          clang-${{ matrix.llvm }} --version | head -1
+      - uses: ./.github/actions/llvm
+        with:
+          version: ${{ matrix.llvm }}
+          preinstalled: ${{ matrix.preinstalled || 'false' }}
 
       - name: build with clang-${{ matrix.llvm }} (expect ${{ matrix.expect }})
         run: |
@@ -148,6 +172,8 @@ jobs:
   # build environment.
   kernel:
     runs-on: [self-hosted, Linux, X64]
+    if: github.event_name != 'push'
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -185,19 +211,20 @@ jobs:
   # is decorative and the aarch64 arm proves nothing.
   cross:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
-      - name: install toolchain and arm64 headers
+      # bpf/bpf_helpers.h is architecture-independent, so the host's amd64
+      # libbpf-dev serves the aarch64 build. Only the UAPI headers under
+      # /usr/include/<triple> are arch-specific, which is what the arm64
+      # step below is for.
+      - uses: ./.github/actions/llvm
+        with:
+          version: 21
+
+      - name: add arm64 headers
         run: |
-          sudo apt-get update
-          # bpf/bpf_helpers.h is architecture-independent, so the host's
-          # amd64 libbpf-dev serves the aarch64 build. Only the UAPI headers
-          # under /usr/include/<triple> are arch-specific.
-          sudo apt-get install -y llvm libbpf-dev
-          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh 21
           # Ubuntu splits architectures across mirrors: archive.ubuntu.com
           # carries amd64 only, everything else lives on ports.ubuntu.com.
           # Adding arm64 without scoping the existing sources makes apt ask
@@ -233,11 +260,12 @@ jobs:
           grep -q 'asm/types.h' /tmp/x.log || {
             echo "failed, but not on the missing header:"; tail -5 /tmp/x.log; exit 1; }
 
-  portability:
+  # Userspace with both compilers. The BPF object is always clang; this
+  # axis is the engine, and it exists because the multiarch triple must be
+  # derived from the system rather than from $(CC).
+  compilers:
     runs-on: ubuntu-latest
-    # Userspace with both compilers. The BPF object is always clang; this
-    # axis is the engine, and it exists because the multiarch triple must be
-    # derived from the system rather than from $(CC).
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -247,15 +275,13 @@ jobs:
 
       # clang 21 from apt.llvm.org: the runner image defaults to 18, which is
       # below the floor the toolchain job asserts.
-      - name: install toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y llvm libbpf-dev linux-tools-common
-          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh 21
-          clang-21 --version
-          ls /usr/include/$(gcc -print-multiarch) | head -5
+      - uses: ./.github/actions/llvm
+        with:
+          version: 21
+          packages: linux-tools-common
+
+      - name: show the multiarch triple
+        run: ls /usr/include/$(gcc -print-multiarch) | head -5
 
       - name: build
         run: make CC=${{ matrix.cc }} CLANG=clang-21
@@ -263,9 +289,22 @@ jobs:
       - name: unit suites
         run: sudo make CC=${{ matrix.cc }} CLANG=clang-21 check
 
-      # --status-bugs makes any finding fail the job.
-      - name: static analysis
-        run: |
-          sudo apt-get install -y clang-tools-21
-          make clean
-          scan-build-21 --status-bugs -o /tmp/sb make bfd_tx bfd_loader
+  # Its own job rather than a step on the end of the compiler matrix, where
+  # a finding was reported as "portability (cc) failed" and said nothing
+  # about what had been found. It also ran twice over one codebase, since
+  # scan-build uses its own clang whatever $(CC) is.
+  #
+  # --status-bugs makes any finding fail the job.
+  static-analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/llvm
+        with:
+          version: 21
+          packages: clang-tools-21
+
+      - name: scan-build
+        run: scan-build-21 --status-bugs -o /tmp/sb make bfd_tx bfd_loader

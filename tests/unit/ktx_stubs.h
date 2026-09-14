@@ -23,7 +23,6 @@
 #include "session.h"
 
 int use_ktx;
-int sess_fd = -1;
 
 /* What ktx_attach_if returns. dp_run wants failure, so an ADD naming an
  * interface the fast path does not cover takes the uncovered path it is
@@ -47,7 +46,6 @@ void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local,
 }
 void ktx_update_mhop_flag(void) { }
 void ktx_mirror(struct session *s) { (void)s; }
-void ktx_forget(struct session *s) { (void)s; }
 void ktx_poll_map(struct session *s, uint64_t t) { (void)s; (void)t; }
 /* No program, no sweep, no ring; fsm_detect keeps the whole budget. */
 int ktx_events_fd(void) { return -1; }

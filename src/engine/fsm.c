@@ -410,8 +410,11 @@ static void tx_one(struct session *s)
 		 * bypass, but it is a packet that could only ever be
 		 * refused. */
 		if (!s->auth_type) {
-			log_err("lid=%u must authenticate and has no key to send under; nothing sent\n",
-				s->lid);
+			if (!s->auth_gap_warned) {
+				s->auth_gap_warned = 1;
+				log_err("lid=%u must authenticate and has no key to send under; nothing sent until one becomes sendable\n",
+					s->lid);
+			}
 			s->send_final = 0;
 			s->just_up = 0;
 			return;

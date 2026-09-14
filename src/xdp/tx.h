@@ -11,7 +11,6 @@
 
 #include "bfd_shared.h"
 #include "tunables.h"
-#include "csum.h"
 #include "auth.h"
 
 static __always_inline int rx_clocked_tx(struct xdp_md *ctx,

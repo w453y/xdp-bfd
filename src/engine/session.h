@@ -196,6 +196,15 @@ struct session {
 	int      auth_rx_seen;        /* whether auth_rx_seq means anything
 	                               * yet - the first authenticated packet
 	                               * has nothing to be compared against */
+	uint8_t  auth_gap_warned;     /* said once per entry into "must
+	                               * authenticate, nothing to send
+	                               * under". Cleared when a key becomes
+	                               * sendable again, so a later gap is
+	                               * reported as its own event. Without
+	                               * it the refusal is one line per
+	                               * transmit interval for the length of
+	                               * the gap, plus three more per
+	                               * teardown from fsm_announce_down. */
 	uint8_t  iface_warned;        /* once per session, not once per ADD:
 	                               * bfdd re-sends one on every config
 	                               * touch */

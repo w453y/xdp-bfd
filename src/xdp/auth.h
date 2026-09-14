@@ -157,8 +157,19 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 		if (!k->keylen || k->keylen > BFD_AUTH_SIMPLE_MAXKEY)
 			return 0;
 		want = BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR + k->keylen;
-	} else {
+	} else if (type == BFD_AUTH_KEYED_SHA1 ||
+		   type == BFD_AUTH_METICULOUS_SHA1) {
 		want = BFD_MIN_LEN + BFD_AUTH_SHA1_LEN;
+	} else {
+		/* Named explicitly rather than falling into the SHA1 arm.
+		 * The accept set carries bfdd's key type byte verbatim, so
+		 * keyed MD5 (2 and 3) can land here, and treating it as
+		 * SHA1 meant measuring a 24 byte section against 28 and
+		 * digesting it with the wrong algorithm. It failed closed,
+		 * but by arithmetic rather than by decision. Userspace says
+		 * the same thing in bfd_auth_pkt_len, which returns 0 for
+		 * anything outside the three types this implements. */
+		return 0;
 	}
 	if (len != want)
 		return 0;

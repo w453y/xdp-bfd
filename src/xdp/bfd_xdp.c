@@ -124,7 +124,7 @@ int bfd_observer(struct xdp_md *ctx)
 	 * nothing in the BFD header is trusted to do it. */
 	struct tx_cfg *cfg = bpf_map_lookup_elem(&tx_config, &c.key);
 
-	int hv = bfd_hdr_verdict(bfd, udp, cfg ? cfg->auth_type : 0);
+	int hv = bfd_hdr_verdict(bfd, udp, cfg ? cfg->auth_present : 0);
 	if (hv >= 0)
 		return hv;
 
@@ -192,11 +192,21 @@ int bfd_observer(struct xdp_md *ctx)
 	 * packet having arrived. */
 	struct auth_scratch *asc = NULL;
 
-	if (cfg && cfg->auth_type) {
+	/* auth_present, not auth_type. Verification does not need a key we
+	 * may send under: xdp_auth_verify reads the type and key id the
+	 * PACKET names and matches them against auth_accept, which is the
+	 * set the engine left for exactly this. Gating on the send key meant
+	 * that a session in a rollover gap, with nothing to transmit under
+	 * and a perfectly good accept set, skipped verification entirely and
+	 * took the packet on trust. */
+	if (cfg && cfg->auth_present) {
 		__u32 azero = 0;
 
 		asc = bpf_map_lookup_elem(&auth_scratch, &azero);
-		if (!asc || !xdp_auth_fast(cfg) ||
+		/* The capability check belongs to the send key, because it
+		 * decides what we could BUILD. With no send key there is
+		 * nothing to build and the accept set still verifies. */
+		if (!asc || (cfg->auth_type && !xdp_auth_fast(cfg)) ||
 		    !xdp_auth_verify(ctx, iph ? BFD_OFF_V4 : BFD_OFF_V6,
 				     bfd, cfg, st, asc)) {
 			count(BFD_STAT_AUTH_BAD);
@@ -255,7 +265,14 @@ int bfd_observer(struct xdp_md *ctx)
 	 * and bounce it. Peer's clock becomes our clock; runs in softirq.
 	 * Never echo Up at a peer that just said Down/AdminDown; let
 	 * userspace run the transition. */
-	if (cfg && cfg->enable && rstate >= 2) {
+	/* An authenticated session with no key to sign with cannot be
+	 * answered from here: the reply is built from auth_type, so it would
+	 * go out bare on a session whose peer must reject it. Userspace
+	 * declines to send in the same state (auth_fast_capable), and this
+	 * is the program's half of that agreement rather than a trust in
+	 * the mirror having set enable correctly. */
+	if (cfg && cfg->enable && rstate >= 2 &&
+	    !(cfg->auth_present && !xdp_auth_fast(cfg))) {
 	        /* Unless the engine has stopped saying it is there.
 	         *
 	         * Answering from softirq is what makes detection independent

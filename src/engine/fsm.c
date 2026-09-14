@@ -400,7 +400,22 @@ static void tx_one(struct session *s)
 	 * A session that cannot build its section sends nothing at all. An
 	 * unauthenticated packet on an authenticated session is not a
 	 * degraded packet, it is the one thing the peer must reject. */
-	if (s->auth_type) {
+	if (s->auth_present) {
+		/* auth_present, not auth_type: a session that must
+		 * authenticate and has no key it may send under right now
+		 * has to send nothing, which is what the comment above has
+		 * always claimed. Branching on auth_type instead put a bare
+		 * 24 byte packet on the wire for it, counted as sent. The
+		 * peer rejects it, so this was never an authentication
+		 * bypass, but it is a packet that could only ever be
+		 * refused. */
+		if (!s->auth_type) {
+			log_err("lid=%u must authenticate and has no key to send under; nothing sent\n",
+				s->lid);
+			s->send_final = 0;
+			s->just_up = 0;
+			return;
+		}
 		o.flags |= BFD_F_AUTH;
 		o.len = bfd_auth_pkt_len(s->auth_type, s->auth_keylen);
 		memcpy(buf, &o, BFD_MIN_LEN);

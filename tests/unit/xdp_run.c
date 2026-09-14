@@ -1392,6 +1392,7 @@ static void case_auth_required(int v6)
 		return;
 	}
 	cfg.auth_type = BFD_AUTH_KEYED_SHA1;
+	cfg.auth_present = 1;
 	bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY);
 
 	before = stat_get(BFD_STAT_AUTH_MISMATCH);
@@ -2101,6 +2102,7 @@ static void arm_session_auth(__u8 type, __u8 keyid, const char *key)
 	cfg.mult      = 3;
 	cfg.min_ttl   = 255;
 	cfg.auth_type = type;
+	cfg.auth_present = 1;
 	cfg.auth_keyid = keyid;
 	cfg.auth_keylen = (__u8)n;
 	memcpy(cfg.auth_kpad, key, n);
@@ -2156,6 +2158,88 @@ static void build_sha1_auth(struct frame *f, const char *key, __u8 keyid,
 	memcpy(f->b + sizeof(struct ethhdr) + sizeof(struct iphdr) +
 	       sizeof(struct udphdr) + BFD_MIN_LEN,
 	       pkt + BFD_MIN_LEN, BFD_AUTH_SHA1_LEN);
+}
+
+/* A session that must authenticate but has no key it may SEND under.
+ *
+ * A key chain whose send lifetimes have a gap puts a session here, and so
+ * does a DP_ADD_SESSION carrying SESSION_AUTH that arrives before its
+ * DP_SESSION_AUTH. The peer goes on transmitting under a key that is still
+ * within its own accept period, so those packets carry the A bit and the
+ * accept set can verify them. Refusing them is refusing exactly what the
+ * overlap exists to take.
+ *
+ * The program judged this by auth_type, which is the SEND key, so it saw a
+ * session with no authentication, called the A bit unacceptable and dropped
+ * the packet in the driver - where userspace, which has always read this
+ * from auth_present, could not see what it would have accepted. The session
+ * then timed out with the peer transmitting correctly throughout.
+ */
+static void case_auth_present_without_send_key(void)
+{
+	const char *name = "auth-accepted-with-no-send-key";
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct tx_cfg cfg;
+	struct frame f;
+	unsigned long long mism;
+	int v;
+
+	map_reset();
+	arm_session_auth(BFD_AUTH_KEYED_SHA1, 7, "topsecret");
+
+	/* Exactly the state above: the accept set is untouched, the send key
+	 * is gone, and the session still has to authenticate. */
+	if (bpf_map_lookup_elem(cfg_fd, &k, &cfg)) {
+		printf("FAIL %-40s no cfg\n", name);
+		fails++;
+		return;
+	}
+	cfg.auth_type = 0;
+	cfg.auth_keyid = 0;
+	cfg.auth_keylen = 0;
+	cfg.auth_present = 1;
+	bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY);
+
+	mism = stat_get(BFD_STAT_AUTH_MISMATCH);
+	build_sha1_auth(&f, "topsecret", 7, 100, BFD_AUTH_KEYED_SHA1);
+	v = run_frame(&f, NULL, NULL);
+
+	/* PASS, not TX: with no send key the fast path must not answer
+	 * either, or it bounces a bare packet the peer must reject. The
+	 * packet still has to reach userspace. */
+	if (v != XDP_PASS || stat_get(BFD_STAT_AUTH_MISMATCH) != mism) {
+		printf("FAIL %-40s want PASS no-mismatch, got %s mismatch+%llu\n",
+		       name, v < 0 ? "syscall-error" : verdict_str(v),
+		       stat_get(BFD_STAT_AUTH_MISMATCH) - mism);
+		fails++;
+	} else {
+		printf("ok   %-40s accepted, not an A-bit mismatch\n", name);
+	}
+
+	/* And the digest is still checked, which the arm above cannot show:
+	 * a packet accepted without verification also reaches userspace, so
+	 * PASS alone is equally consistent with having skipped the digest.
+	 * That is not hypothetical. Gating verification on the send key did
+	 * exactly that, and fixing only the A-bit rule would have turned
+	 * "refuses what it should take" into "takes it unverified", which is
+	 * the worse of the two by a long way. */
+	name = "auth-verified-with-no-send-key";
+	{
+		unsigned long long bad = stat_get(BFD_STAT_AUTH_BAD);
+
+		build_sha1_auth(&f, "topsecret", 7, 101, BFD_AUTH_KEYED_SHA1);
+		f.b[f.len - 1] ^= 0xff;
+		v = run_frame(&f, NULL, NULL);
+		if (v != XDP_DROP || stat_get(BFD_STAT_AUTH_BAD) != bad + 1) {
+			printf("FAIL %-40s want DROP auth-bad+1, got %s auth-bad+%llu\n",
+			       name, v < 0 ? "syscall-error" : verdict_str(v),
+			       stat_get(BFD_STAT_AUTH_BAD) - bad);
+			fails++;
+		} else {
+			printf("ok   %-40s corrupt digest still refused\n", name);
+		}
+	}
+	map_reset();
 }
 
 static void case_auth_reject(const char *name, __u8 type, const char *key,
@@ -2360,6 +2444,7 @@ static void case_sweep_auth_resync(const char *name, unsigned long long silent_n
 	st.auth_rx_seq   = 12345;
 	cfg.min_rx_us    = 10000;
 	cfg.auth_type    = BFD_AUTH_KEYED_SHA1;
+	cfg.auth_present = 1;
 	cfg.demand_hold  = demand_hold;
 
 	bpf_map_delete_elem(sweep_sess_fd, &k);
@@ -2515,6 +2600,7 @@ static void run_sweep_matrix(void)
 	 * everything. */
 #define KS BFD_AUTH_KEYED_SHA1
 #define MS BFD_AUTH_METICULOUS_SHA1
+	case_auth_present_without_send_key();
 	case_auth_reject("auth-good-signature", KS, "topsecret", 7, 100, 0, 0, 1);
 	case_auth_reject("auth-wrong-key",      KS, "wrongkey!", 7, 100, 0, 0, 0);
 	case_auth_reject("auth-wrong-keyid",    KS, "topsecret", 9, 100, 0, 0, 0);

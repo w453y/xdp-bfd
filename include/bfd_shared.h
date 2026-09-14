@@ -351,14 +351,29 @@ struct tx_cfg {
 	                      * the configured minimum-ttl for multihop, so
 	                      * one comparison covers both. 0 means unset
 	                      * and is treated as 255. */
-	__u8  auth_type;     /* BFD_AUTH_*, 0 when the session has no key.
-	                      * The fast path needs this before it validates
-	                      * a header, because whether the A bit is
-	                      * acceptable is a property of the session
-	                      * rather than of the packet. */
+	__u8  auth_type;     /* BFD_AUTH_* of the key this session currently
+	                      * TRANSMITS under, 0 when it has none it may
+	                      * send with right now. Says what to build, not
+	                      * what to accept. */
 	__u8  auth_keyid;
 	__u8  auth_keylen;
-	__u8  auth_pad;
+	__u8  auth_present;  /* the session is meant to authenticate at all.
+	                      *
+	                      * Separate from auth_type because they differ
+	                      * exactly when it matters. A key chain whose
+	                      * send lifetimes have a gap, or whose keys have
+	                      * arrived before DP_SESSION_AUTH does, leaves a
+	                      * session that must authenticate with nothing
+	                      * to sign with: auth_type is 0 and auth_present
+	                      * is 1.
+	                      *
+	                      * Whether the A bit belongs on a received packet
+	                      * is this, never auth_type. Keying it off the
+	                      * send key makes the program refuse exactly the
+	                      * packets the accept set exists to take, and it
+	                      * refuses them in the driver, so userspace never
+	                      * sees what it would have accepted. The engine
+	                      * spells the same rule in rx_auth_ok. */
 	__u8  auth_kpad[64]; /* the key in one HMAC block, zero padded.
 	                      * Padded by the engine rather than in the
 	                      * program: filling a block from a runtime

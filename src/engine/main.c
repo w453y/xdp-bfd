@@ -550,14 +550,6 @@ int main(int argc, char **argv)
 		__u8 p_buf[BFD_MAX_LEN] = {0};
 		struct bfd_ctrl_pkt p;
 		struct sockaddr_in from;
-		struct iovec iov = { .iov_base = p_buf, .iov_len = sizeof(p_buf) };
-		char cbuf[CMSG_SPACE(sizeof(struct in_pktinfo)) +
-			  CMSG_SPACE(sizeof(int))];
-		struct msghdr mh = {
-			.msg_name = &from, .msg_namelen = sizeof(from),
-			.msg_iov = &iov, .msg_iovlen = 1,
-			.msg_control = cbuf, .msg_controllen = sizeof(cbuf),
-		};
 		/* Packets drained per socket per pass. Draining until EAGAIN
 		 * lets a sustained flood starve everything below it -
 		 * transmit, detection, the map poll, the dplane read - while
@@ -624,10 +616,6 @@ int main(int argc, char **argv)
 		 * this ever disagreed. Stating the invariant in code rather
 		 * than in prose costs one comparison per pass and lets the
 		 * analyser run as a gate with no findings to excuse. */
-		ssize_t n = (rd4 && rx_sock >= 0)
-				  ? recvmsg(rx_sock, &mh, MSG_DONTWAIT | MSG_TRUNC)
-				  : -1;
-		memcpy(&p, p_buf, sizeof(p));
 		uint64_t t = now_us();
 		loop_passes++;
 		{
@@ -641,41 +629,80 @@ int main(int argc, char **argv)
 			}
 			prev = t;
 		}
-		if (n >= 0)
-			loop_rx_wakeups++;
 
-		/* The same predicate the XDP path uses, so the two cannot
-		 * disagree about what is acceptable. */
-		/* cmsgs first: the arriving TTL decides whether the packet is
-		 * acceptable at all, so it is checked alongside the header
-		 * rather than after demux. rttl stays -1 when the cmsg is
-		 * missing, which drops the packet - that means the setsockopt
-		 * did not take, and accepting anything then is worse. */
-		uint32_t dst_ip = 0;
-		int rttl = -1;
+		/* Drained per pass like the other three sockets.
+		 *
+		 * This one took a single packet per pass, which the other
+		 * three were converted away from and this one was not. It is
+		 * the busiest socket in every deployment, and a pass is not
+		 * cheap: a batch map lookup plus a walk of all 64 sessions.
+		 * Correctness survived, because a backlog makes poll() return
+		 * at once and the loop comes round again, but each packet
+		 * then paid for a whole pass, so the drain rate was capped at
+		 * the loop rate and the per-packet cost was some sixty times
+		 * its siblings.
+		 *
+		 * loop_rx_wakeups still counts passes on which this socket
+		 * had something, not packets, so the histogram it feeds keeps
+		 * meaning what it meant.
+		 */
+		for (int d = 0; rd4 && rx_sock >= 0 && d < drain_budget; d++) {
+			struct iovec iov4 = { .iov_base = p_buf,
+					      .iov_len = sizeof(p_buf) };
+			char cbuf4[CMSG_SPACE(sizeof(struct in_pktinfo)) +
+				   CMSG_SPACE(sizeof(int))];
+			struct msghdr mh4 = {
+				.msg_name = &from, .msg_namelen = sizeof(from),
+				.msg_iov = &iov4, .msg_iovlen = 1,
+				.msg_control = cbuf4,
+				.msg_controllen = sizeof(cbuf4),
+			};
+			ssize_t n = recvmsg(rx_sock, &mh4,
+					    MSG_DONTWAIT | MSG_TRUNC);
 
-		if (n >= 0)
-			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh); c;
-			     c = CMSG_NXTHDR(&mh, c)) {
+			if (n < 0)
+				break;
+			if (!d)
+				loop_rx_wakeups++;
+			memcpy(&p, p_buf, sizeof(p));
+
+			/* The same predicate the XDP path uses, so the two
+			 * cannot disagree about what is acceptable. */
+			/* cmsgs first: the arriving TTL decides whether the
+			 * packet is acceptable at all, so it is checked
+			 * alongside the header rather than after demux. rttl
+			 * stays -1 when the cmsg is missing, which drops the
+			 * packet - that means the setsockopt did not take,
+			 * and accepting anything then is worse. */
+			uint32_t dst_ip = 0;
+			int rttl = -1;
+
+			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh4); c;
+			     c = CMSG_NXTHDR(&mh4, c)) {
 				if (c->cmsg_level == IPPROTO_IP &&
 				    c->cmsg_type == IP_PKTINFO)
 					dst_ip = ((struct in_pktinfo *)
 						  CMSG_DATA(c))->ipi_addr.s_addr;
 				if (c->cmsg_level == IPPROTO_IP &&
 				    c->cmsg_type == IP_TTL)
-					memcpy(&rttl, CMSG_DATA(c), sizeof(rttl));
+					memcpy(&rttl, CMSG_DATA(c),
+					       sizeof(rttl));
 			}
 
-		if (n >= 0 && rttl == 255 &&
-		    bfd_ctrl_check(p.vers_diag, p.flags, p.detect_mult, p.len,
-				   p.my_disc, (__u32)n,
-				   !!(p.flags & BFD_F_AUTH)) == BFD_CTRL_ACCEPT) {
+			if (rttl != 255 ||
+			    bfd_ctrl_check(p.vers_diag, p.flags, p.detect_mult,
+					   p.len, p.my_disc, (__u32)n,
+					   !!(p.flags & BFD_F_AUTH)) !=
+				    BFD_CTRL_ACCEPT)
+				continue;
+
 			/* Demux (RFC 5880 s6.8.6), the same rule XDP applies:
 			 * your_disc must name our session, or be zero with the
 			 * peer in Down or AdminDown - it has lost state, or is
-			 * starting. Falling back to the address pair on any miss
-			 * accepted packets naming a discriminator we never issued,
-			 * which is the divergence tests/netns_userspace.py found. */
+			 * starting. Falling back to the address pair on any
+			 * miss accepted packets naming a discriminator we
+			 * never issued, which is the divergence
+			 * tests/netns_userspace.py found. */
 			uint32_t ydisc = ntohl(p.your_disc);
 			struct session *rs = sess_by_wire(ydisc);
 

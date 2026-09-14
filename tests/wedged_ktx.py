@@ -44,7 +44,11 @@ import sweep_ladder as sl          # noqa: E402
 
 
 def peer_counters():
-    out = sl.peer_sh("sudo vtysh -c 'show bfd peers counters json'")
+    # sweep_ladder.VTYSH, not a bare name: the peer also carries a distro
+    # vtysh whose daemons are not running, and that one answers "failed to
+    # connect to any daemons", which the caller cannot tell from a mesh
+    # that is simply empty.
+    out = sl.peer_sh("sudo %s -c 'show bfd peers counters json'" % sl.VTYSH)
     return {(s["peer"], s["local"]): s for s in json.loads(out)}
 
 
@@ -110,14 +114,32 @@ def main():
     if rx_flat and not rx_moved:
         print("  peer sent nothing; the window measured nothing")
         return 1
-    if downs == 0:
-        print("  %d sessions stayed Up for %ds with userspace stopped,"
-              " while the peer kept receiving." % (rx_moved, args.seconds))
+
+    # Not "any down event at all". The mesh is two populations, and only
+    # one of them is under test: sessions the fast path carries, where
+    # XDP answers from softirq, and sessions it does not, which transmit
+    # from the loop and are SUPPOSED to go down the moment the loop
+    # stops. Counting a down event from the second population as a
+    # refutation reads the control group as the result - it reported
+    # "unfounded" off 4 userspace-TX sessions while 55 kernel-TX ones sat
+    # there being carried, which is the finding, not the noise.
+    #
+    # A carried session is one the peer kept hearing from with no down
+    # event. That it is non-empty is the whole claim.
+    if rx_moved:
+        print("  %d session(s) stayed Up for %ds with userspace stopped,"
+              " the peer still receiving." % (rx_moved, args.seconds))
         print("  Kernel-TX alone carried them: WEDGED-BUT-ALIVE IS REAL,")
         print("  and 88a1eef did not close it.")
+        if downs:
+            print("  (%d down event(s) among the %d the peer stopped"
+                  " hearing from - sessions the fast path does not carry"
+                  " transmit from the loop, so a stopped loop takes them"
+                  " down. That is the control arm working.)"
+                  % (downs, rx_flat))
     else:
-        print("  %d down event(s): kernel-TX did NOT carry the sessions"
-              " through a stopped userspace." % downs)
+        print("  no session was carried: kernel-TX did not answer for any"
+              " of the %d." % rx_flat)
         print("  The wedged-but-alive concern is unfounded on this path.")
     return 0
 

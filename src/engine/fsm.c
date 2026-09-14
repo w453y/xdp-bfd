@@ -193,7 +193,7 @@ void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 	}
 	switch (s->state) {
 	case ST_DOWN:
-		if (ps == ST_DOWN && !s->passive)
+		if (ps == ST_DOWN)
 			state_transition(s, ST_INIT, s->diag, t,
 					 "peer sent Down");
 		else if (ps == ST_INIT)
@@ -400,6 +400,26 @@ void fsm_tx(struct session *s, uint64_t t)
 	 * packet after the hold lifts is on time rather than immediate.
 	 * bfdd does the same in ptm_bfd_xmt_TO, restarting its transmit
 	 * timer and returning without sending. */
+	/* RFC 5880 s6.8.7: a system MUST NOT transmit while it is taking
+	 * the passive role and bfd.RemoteDiscr is zero. That is the whole
+	 * of what passive means - it does not begin the handshake - and
+	 * until the peer has been heard from there is nothing to address a
+	 * packet to: Your Discriminator would go out as zero.
+	 *
+	 * The gate was on the receive transition instead, which s6.8.6 has
+	 * no exception for, so a passive session refused to leave Down on
+	 * the peer's Down and transmitted into the silence it was supposed
+	 * to be keeping. It still converged, one round trip later, through
+	 * the peer's Init.
+	 *
+	 * Schedule keeps rolling, as with demand, so the first packet after
+	 * the peer appears is on time rather than immediate. */
+	if (s->passive && !s->rdisc) {
+		if (t >= s->next_tx_us)
+			tx_reschedule(s, t);
+		return;
+	}
+
 	if (demand_tx_held(s)) {
 		if (t >= s->next_tx_us)
 			tx_reschedule(s, t);

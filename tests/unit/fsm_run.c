@@ -210,21 +210,61 @@ static void run_table(void)
 
 /* A passive session does not start the handshake: it answers, but Down +
  * peer Down leaves it Down rather than moving to Init. */
+/* Passive gates transmission, not the state machine.
+ *
+ * RFC 5880 s6.8.7 says a passive system MUST NOT transmit while
+ * bfd.RemoteDiscr is zero: it does not begin the handshake, and it has no
+ * discriminator to address a packet to. s6.8.6 has no passive exception
+ * at all, so once a packet does arrive the transition runs like any
+ * other.
+ *
+ * The old arrangement had these the wrong way round. It transmitted into
+ * the silence it was meant to be keeping, and refused Down to Init on the
+ * peer's Down, which still converged through the peer's Init a round trip
+ * later, so nothing looked broken from outside.
+ */
 static void case_passive(void)
 {
-	struct session *s;
 	struct bfd_ctrl_pkt p = pkt(ST_DOWN, 0);
+	struct session *s;
+	int bad = 0;
 
 	s = sess_init(ST_DOWN);
 	s->passive = 1;
-	fsm_rx(s, &p, 2000000);
+	s->rdisc = 0;
+	s->last_rx_us = 0;
+	s->next_tx_us = 0;
 
-	if (s->state != ST_DOWN) {
-		printf("     passive session moved to %s\n", st_name(s->state));
-		printf("FAIL %-44s\n", "passive-down+down-stays-down");
+	/* Nothing heard from the peer: silent. */
+	fsm_tx(s, 2000000);
+	if (s->tx_pkts) {
+		printf("     passive transmitted %llu before hearing a peer\n",
+		       (unsigned long long)s->tx_pkts);
+		bad = 1;
+	}
+
+	/* The peer speaks first, as passive requires. */
+	fsm_rx(s, &p, 2000000);
+	if (s->state != ST_INIT) {
+		printf("     passive stayed %s on the peer's Down, want Init\n",
+		       st_name(s->state));
+		bad = 1;
+	}
+
+	/* Now it has a discriminator to answer, so it may transmit. */
+	s->next_tx_us = 0;
+	fsm_tx(s, 2100000);
+	if (!s->tx_pkts) {
+		printf("     passive still silent after the peer was heard\n");
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL %-44s\n", "passive-silent-then-init");
 		fails++;
 	} else {
-		printf("ok   %-44s Down\n", "passive-down+down-stays-down");
+		printf("ok   %-44s silent, then Init\n",
+		       "passive-silent-then-init");
 	}
 }
 

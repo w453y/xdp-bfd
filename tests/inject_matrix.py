@@ -238,6 +238,7 @@ def sessions():
             "my_disc": e["value"]["my_disc"],
             "min_ttl": e["value"].get("min_ttl", 255),
             "enable": e["value"]["enable"],
+            "auth_type": e["value"].get("auth_type", 0),
         })
     return out
 
@@ -252,14 +253,20 @@ def pick(sess):
         # Poll/Final pair above all - reads zero. Which session the map
         # hands back first is not stable between runs, so without this the
         # suite passes or fails depending on iteration order.
+        #
+        # Authenticated sessions are skipped for the same reason. Every
+        # frame this file builds is unauthenticated, which is exactly
+        # what such a session must discard (RFC 5880 s6.8.6), so picking
+        # one turns the whole matrix red - and only on the runs where the
+        # map happened to hand it back first.
         if (s["family"] == 4 and s["min_ttl"] == 255 and s["enable"]
-                and "v4" not in got):
+                and not s["auth_type"] and "v4" not in got):
             got["v4"] = s
         if (s["family"] == 6 and s["min_ttl"] == 255 and s["enable"]
-                and "v6" not in got):
+                and not s["auth_type"] and "v6" not in got):
             got["v6"] = s
         if (s["family"] == 4 and s["min_ttl"] < 255 and s["enable"]
-                and "mh4" not in got):
+                and not s["auth_type"] and "mh4" not in got):
             got["mh4"] = s
         # A configured peer nothing answers on: enable stays 0, so the
         # TX bounce never fires and its rx_pkts moves only when we
@@ -273,7 +280,7 @@ def pick(sess):
                 and "phantom6" not in got):
             got["phantom6"] = s
         if (s["family"] == 6 and s["min_ttl"] < 255 and s["enable"]
-                and "mh6" not in got):
+                and not s["auth_type"] and "mh6" not in got):
             got["mh6"] = s
     return got
 
@@ -315,9 +322,15 @@ MALFORMED = (
 # Well-formed headers carrying a flag we cannot honour. Unlike the
 # malformed set these DROP rather than PASS: passing one hands it to a
 # userspace path that would accept it as plain unauthenticated BFD.
+# The counter differs: the M bit is a flag nothing can honour, while the
+# A bit is refused because this session has no key - a fact about the
+# session, not the packet, and worth telling apart when reading counters
+# on a box where some sessions do authenticate.
 UNSUPPORTED = (
-    ("auth-bit", "the A bit with no authentication configured", 0x04),
-    ("mp-bit", "the M bit is reserved for multipoint", 0x01),
+    ("auth-bit", "the A bit with no authentication configured", 0x04,
+     "auth-mismatch"),
+    ("mp-bit", "the M bit is reserved for multipoint", 0x01,
+     "unsupported-flags"),
 )
 
 
@@ -326,7 +339,7 @@ def unsupported_cases(sess, fam):
     malformed_cases: the check sits after the family branch, so running
     both exercises each parse path into it."""
     out = []
-    for cname, cdesc, fl in UNSUPPORTED:
+    for cname, cdesc, fl, counter in UNSUPPORTED:
         # ydisc naming no session, peer state Up: on a build WITHOUT the
         # flag check this is rejected by the demux (slot 3) instead of
         # reaching the session state update. That matters for the
@@ -336,8 +349,7 @@ def unsupported_cases(sess, fam):
         spec = dict(family=fam, src=sess["peer"], dst=sess["local"],
                     ttl=255, dport=3784, ydisc=0x11111111, state=3,
                     flags=fl)
-        out.append(("%s-v%d" % (cname, fam), cdesc, spec,
-                    "unsupported-flags", COUNT))
+        out.append(("%s-v%d" % (cname, fam), cdesc, spec, counter, COUNT))
     return out
 
 

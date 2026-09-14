@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Graceful restart check for --dp-hold.
 
---dp-hold does not survive an engine restart; it survives the bffdp
+--dp-hold does not survive an engine restart; it survives the bfddp
 connection dropping. When bfdd goes away the engine orphans its wire
 sessions and keeps transmitting for the hold window instead of tearing
 them down, so a control-plane restart is invisible to the neighbour.

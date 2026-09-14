@@ -23,7 +23,7 @@
 #include <bpf/bpf.h>
 
 #include "bfd_shared.h"
-#include "bffdp.h"
+#include "bfddp.h"
 #include "util.h"
 #include "log.h"
 #include "session.h"
@@ -205,7 +205,8 @@ void dp_notify_state(struct session *s)
 
 /* ---------- dplane socket: inbound handlers ---------- */
 static void dp_handle_add(const struct bfddp_message_header *h,
-			  const struct bfddp_session_msg *sm, uint64_t t)
+			  const struct bfddp_session_msg *sm, uint64_t t,
+			  size_t plen)
 {
 	uint32_t flags = ntohl(sm->flags);
 	uint32_t lid   = ntohl(sm->lid);
@@ -279,6 +280,39 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	s->min_ttl     = sm->ttl ? sm->ttl : 255;
 	s->is_mhop     = !!(flags & SESSION_MULTIHOP);
 	s->demand      = !!(flags & SESSION_DEMAND);
+
+	/* Authentication (RFC 5880 s6.7). bfdd sends the key itself,
+	 * because a data plane that transmits is the thing that has to
+	 * authenticate.
+	 *
+	 * A key that does not fit the digest leaves the session
+	 * unauthenticated rather than half-configured: the alternative is
+	 * a session that believes it is authenticating and fails every
+	 * packet, which reads exactly like a mismatched key on the peer.
+	 * The sequence number starts somewhere unpredictable, which
+	 * s6.7.3 asks for and which costs nothing here.
+	 */
+	{
+		int authed = !!(flags & SESSION_AUTH);
+
+		/* The flag says whether the session authenticates at all.
+		 * The keys arrive separately, so it clearing is how the
+		 * control plane withdraws them: holding on to them would
+		 * keep authenticating a session no longer meant to. */
+		if (!authed && s->auth_present) {
+			memset(s->auth_keys, 0, sizeof(s->auth_keys));
+			s->auth_nkeys = 0;
+		}
+		if (authed != s->auth_present) {
+			s->auth_present = (uint8_t)authed;
+			s->auth_tx_seq = (uint32_t)random();
+			s->auth_rx_seq = 0;
+			s->auth_rx_seen = 0;
+			s->auth_seeded = 0;
+		}
+		session_auth_evaluate(s, (int64_t)time(NULL));
+	}
+
 	ktx_update_mhop_flag();
 
 	/* The fast path is attached to one interface. A single-hop session
@@ -480,6 +514,65 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h,
 	dp_send(&m, sizeof(m));
 }
 
+/* Take the session's authentication keys.
+ *
+ * Every key the chain holds arrives, with the periods that say when each
+ * may be used, and choosing between them is this side's job. A key chain
+ * rolls over on a clock, so a control plane that named the key of the
+ * moment would have to keep telling us, which is the traffic that
+ * delegating the session was meant to avoid.
+ */
+static void dp_session_auth(const struct bfddp_session_auth *sa, size_t plen)
+{
+	uint32_t lid = ntohl(sa->lid);
+	uint16_t count = ntohs(sa->key_count);
+	struct session *s = sess_by_lid(lid);
+	unsigned i, kept = 0;
+
+	if (!s)
+		return;
+
+	/* The message is only as long as the keys it carries. */
+	if (count > BFDDP_AUTH_KEY_COUNT_MAX ||
+	    plen < BFDDP_SESSION_AUTH_MIN + (size_t)count * sizeof(sa->keys[0])) {
+		log_err("dplane: lid=%u malformed authentication message, %u keys in %zu bytes\n",
+			lid, count, plen);
+		return;
+	}
+
+	memset(s->auth_keys, 0, sizeof(s->auth_keys));
+
+	for (i = 0; i < count; i++) {
+		const struct bfddp_auth_key *k = &sa->keys[i];
+		struct auth_key *dst = &s->auth_keys[kept];
+		uint8_t kl = k->key_len;
+
+		/* A key too long for the digest is dropped rather than
+		 * truncated: a truncated key authenticates nothing and
+		 * fails every packet, which reads like a mismatch on the
+		 * peer. */
+		if (kl == 0 || kl > sizeof(dst->kpad)) {
+			log_err("dplane: lid=%u key id %u has an unusable length %u, ignored\n",
+				lid, k->key_id, kl);
+			continue;
+		}
+
+		dst->type = k->type;
+		dst->key_id = k->key_id;
+		dst->keylen = kl;
+		memcpy(dst->kpad, k->key, kl);
+		dst->send_start = (int64_t)be64toh((uint64_t)k->send.start);
+		dst->send_end = (int64_t)be64toh((uint64_t)k->send.end);
+		dst->accept_start = (int64_t)be64toh((uint64_t)k->accept.start);
+		dst->accept_end = (int64_t)be64toh((uint64_t)k->accept.end);
+		kept++;
+	}
+
+	s->auth_nkeys = (uint8_t)kept;
+	if (session_auth_evaluate(s, (int64_t)time(NULL)))
+		ktx_mirror(s);
+}
+
 static void dp_process(const uint8_t *buf, size_t len)
 {
 	const struct bfddp_message_header *h = (const void *)buf;
@@ -489,12 +582,16 @@ static void dp_process(const uint8_t *buf, size_t len)
 	uint64_t t = now_us();
 
 	switch (type) {
+	case DP_SESSION_AUTH:
+		if (plen >= BFDDP_SESSION_AUTH_MIN)
+			dp_session_auth((const void *)payload, plen);
+		break;
 	case DP_ADD_SESSION:
-		if (plen >= sizeof(struct bfddp_session_msg))
-			dp_handle_add(h, (const void *)payload, t);
+		if (plen >= BFDDP_SESSION_MSG_MIN)
+			dp_handle_add(h, (const void *)payload, t, plen);
 		break;
 	case DP_DELETE_SESSION:
-		if (plen >= sizeof(struct bfddp_session_msg))
+		if (plen >= BFDDP_SESSION_MSG_MIN)
 			dp_handle_delete((const void *)payload);
 		break;
 	case ECHO_REQUEST:

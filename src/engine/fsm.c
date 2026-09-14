@@ -18,6 +18,7 @@
 #include <netinet/in.h>
 
 #include "bfd_shared.h"
+#include "bfd_auth.h"
 #include "util.h"
 #include "log.h"
 #include "session.h"
@@ -211,6 +212,36 @@ void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 
 void fsm_detect(struct session *s, uint64_t t)
 {
+	/* RFC 5880 s6.7: bfd.AuthSeqKnown is cleared after twice the
+	 * detection time without a packet, so that a peer which restarts
+	 * with a fresh random sequence can resynchronise.
+	 *
+	 * Without it a restart is a coin toss. The peer comes back with a
+	 * new random sequence, and if it lands below the watermark this
+	 * session rejects every packet it will ever send - the session
+	 * stays Down for good while every unauthenticated one beside it
+	 * recovers. Observed on the mesh: a peer restart left two of eight
+	 * authenticated sessions stuck.
+	 *
+	 * Ahead of the early returns below because a Down session is
+	 * exactly the one that needs this, and clearing the local copy is
+	 * not enough - auth_seeded going back to zero is what makes the
+	 * mirror hand the cleared window to the fast path when the session
+	 * next comes up.
+	 */
+	if (s->auth_type && s->auth_rx_seen && s->last_rx_us) {
+		uint64_t iv = s->detect_iv_us ? s->detect_iv_us
+			    : (s->r_min_tx > s->min_rx_us ? s->r_min_tx
+							  : s->min_rx_us);
+		uint8_t mult = s->r_mult ? s->r_mult : s->detect_mult;
+
+		if (iv && t - s->last_rx_us > 2ull * mult * iv) {
+			s->auth_rx_seen = 0;
+			s->auth_rx_seq = 0;
+			s->auth_seeded = 0;
+		}
+	}
+
 	if (s->state == ST_DOWN || s->state == ST_ADMINDOWN || !s->last_rx_us)
 		return;
 	/* We asked this peer to stop transmitting, so the gap since its
@@ -239,7 +270,9 @@ void fsm_detect(struct session *s, uint64_t t)
  * re-deriving any of the pacing logic that precedes it there. */
 static void tx_one(struct session *s)
 {
+	__u8 buf[BFD_MAX_LEN] = {0};
 	struct bfd_ctrl_pkt o = {0};
+	unsigned olen = BFD_MIN_LEN;
 	o.vers_diag   = (1 << 5) | (s->diag & 0x1f);
 	o.flags       = (s->state << 6) |
 		      (s->send_final ? F_F : (s->polling ? F_P : 0));
@@ -257,6 +290,31 @@ static void tx_one(struct session *s)
 	o.min_rx      = htonl(s->min_rx_us);
 	o.min_echo_rx = htonl(s->min_echo_rx_us);
 
+	/* RFC 5880 s6.7. The sequence number advances per packet, as bfdd
+	 * does it for both the plain and meticulous forms; only the
+	 * receiver treats the two differently.
+	 *
+	 * A session that cannot build its section sends nothing at all. An
+	 * unauthenticated packet on an authenticated session is not a
+	 * degraded packet, it is the one thing the peer must reject. */
+	if (s->auth_type) {
+		o.flags |= BFD_F_AUTH;
+		o.len = bfd_auth_pkt_len(s->auth_type, s->auth_keylen);
+		memcpy(buf, &o, BFD_MIN_LEN);
+		olen = bfd_auth_build(buf, s->auth_type, s->auth_keyid,
+				      s->auth_key, s->auth_keylen,
+				      s->auth_kpad, ++s->auth_tx_seq);
+		if (!olen) {
+			log_err("lid=%u cannot build its authentication section; nothing sent\n",
+				s->lid);
+			s->send_final = 0;
+			s->just_up = 0;
+			return;
+		}
+	} else {
+		memcpy(buf, &o, BFD_MIN_LEN);
+	}
+
 	int txfd = slot_sock((int)(s - sessions), s);
 	if (txfd < 0)
 		txfd = s->family == AF_INET6 ? tx6_sock : tx_sock;
@@ -264,12 +322,12 @@ static void tx_one(struct session *s)
 		struct sockaddr_in6 dst = { .sin6_family = AF_INET6,
 			.sin6_port = htons(s->is_mhop ? BFD_PORT_MHOP : PORT_CTRL) };
 		memcpy(&dst.sin6_addr, s->peer.b, 16);
-		sendto(txfd, &o, 24, 0, (void *)&dst, sizeof(dst));
+		sendto(txfd, buf, olen, 0, (void *)&dst, sizeof(dst));
 	} else {
 		struct sockaddr_in dst = { .sin_family = AF_INET,
 			.sin_port = htons(s->is_mhop ? BFD_PORT_MHOP : PORT_CTRL) };
 		memcpy(&dst.sin_addr.s_addr, &s->peer.b[12], 4);
-		sendto(txfd, &o, 24, 0, (void *)&dst, sizeof(dst));
+		sendto(txfd, buf, olen, 0, (void *)&dst, sizeof(dst));
 	}
 	s->tx_pkts++;
 	s->send_final = 0;
@@ -358,7 +416,7 @@ void fsm_tx(struct session *s, uint64_t t)
 	}
 
 	int due = (t >= s->next_tx_us) || s->send_final;
-	if (use_ktx && !s->ktx_uncovered && s->state == ST_UP &&
+	if (use_ktx && !s->ktx_uncovered && ktx_answers(s) &&
 	    !s->send_final && !s->just_up && !demand_announce_due(s)) {
 		/* Kernel echo covers TX only at the peer's pace. If the
 		 * peer paces slower than our required rate (its detect

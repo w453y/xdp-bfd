@@ -26,7 +26,7 @@ an implementation.
 | `your_disc` demux validation (s6.8.6) | implemented |
 | FRR distributed-BFD data plane (bfddp) | implemented, stock FRR, no patches |
 | Graceful control-plane restart (`--dp-hold`) | implemented |
-| Authentication (s6.7) | not implemented |
+| Authentication (s6.7), simple password and keyed SHA1 | implemented in the fast path; needs the bfddp key extension |
 | Concurrent sessions | 64, architectural cap |
 
 ## Build
@@ -77,6 +77,11 @@ Deployment notes:
 - **Echo mode needs the neighbour to forward.** An echo packet is
   self-addressed, so the far end loops it back only with forwarding
   enabled for that family.
+- **A keychain key needs its algorithm set explicitly.** A key defaults
+  to no algorithm, and bfdd only selects one that is `cleartext` or
+  `hmac-sha-1`. Configuring `key-string` alone leaves the session
+  unauthenticated while `show bfd peer` still reports authentication
+  configured, which is a quiet way to believe a link is protected.
 
 Several bfdd fixes this work depended on are upstream; packaged releases
 up to 10.5.1 predate some of them. On those, prefer the TCP transport
@@ -87,7 +92,7 @@ peers add them via vtysh after the data plane connects rather than from
 ## Testing
 
 ```
-make check          # ABI pins, FSM table, bffdp parser, XDP program
+make check          # ABI pins, FSM table, bfddp parser, XDP program
 sudo make check-netns   # end-to-end on veth and network namespaces
 sudo make check-frr     # scenarios against stock FRR bfdd in containers
 ```
@@ -100,13 +105,43 @@ host against a live mesh.
 
 ## Limitations
 
-**No authentication (RFC 5880 s6.7).**
+**Authentication needs a data plane channel FRR does not have yet.** The
+key has to reach whatever transmits, and bfdd's `bfddp_session_msg` has
+no field for it — upstream it is a `/* TODO: missing authentication. */`.
+There is no guard either, so stock bfdd will offload an authenticated
+session and then send it unauthenticated while `show bfd peer` reports
+authentication enabled. This engine fails closed against that: it drops
+packets whose A bit disagrees with the session, so such a session simply
+never comes up. Running authenticated sessions needs the bfddp extension
+that carries the key; without it, keep authenticated sessions off the
+data plane.
+
+**The keyed-SHA1 digest follows bfdd, not RFC 5880 s6.7.4.** The RFC
+computes a plain SHA1 over the packet with the shared key placed in the
+Auth Key/Hash field; bfdd zeroes that field and computes an HMAC. The
+two do not interoperate, and bfdd is the control plane on one side of
+every session here, so this follows bfdd. Against a conformant
+third-party implementation it will not authenticate.
+
+**Keyed MD5 (types 2 and 3) is not implemented,** because bfdd cannot
+produce it: no keychain algorithm maps onto those types, so nothing ever
+sends one.
 
 **Demand mode does not poll on its own (s6.6).** The mode is implemented,
 but nothing periodically initiates the Poll Sequence that would verify an
 idle path — matching stock bfdd, which reaches `bfd_set_polling` only from
 a parameter change. Demand at both ends without echo can therefore leave a
 failure undetected.
+
+That extends to authentication, which is worth stating plainly because it
+is not obvious. A session demanding at both ends exchanges nothing, so it
+notices nothing — including that the key has changed. Changing the key on
+one end of a live mesh here took down every authenticated session except
+the demanding one, which stayed Up because neither side was transmitting
+and its detection was held. Authentication protects the packets a session
+sends; it cannot protect a session that has agreed to stop sending. Pair
+demand with echo, or with a poll from a parameter change, if the session
+needs to notice anything at all.
 
 **64 concurrent sessions.** Tied to the per-slot source port range
 65472-65535, with one `bfd_tx` instance owning that range per host.

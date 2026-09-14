@@ -122,7 +122,7 @@ def xdp_progs(ns, dev):
 # GitHub runners ship docker, this DUT has podman.
 RUNTIME = os.environ.get("BFD_CONTAINER_RUNTIME", "podman")
 FRR_IMAGE = os.environ.get("BFD_FRR_IMAGE", "quay.io/frrouting/frr:10.4.2")
-NAME_A = "bfdrig-frr-a"          # engine's control plane, talks bffdp
+NAME_A = "bfdrig-frr-a"          # engine's control plane, talks bfddp
 NAME_B = "bfdrig-frr-b"          # the wire peer, plain stock bfdd
 
 # The image ships /etc/frr/daemons with bfdd=no and nothing else in

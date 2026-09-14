@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * dp_fuzz.c - libFuzzer target for the bffdp parser.
+ * dp_fuzz.c - libFuzzer target for the bfddp parser.
  *
  * dp_run.c covers the edges a person can enumerate. This targets what
  * nobody does: a header claiming one type with another type's payload
@@ -24,7 +24,7 @@
 
 #include "session.h"
 #include "dplane.h"
-#include "bffdp.h"
+#include "bfddp.h"
 #include "log.h"
 
 /* Same stub group dp_run uses, plus the three dplane.c references that

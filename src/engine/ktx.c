@@ -7,6 +7,7 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <stdint.h>
 #include <unistd.h>
 #include <errno.h>
@@ -285,12 +286,14 @@ void ktx_mirror(struct session *s)
 	 * userspace instead, which still answers a Poll with a Final and
 	 * stays silent otherwise. Polls are rare and the session is idle by
 	 * construction, so the slow path is the right place for them. */
-	int held = demand_tx_held(s);
 	struct tx_cfg c = {
 		.echo_iv_us = s->echo_tx_us,
 		.min_echo_rx_us = s->min_echo_rx_us,
 		.min_ttl   = s->min_ttl,
-		.enable    = (s->state == ST_UP && !held),
+		.auth_type = auth_fast_capable(s) ? s->auth_type : 0,
+		.auth_keyid = s->auth_keyid,
+		.auth_keylen = s->auth_keylen,
+		.enable    = ktx_answers(s),
 		.demand      = demand_bit_out(s),
 		.demand_hold = demand_detect_held(s),
 		.my_disc   = s->wire_disc,
@@ -304,8 +307,59 @@ void ktx_mirror(struct session *s)
 		.poll      = (s->polling && s->state == ST_UP) ? 1 : 0,
 		.poll_seq  = s->poll_seq,
 	};
+	memcpy(c.auth_kpad, s->auth_kpad, sizeof(c.auth_kpad));
+
+	/* Leave the program every key a packet may currently be signed
+	 * with, not just the one we transmit under. The lifetimes are
+	 * evaluated here because the program has no clock: it can compare
+	 * a key id, it cannot decide whether a period has passed. */
+	{
+		int64_t now = (int64_t)time(NULL);
+		unsigned i;
+
+		for (i = 0; i < s->auth_nkeys && c.auth_nkeys < BFD_AUTH_ACCEPT_MAX;
+		     i++) {
+			const struct auth_key *k = &s->auth_keys[i];
+
+			if (!s->auth_present || !auth_key_acceptable(k, now))
+				continue;
+
+			c.auth_accept[c.auth_nkeys].type = k->type;
+			c.auth_accept[c.auth_nkeys].key_id = k->key_id;
+			c.auth_accept[c.auth_nkeys].keylen = k->keylen;
+			memcpy(c.auth_accept[c.auth_nkeys].kpad, k->kpad,
+			       sizeof(c.auth_accept[0].kpad));
+			c.auth_nkeys++;
+		}
+	}
+
 	if (s->pushed_valid && !memcmp(&c, &s->pushed_cfg, sizeof(c)))
 		return;
+
+	/* Hand the transmit sequence over before the program is told to
+	 * answer, never after. The kernel owns it from that moment - two
+	 * writers would hand the peer a sequence that goes backwards, and
+	 * a meticulous peer rejects everything after that until the
+	 * session resets. Ordering is what makes this safe rather than a
+	 * lock: enable is still 0 in the map, so nothing is transmitting
+	 * from the fast path while the value is written.
+	 *
+	 * Read-modify-write because the rest of session_state is the
+	 * kernel's and must survive. */
+	if (c.enable && s->auth_type && !s->auth_seeded) {
+		struct session_key sk = {};
+		struct session_state ms;
+
+		sk.peer = s->peer;
+		sk.local = s->local;
+		if (!bpf_map_lookup_elem(sess_fd, &sk, &ms)) {
+			ms.auth_tx_seq = s->auth_tx_seq;
+			ms.auth_rx_seq = s->auth_rx_seq;
+			ms.auth_rx_seen = s->auth_rx_seen;
+			if (!bpf_map_update_elem(sess_fd, &sk, &ms, 0))
+				s->auth_seeded = 1;
+		}
+	}
 	struct session_key k = {};
 	k.peer  = s->peer;
 	k.local = s->local;
@@ -406,6 +460,29 @@ void ktx_poll_map(struct session *s, uint64_t t)
 		s->r_state = ms.remote_state;
 	if (ms.detect_iv_us)
 		s->detect_iv_us = ms.detect_iv_us;
+	/* Sequence numbers belong to whichever plane is handling the
+	 * session, and are only ever read back from the one that is.
+	 *
+	 * The transmit sequence always comes back: the fast path has been
+	 * emitting under this key, so ours is behind, and the first packet
+	 * userspace sends after taking over must not repeat one the peer
+	 * has already seen.
+	 *
+	 * The receive window only comes back while the fast path is still
+	 * answering. Once it is not, userspace owns that window - and it
+	 * has to, because the resync in fsm_detect clears it after the peer
+	 * goes quiet, and pulling the kernel's stale copy back in on the
+	 * very next pass would undo that every time. A peer that restarted
+	 * would then never be believed again.
+	 */
+	if (s->auth_type) {
+		if (ms.auth_tx_seq > s->auth_tx_seq)
+			s->auth_tx_seq = ms.auth_tx_seq;
+		if (ktx_answers(s) && ms.auth_rx_seen) {
+			s->auth_rx_seq = ms.auth_rx_seq;
+			s->auth_rx_seen = 1;
+		}
+	}
 	if (ms.mac_valid) {
 		memcpy(s->peer_mac, ms.peer_mac, 6);
 		s->mac_valid = 1;

@@ -12,7 +12,7 @@
 #include <netinet/in.h>
 
 #include "bfd_shared.h"
-#include "bffdp.h"
+#include "bfddp.h"
 
 #define PORT_CTRL    BFD_PORT_1HOP
 #define SRC_PORT     BFD_SRC_PORT
@@ -24,6 +24,47 @@
 
 
 /* ---------- session ---------- */
+/* One key as the control plane sent it.
+ *
+ * `send` says when it may be used to sign, `accept` when a packet signed
+ * with it may still be believed. The two overlap during a rollover so a
+ * packet already in flight is not refused, which is why both travel. */
+struct auth_key {
+	uint8_t  type;
+	uint8_t  key_id;
+	uint8_t  keylen;
+	uint8_t  kpad[64];
+	int64_t  send_start;
+	int64_t  send_end;
+	int64_t  accept_start;
+	int64_t  accept_end;
+};
+
+/* Is `now` inside the period?
+ *
+ * A start of zero means the key has always been valid and an end of -1
+ * that it never expires, which is how bfdd's key chain spells a key
+ * configured without lifetimes. Both sentinels have to be honoured or a
+ * key configured the simple way is never usable. */
+static inline int auth_within(int64_t start, int64_t end, int64_t now)
+{
+	if (start == 0)
+		return 1;
+	if (start > now)
+		return 0;
+	return end == -1 || end >= now;
+}
+
+static inline int auth_key_sendable(const struct auth_key *k, int64_t now)
+{
+	return auth_within(k->send_start, k->send_end, now);
+}
+
+static inline int auth_key_acceptable(const struct auth_key *k, int64_t now)
+{
+	return auth_within(k->accept_start, k->accept_end, now);
+}
+
 struct session {
 	int      used;
 	uint32_t lid;
@@ -93,6 +134,40 @@ struct session {
 	uint8_t  demand_announced;    /* D bits actually put on the wire
 	                               * since entering Up; see
 	                               * demand_announce_due */
+	/* Authentication (RFC 5880 s6.7).
+	 *
+	 * The keys arrive in a DP_SESSION_AUTH with the periods in which
+	 * each may be used, and this side decides which applies. The
+	 * control plane cannot: it does not see the packets, and a key
+	 * chain rolls over on a clock rather than on a configuration
+	 * change. */
+	uint8_t  auth_present;        /* the session is meant to authenticate */
+	uint8_t  auth_nkeys;
+	struct auth_key auth_keys[BFDDP_AUTH_KEY_COUNT_MAX];
+	int64_t  auth_next_change;    /* soonest a lifetime boundary passes,
+	                               * 0 when none of them ever will */
+
+	/* The key in use for transmission, chosen from the set above and
+	 * refreshed as the periods pass. Zero type means nothing may be
+	 * sent, which for a session that is meant to authenticate means
+	 * sending nothing at all. */
+	uint8_t  auth_type;           /* BFD_AUTH_*, 0 = unauthenticated */
+	uint8_t  auth_keyid;
+	uint8_t  auth_keylen;
+	uint8_t  auth_key[BFDDP_AUTH_KEY_MAX];
+	uint8_t  auth_kpad[64];       /* the key in one SHA1 block, zero
+	                               * padded, which is what the digest
+	                               * takes and what the fast path
+	                               * mirrors */
+	uint8_t  auth_seeded;         /* the kernel's transmit sequence has
+	                               * been handed over; see ktx_mirror */
+	uint32_t auth_tx_seq;         /* ours, incremented per transmission.
+	                               * Random at session start: RFC 5880
+	                               * s6.7.3 wants it unpredictable */
+	uint32_t auth_rx_seq;         /* highest accepted from the peer */
+	int      auth_rx_seen;        /* whether auth_rx_seq means anything
+	                               * yet - the first authenticated packet
+	                               * has nothing to be compared against */
 	uint8_t  iface_warned;        /* once per session, not once per ADD:
 	                               * bfdd re-sends one on every config
 	                               * touch */
@@ -179,9 +254,46 @@ static inline int demand_detect_held(const struct session *s)
 	       !s->polling;
 }
 
+/* Whether the fast path answers for this session.
+ *
+ * This is exactly what ktx_mirror pushes as tx_cfg.enable, and fsm_tx
+ * has to ask the same question before it goes quiet: userspace stays
+ * silent only because the kernel is about to reply, so a session the
+ * kernel will not answer for has to keep transmitting from here. Two
+ * spellings of it means one of them holds its tongue waiting for a
+ * bounce that is never coming, and the session flaps at the peer's
+ * detection time.
+ *
+ * Authenticated sessions are excluded because the program cannot build
+ * an authentication section yet; demand-held ones because they are
+ * meant to be silent.
+ */
+/* Which authentication the fast path can carry: all of it. Which
+ * sessions keep RX-clocked TX should not depend on which authentication
+ * an operator configured - that is the property this engine exists to
+ * provide, and it would be a strange one to withdraw from the sessions
+ * that asked to be protected.
+ *
+ * Must agree with the program's xdp_auth_fast.
+ */
+static inline int auth_fast_capable(const struct session *s)
+{
+	return !s->auth_type || s->auth_type == BFD_AUTH_SIMPLE ||
+	       s->auth_type == BFD_AUTH_KEYED_SHA1 ||
+	       s->auth_type == BFD_AUTH_METICULOUS_SHA1;
+}
+
+static inline int ktx_answers(const struct session *s)
+{
+	return s->state == ST_UP && auth_fast_capable(s) && !demand_tx_held(s);
+}
+
 extern struct session sessions[MAX_SESSIONS];
 
 struct session *sess_alloc(void);
+int session_auth_evaluate(struct session *s, int64_t now);
+const struct auth_key *session_auth_key_for(const struct session *s,
+					    uint8_t key_id, int64_t now);
 struct session *sess_by_lid(uint32_t lid);
 struct session *sess_by_wire(uint32_t disc);
 void sm_addrs(const struct bfddp_session_msg *sm,

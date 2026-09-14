@@ -33,6 +33,7 @@
 #include <linux/if_link.h>
 
 #include "bfd_shared.h"
+#include "bfd_auth.h"
 #include "util.h"
 #include "log.h"
 #include "session.h"
@@ -48,7 +49,7 @@
 
 
 
-#include "bffdp.h"
+#include "bfddp.h"
 
 
 /* ---------- globals ---------- */
@@ -62,6 +63,60 @@ static int tick_fd = -1;
 
 
 
+
+/* The half of acceptance that needs the session.
+ *
+ * bfd_ctrl_check settles everything a packet can be judged on alone, but
+ * whether the A bit belongs there is a property of the session, and the
+ * session is not known until the demux has run. So the rule from RFC
+ * 5880 s6.8.6 is enforced here instead: an authenticated packet on a
+ * session with no key is discarded, and so is a bare packet on a session
+ * that has one. The second is the one an attacker would reach for.
+ *
+ * `len` is the packet's own length field, already checked against what
+ * actually arrived, because that is the span the digest covers.
+ */
+static int rx_auth_ok(struct session *s, const __u8 *buf, __u8 len)
+{
+	const struct bfd_ctrl_pkt *h = (const struct bfd_ctrl_pkt *)buf;
+	const struct auth_key *k;
+	int v;
+
+	/* Whether the session authenticates is a property of the session,
+	 * not of whichever key happens to be usable now: a session with no
+	 * key it may currently send under still expects authenticated
+	 * packets, and must not silently accept bare ones. */
+	if (!!(h->flags & BFD_F_AUTH) != !!s->auth_present)
+		return 0;
+	if (!s->auth_present)
+		return 1;
+
+	if (len < BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR)
+		return 0;
+
+	/* The peer names the key it signed with, and any key still inside
+	 * its accept period is a valid answer. Comparing against the key we
+	 * transmit under instead would refuse the peer for the whole of a
+	 * rollover, which is the breakage the accept period exists to
+	 * prevent. */
+	k = session_auth_key_for(s, buf[BFD_MIN_LEN + 2], (int64_t)time(NULL));
+	if (!k) {
+		log_debug("lid=%u no key %u is currently accepted\n", s->lid,
+			  buf[BFD_MIN_LEN + 2]);
+		return 0;
+	}
+
+	v = bfd_auth_check(buf, len, k->type, k->key_id,
+			   k->kpad, k->keylen, k->kpad,
+			   &s->auth_rx_seq, &s->auth_rx_seen,
+			   h->detect_mult);
+	if (v != BFD_AUTH_OK) {
+		log_debug("lid=%u authentication rejected a packet (%d)\n",
+			  s->lid, v);
+		return 0;
+	}
+	return 1;
+}
 
 /* ---------- main ---------- */
 /* Main loop tick in microseconds: the interval of the timerfd the
@@ -83,6 +138,42 @@ uint64_t loop_rx_wakeups;
  * average cannot tell a steady period from fast passes plus stalls, and
  * four explanations for the observed rate have already been wrong. */
 uint64_t loop_gap_us[24];
+
+/* Re-choose keys whose periods have moved on.
+ *
+ * The control plane sends the whole chain once and lets this side follow
+ * the clock, so nothing arrives to prompt a rollover: it has to be
+ * noticed. Sessions are few and the periods are in whole seconds, so a
+ * pass a second costs nothing and is well inside the resolution anyone
+ * can configure.
+ */
+static void auth_rollover_tick(void)
+{
+	static int64_t last;
+	int64_t now = (int64_t)time(NULL);
+	int i;
+
+	if (now == last)
+		return;
+	last = now;
+
+	for (i = 0; i < MAX_SESSIONS; i++) {
+		struct session *s = &sessions[i];
+
+		if (!s->used || !s->auth_nkeys)
+			continue;
+		/* Nothing changes until the next boundary, and a session
+		 * whose keys never expire has none. */
+		if (s->auth_next_change == 0 || now < s->auth_next_change)
+			continue;
+		if (session_auth_evaluate(s, now))
+			log_info("lid=%u authentication key %u is now in use\n",
+				 s->lid, s->auth_keyid);
+		/* The acceptable set is evaluated here too, so the program
+		 * is refreshed whether or not the transmit key moved. */
+		ktx_mirror(s);
+	}
+}
 
 int main(int argc, char **argv)
 {
@@ -419,6 +510,8 @@ int main(int argc, char **argv)
 	}
 
 	for (;;) {
+		auth_rollover_tick();
+
 		/* Anything that did not fit the socket last pass. Cheap when
 		 * the queue is empty, which is the normal case. */
 		dp_flush();
@@ -428,9 +521,10 @@ int main(int argc, char **argv)
 			stats_dump();
 		}
 
+		__u8 p_buf[BFD_MAX_LEN] = {0};
 		struct bfd_ctrl_pkt p;
 		struct sockaddr_in from;
-		struct iovec iov = { .iov_base = &p, .iov_len = sizeof(p) };
+		struct iovec iov = { .iov_base = p_buf, .iov_len = sizeof(p_buf) };
 		char cbuf[CMSG_SPACE(sizeof(struct in_pktinfo)) +
 			  CMSG_SPACE(sizeof(int))];
 		struct msghdr mh = {
@@ -507,6 +601,7 @@ int main(int argc, char **argv)
 		ssize_t n = (rd4 && rx_sock >= 0)
 				  ? recvmsg(rx_sock, &mh, MSG_DONTWAIT | MSG_TRUNC)
 				  : -1;
+		memcpy(&p, p_buf, sizeof(p));
 		uint64_t t = now_us();
 		loop_passes++;
 		{
@@ -547,7 +642,8 @@ int main(int argc, char **argv)
 
 		if (n >= 0 && rttl == 255 &&
 		    bfd_ctrl_check(p.vers_diag, p.flags, p.detect_mult, p.len,
-				   p.my_disc, (__u32)n) == BFD_CTRL_ACCEPT) {
+				   p.my_disc, (__u32)n,
+				   !!(p.flags & BFD_F_AUTH)) == BFD_CTRL_ACCEPT) {
 			/* Demux (RFC 5880 s6.8.6), the same rule XDP applies:
 			 * your_disc must name our session, or be zero with the
 			 * peer in Down or AdminDown - it has lost state, or is
@@ -564,17 +660,18 @@ int main(int argc, char **argv)
 				key_set_v4(&fl, dst_ip);
 				rs = sess_by_addr(&fp, &fl);
 			}
-			if (rs)
+			if (rs && rx_auth_ok(rs, p_buf, p.len))
 				fsm_rx(rs, &p, t);
 		}
 
 		/* RFC 5883 multihop control packets, port 4784. Same demux as
 		 * single-hop: your_disc first, address pair as fallback. */
 		for (int d = 0; rdm4 && rxm_sock >= 0 && d < drain_budget; d++) {
-			struct bfd_ctrl_pkt pm;
+			__u8 pm_buf[BFD_MAX_LEN] = {0};
+		struct bfd_ctrl_pkt pm;
 			struct sockaddr_in fromm;
-			struct iovec iovm = { .iov_base = &pm,
-					      .iov_len = sizeof(pm) };
+			struct iovec iovm = { .iov_base = pm_buf,
+					      .iov_len = sizeof(pm_buf) };
 			/* Two cmsgs now: IP_PKTINFO and IP_TTL. A buffer sized
 			 * for one silently truncates the second, and the TTL
 			 * check would then never see a value. */
@@ -587,12 +684,14 @@ int main(int argc, char **argv)
 				.msg_controllen = sizeof(cbufm),
 			};
 			ssize_t nm = recvmsg(rxm_sock, &mhm, MSG_DONTWAIT | MSG_TRUNC);
+			memcpy(&pm, pm_buf, sizeof(pm));
 		
 			if (nm < 0)
 				break;
 			if (bfd_ctrl_check(pm.vers_diag, pm.flags,
 					   pm.detect_mult, pm.len, pm.my_disc,
-					   (__u32)nm) != BFD_CTRL_ACCEPT)
+					   (__u32)nm,
+					   !!(pm.flags & BFD_F_AUTH)) != BFD_CTRL_ACCEPT)
 				continue;
 		
 			uint32_t mdst = 0;
@@ -626,7 +725,7 @@ int main(int argc, char **argv)
 			 * take, so drop rather than silently accept anything. */
 			if (ms && (mttl < 0 || mttl < (int)ms->min_ttl))
 				continue;
-			if (ms)
+			if (ms && rx_auth_ok(ms, pm_buf, pm.len))
 				fsm_rx(ms, &pm, now_us());
 		}
 
@@ -635,10 +734,11 @@ int main(int argc, char **argv)
 		 * than in a comment for the same reason as the v4 drain above:
 		 * it lets scan-build run as a gate with nothing to excuse. */
 		for (int d = 0; rd6 && rx6_sock >= 0 && d < drain_budget; d++) {
-			struct bfd_ctrl_pkt p6;
+			__u8 p6_buf[BFD_MAX_LEN] = {0};
+		struct bfd_ctrl_pkt p6;
 			struct sockaddr_in6 from6;
-			struct iovec iov6 = { .iov_base = &p6,
-				.iov_len = sizeof(p6) };
+			struct iovec iov6 = { .iov_base = p6_buf,
+				.iov_len = sizeof(p6_buf) };
 			char cbuf6[CMSG_SPACE(sizeof(struct in6_pktinfo)) +
 				   CMSG_SPACE(sizeof(int))];
 			struct msghdr mh6 = {
@@ -649,11 +749,13 @@ int main(int argc, char **argv)
 				.msg_controllen = sizeof(cbuf6),
 			};
 			ssize_t n6 = recvmsg(rx6_sock, &mh6, MSG_DONTWAIT | MSG_TRUNC);
+			memcpy(&p6, p6_buf, sizeof(p6));
 			if (n6 < 0)
 				break;
 			if (bfd_ctrl_check(p6.vers_diag, p6.flags,
 					   p6.detect_mult, p6.len, p6.my_disc,
-					   (__u32)n6) != BFD_CTRL_ACCEPT)
+					   (__u32)n6,
+					   !!(p6.flags & BFD_F_AUTH)) != BFD_CTRL_ACCEPT)
 				continue;
 			struct bfd_addr fp6 = {0}, fl6 = {0};
 			int rhl6 = -1;
@@ -679,16 +781,17 @@ int main(int argc, char **argv)
 
 			if (!rs6 && ydisc6 == 0 && BFD_STATE(&p6) <= ST_DOWN)
 				rs6 = sess_by_addr(&fp6, &fl6);
-			if (rs6)
+			if (rs6 && rx_auth_ok(rs6, p6_buf, p6.len))
 				fsm_rx(rs6, &p6, t);
 		}
 
 		/* v6 multihop control packets, port 4784. */
 		for (int d = 0; rdm6 && rxm6_sock >= 0 && d < drain_budget; d++) {
-			struct bfd_ctrl_pkt pm6;
+			__u8 pm6_buf[BFD_MAX_LEN] = {0};
+		struct bfd_ctrl_pkt pm6;
 			struct sockaddr_in6 fromm6;
-			struct iovec iovm6 = { .iov_base = &pm6,
-					       .iov_len = sizeof(pm6) };
+			struct iovec iovm6 = { .iov_base = pm6_buf,
+					       .iov_len = sizeof(pm6_buf) };
 			char cbufm6[CMSG_SPACE(sizeof(struct in6_pktinfo)) +
 				    CMSG_SPACE(sizeof(int))];
 			struct msghdr mhm6 = {
@@ -699,12 +802,14 @@ int main(int argc, char **argv)
 				.msg_controllen = sizeof(cbufm6),
 			};
 			ssize_t nm6 = recvmsg(rxm6_sock, &mhm6, MSG_DONTWAIT | MSG_TRUNC);
+			memcpy(&pm6, pm6_buf, sizeof(pm6));
 		
 			if (nm6 < 0)
 				break;
 			if (bfd_ctrl_check(pm6.vers_diag, pm6.flags,
 					   pm6.detect_mult, pm6.len, pm6.my_disc,
-					   (__u32)nm6) != BFD_CTRL_ACCEPT)
+					   (__u32)nm6,
+					   !!(pm6.flags & BFD_F_AUTH)) != BFD_CTRL_ACCEPT)
 				continue;
 		
 			struct bfd_addr mp6 = {0}, ml6 = {0};
@@ -731,7 +836,7 @@ int main(int argc, char **argv)
 			/* Same per-session GTSM as the v4 multihop path. */
 			if (ms6 && (mhl6 < 0 || mhl6 < (int)ms6->min_ttl))
 				continue;
-			if (ms6)
+			if (ms6 && rx_auth_ok(ms6, pm6_buf, pm6.len))
 				fsm_rx(ms6, &pm6, t);
 		}
 

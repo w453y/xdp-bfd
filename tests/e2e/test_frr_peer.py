@@ -1,10 +1,10 @@
 """Full handshake to Up against stock bfdd.
 
-Three parties, not two: bffdp is the channel between bfdd and the engine,
+Three parties, not two: bfddp is the channel between bfdd and the engine,
 so bfdd is the engine's control plane rather than the far end.
 
     container A (netns)          container B (netns)
-      bfdd  --bffdp-->  engine     bfdd, stock, no dataplane
+      bfdd  --bfddp-->  engine     bfdd, stock, no dataplane
       running via nsenter -n
               eth-a  <---veth--->  eth-b
 
@@ -16,7 +16,7 @@ that entirely, and works identically under docker and podman.
 
 The engine runs via `nsenter -t <pid> -n`, which changes ONLY the network
 namespace, so it uses the host's bfd_tx and bfd_xdp.o while sharing a netns
-with the bfdd that drives it. bffdp then works over 127.0.0.1.
+with the bfdd that drives it. bfddp then works over 127.0.0.1.
 
 Marked `frr`: needs a container runtime and pulls a ~100MB image, so it is
 not part of the default netns run.
@@ -88,7 +88,7 @@ def frr_pair(request):
         sh("sudo ip link del eth-a", check=False)
 
 
-def test_engine_accepts_the_bffdp_connection(frr_pair):
+def test_engine_accepts_the_bfddp_connection(frr_pair):
     """The control channel, before anything about the wire. A failure here
     and the handshake test below would fail for a reason that has nothing
     to do with BFD."""
@@ -98,7 +98,7 @@ def test_engine_accepts_the_bffdp_connection(frr_pair):
                                   check=False):
             return
         time.sleep(0.5)
-    pytest.fail("bfdd never connected over bffdp\n%s"
+    pytest.fail("bfdd never connected over bfddp\n%s"
                 % sh("tail -20 /tmp/frr_rig_engine.log", check=False))
 
 

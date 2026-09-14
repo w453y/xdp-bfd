@@ -19,6 +19,7 @@
 #include "stats.h"
 #include "parse.h"
 #include "validate.h"
+#include "auth.h"
 #include "sweep.h"
 #include "csum.h"
 #include "echo.h"
@@ -70,16 +71,22 @@ int bfd_observer(struct xdp_md *ctx)
 		count(BFD_STAT_MALFORMED);
 		return XDP_PASS;
 	}
-	int hv = bfd_hdr_verdict(bfd, udp);
+	/* Only track sessions the control plane configured, unless the
+	 * standalone loader asked for promiscuous observation. Stops
+	 * unsolicited packets from filling the session map.
+	 *
+	 * Looked up before the header is validated because one of the
+	 * acceptance rules is not a property of the packet: whether the A
+	 * bit belongs there depends on whether this session has a key. The
+	 * lookup keys on addresses that parse_l3 has already read, so
+	 * nothing in the BFD header is trusted to do it. */
+	struct tx_cfg *cfg = bpf_map_lookup_elem(&tx_config, &c.key);
+
+	int hv = bfd_hdr_verdict(bfd, udp, cfg ? cfg->auth_type : 0);
 	if (hv >= 0)
 		return hv;
 
 	count(BFD_STAT_WELL_FORMED);
-
-	/* Only track sessions the control plane configured, unless the
-	 * standalone loader asked for promiscuous observation. Stops
-	 * unsolicited packets from filling the session map. */
-	struct tx_cfg *cfg = bpf_map_lookup_elem(&tx_config, &c.key);
 
 	/* Deferred GTSM. A control packet that did not arrive at 255 is
 	 * acceptable only if it names a configured session whose minimum
@@ -135,6 +142,26 @@ int bfd_observer(struct xdp_md *ctx)
 			return XDP_PASS;
 	}
 
+	/* RFC 5880 s6.7, before anything about this packet is believed: an
+	 * unverified packet must not refresh liveness, must not update the
+	 * peer's parameters, and must not be answered. Checked after the
+	 * demux above so a forged discriminator cannot reach the digest,
+	 * and before the state below so a failure leaves no trace of the
+	 * packet having arrived. */
+	struct auth_scratch *asc = NULL;
+
+	if (cfg && cfg->auth_type) {
+		__u32 azero = 0;
+
+		asc = bpf_map_lookup_elem(&auth_scratch, &azero);
+		if (!asc || !xdp_auth_fast(cfg) ||
+		    !xdp_auth_verify(ctx, iph ? BFD_OFF_V4 : BFD_OFF_V6,
+				     bfd, cfg, st, asc)) {
+			count(BFD_STAT_AUTH_BAD);
+			return XDP_DROP;
+		}
+	}
+
 	__u64 now = bpf_ktime_get_ns();
 
 	/* Poll-aware detect basis (RFC 5880 s6.8.3): a peer that lowers
@@ -188,7 +215,7 @@ int bfd_observer(struct xdp_md *ctx)
 	 * userspace run the transition. */
 	if (cfg && cfg->enable && rstate >= 2) {
 	        return rx_clocked_tx(ctx, eth, iph, ip6, udp,
-	                             bfd, cfg, st, data, data_end);
+	                             bfd, cfg, st, asc, data, data_end);
 	}
 
 	return XDP_PASS;

@@ -12,29 +12,18 @@ static long check_session(struct bpf_map *map, struct session_key *k,
 {
 	__u64 now = *(__u64 *)ctx;
 
+	struct tx_cfg *ec = bpf_map_lookup_elem(&tx_config, k);
+
 	/* Echo liveness. Advisory only: reported, never merged into the
 	 * session verdict. With userspace echo TX a local stall looks
 	 * exactly like a path fault, so this must not tear a session
 	 * down. Revisit when TX moves into the TC hook. */
-	{
-		struct tx_cfg *ec = bpf_map_lookup_elem(&tx_config, k);
-		if (ec && ec->echo_iv_us && st->echo_last_seen_ns) {
-			__u64 eb = (__u64)st->detect_mult *
-				   ec->echo_iv_us * 1000ull;
-			__s64 ed = (__s64)(now - st->echo_last_seen_ns);
-			st->echo_alive = (ed >= 0 && (__u64)ed <= eb);
-		}
-		/* Demand mode (RFC 5880 s6.6): the engine asked this peer to
-		 * stop transmitting, so the silence the sweep would measure
-		 * is the silence we requested. Leave `alive` set - clearing
-		 * it would emit a DETECT-DOWN for a healthy session and make
-		 * every observer of the ring report the session down. */
-		if (ec && ec->demand_hold)
-			return 0;
+	if (ec && ec->echo_iv_us && st->echo_last_seen_ns) {
+		__u64 eb = (__u64)st->detect_mult *
+			   ec->echo_iv_us * 1000ull;
+		__s64 ed = (__s64)(now - st->echo_last_seen_ns);
+		st->echo_alive = (ed >= 0 && (__u64)ed <= eb);
 	}
-
-	if (!st->alive)
-		return 0;
 
 	/* Effective interval is maintained by the RX path (poll-aware:
 	 * advertised decreases apply only once traffic actually paces at
@@ -43,9 +32,9 @@ static long check_session(struct bpf_map *map, struct session_key *k,
 	__u64 iv_us = st->detect_iv_us;
 	if (!iv_us) {
 		__u32 local_rx = LOCAL_MIN_RX_US;
-		struct tx_cfg *cfg = bpf_map_lookup_elem(&tx_config, k);
-		if (cfg && cfg->min_rx_us)
-			local_rx = cfg->min_rx_us;
+
+		if (ec && ec->min_rx_us)
+			local_rx = ec->min_rx_us;
 		iv_us = st->min_tx_us > local_rx ?
 			st->min_tx_us : local_rx;
 	}
@@ -54,6 +43,46 @@ static long check_session(struct bpf_map *map, struct session_key *k,
 	__s64 delta = (__s64)(now - st->last_seen_ns);
 	if (delta < 0)
 		return 0;   /* packet raced past our now-snapshot */
+
+	/* RFC 5880 s6.7: forget the receive sequence window after twice the
+	 * detection time without a packet, so a peer that restarts with a
+	 * fresh random sequence can resynchronise.
+	 *
+	 * Here and not only in the engine, because the program validates
+	 * authentication whether or not it is answering for the session: a
+	 * packet outside the window is dropped in the driver and userspace
+	 * never sees it, so a resync that lives only in the engine can
+	 * never fire.
+	 *
+	 * Ahead of both returns below, and in particular not skipped under
+	 * demand hold. The hold is there to stop the sweep calling a
+	 * session dead over silence we asked for; it says nothing about
+	 * the sequence window, and demand mode is where that window most
+	 * needs to age out, because the peer can restart inside a silence
+	 * no detection timer will ever end. Left behind, the peer comes
+	 * back with a fresh sequence, every packet it sends is dropped
+	 * here, and the session reports Up against a peer that is gone -
+	 * observed on the mesh, where a demand session held a discriminator
+	 * from before the peer restarted and never recovered. Ageing the
+	 * window costs replay protection for one packet after twice the
+	 * detection time, which is the trade the RFC already makes; the
+	 * digest is still checked against the key.
+	 */
+	if (st->auth_rx_seen && (__u64)delta > 2ull * detect_ns) {
+		st->auth_rx_seen = 0;
+		st->auth_rx_seq = 0;
+	}
+
+	/* Demand mode (RFC 5880 s6.6): the engine asked this peer to stop
+	 * transmitting, so the silence the sweep would measure is the
+	 * silence we requested. Leave `alive` set - clearing it would emit
+	 * a DETECT-DOWN for a healthy session and make every observer of
+	 * the ring report the session down. */
+	if (ec && ec->demand_hold)
+		return 0;
+
+	if (!st->alive)
+		return 0;
 	if ((__u64)delta > detect_ns &&
 	    __sync_val_compare_and_swap(&st->alive, 1, 0) == 1)
 		emit(k, st, now, 0);

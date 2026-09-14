@@ -28,6 +28,9 @@
 #include "bfd_shared.h"
 #include <time.h>
 #include "detect_vectors.h"
+#include "hmac_sha1.h"
+#include "bfd_auth.h"
+#include "hmac_vectors.h"
 
 static struct bpf_object *obj;
 static int prog_fd = -1;
@@ -244,6 +247,7 @@ static int echo_peers_fd = -1, echo_disc_fd = -1;
  * Separate object on purpose: no test entry point in shipped bytecode. */
 static struct bpf_object *sweep_obj;
 static int sweep_prog_fd = -1, sweep_sess_fd = -1, sweep_cfg_fd = -1;
+static int hmac_prog_fd = -1, hmac_map_fd = -1;
 
 /* Keys are built from the arriving frame's point of view: peer is the
  * source, local is the destination. Getting this backwards produces a
@@ -1201,8 +1205,11 @@ static void run_malformed_matrix(void)
 			       BFD_STAT_MALFORMED);
 		case_malformed(v6, "malformed-disc-zero", mut_disc_zero, XDP_PASS,
 			       BFD_STAT_MALFORMED);
-		case_malformed(v6, "unsupported-auth",    mut_auth, XDP_DROP,
-			       BFD_STAT_UNSUPPORTED_FLAGS);
+		/* Still dropped, but attributed to the session rather than
+		 * to the flag: the A bit is only unacceptable because this
+		 * session has no key. RFC 5880 s6.8.6. */
+		case_malformed(v6, "auth-bit-no-key",     mut_auth, XDP_DROP,
+			       BFD_STAT_AUTH_MISMATCH);
 		case_malformed(v6, "unsupported-mp",      mut_mp, XDP_DROP,
 			       BFD_STAT_UNSUPPORTED_FLAGS);
 	}
@@ -1287,6 +1294,60 @@ static void run_demux_matrix(void)
 		/* zero with the peer Up: not the restart case, rejected */
 		case_demux(v6, "demux-zero-peer-up", 0, ST_UP, XDP_DROP, 0);
 	}
+}
+
+/* The other half of RFC 5880 s6.8.6, and the half that matters: a
+ * session with a key must reject a packet that arrives without one.
+ * Without this rule a peer downgrades the session simply by omitting
+ * authentication, which is the whole attack authentication exists to
+ * stop - and it would look like an ordinary healthy session.
+ */
+static void case_auth_required(int v6)
+{
+	struct session_key k = v6 ? key_v6("fd00::2", "fd00::1")
+				  : key_v4("10.0.0.2", "10.0.0.1");
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct tx_cfg cfg = {0};
+	struct frame f;
+	unsigned long long before;
+	const char *name = v6 ? "auth-required-v6" : "auth-required-v4";
+	int v;
+
+	map_reset();
+	if (v6)
+		arm_session_v6();
+	else
+		arm_session();
+
+	/* Same session, now carrying a key. */
+	if (bpf_map_lookup_elem(cfg_fd, &k, &cfg)) {
+		printf("FAIL %-40s no cfg\n", name);
+		fails++;
+		return;
+	}
+	cfg.auth_type = BFD_AUTH_KEYED_SHA1;
+	bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY);
+
+	before = stat_get(BFD_STAT_AUTH_MISMATCH);
+	if (v6)
+		build_v6(&f, 255, BFD_PORT_1HOP, &p, 0);
+	else
+		build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+	v = run_frame(&f, NULL, NULL);
+
+	if (v != XDP_DROP) {
+		printf("     verdict %s, want DROP\n",
+		       v < 0 ? "syscall-error" : verdict_str(v));
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else if (stat_get(BFD_STAT_AUTH_MISMATCH) != before + 1) {
+		printf("     auth-mismatch did not move\n");
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s DROP\n", name);
+	}
+	map_reset();
 }
 
 /* IPv4 fragmentation.
@@ -1724,6 +1785,230 @@ static void case_sweep(const char *name, unsigned int iv_us, unsigned int mult,
 	bpf_map_delete_elem(sweep_cfg_fd, &k);
 }
 
+/* The rejection paths.
+ *
+ * Everything else about authentication is checked by watching a session
+ * stay up, which only ever exercises the accept path. These are the
+ * cases the feature exists for: a forged digest, a replayed sequence, a
+ * key id that is not ours. Each has to be refused, and refused without
+ * touching the session - an accepted forgery that merely fails later is
+ * still a forgery that refreshed liveness.
+ *
+ * Built as a real keyed-SHA1 packet and then damaged, so every case
+ * differs from a packet that would have been accepted by exactly the
+ * thing under test.
+ */
+/* The local detect multiplier the next armed session gets. The replay
+ * window is sized from the packet's Detect Mult, so a case sets this
+ * apart from the packet's value to prove which of the two is used. */
+static __u8 arm_local_mult = 3;
+
+/* A second key left in the accept set, as a rollover leaves the key the
+ * peer has not stopped using yet. Zero id means only one key. */
+static __u8 arm_extra_keyid;
+static const char *arm_extra_key = "";
+
+static void arm_session_auth(__u8 type, __u8 keyid, const char *key)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct tx_cfg cfg = {0};
+	struct session_state st = {0};
+	unsigned n = (unsigned)strlen(key);
+
+	cfg.enable    = 1;
+	cfg.my_disc   = 0x22222222;
+	cfg.your_disc = 0x11111111;
+	cfg.min_tx_us = 10000;
+	cfg.min_rx_us = 10000;
+	cfg.state     = ST_UP;
+	cfg.mult      = 3;
+	cfg.min_ttl   = 255;
+	cfg.auth_type = type;
+	cfg.auth_keyid = keyid;
+	cfg.auth_keylen = (__u8)n;
+	memcpy(cfg.auth_kpad, key, n);
+
+	/* What the engine leaves for the receive side: every key a packet
+	 * may currently be signed with. One here, unless a case says
+	 * otherwise. */
+	cfg.auth_nkeys = 1;
+	cfg.auth_accept[0].type = type;
+	cfg.auth_accept[0].key_id = keyid;
+	cfg.auth_accept[0].keylen = (__u8)n;
+	memcpy(cfg.auth_accept[0].kpad, key, n);
+
+	if (arm_extra_keyid) {
+		unsigned m = (unsigned)strlen(arm_extra_key);
+
+		cfg.auth_nkeys = 2;
+		cfg.auth_accept[1].type = type;
+		cfg.auth_accept[1].key_id = arm_extra_keyid;
+		cfg.auth_accept[1].keylen = (__u8)m;
+		memcpy(cfg.auth_accept[1].kpad, arm_extra_key, m);
+	}
+
+	st.remote_state = ST_UP;
+	st.detect_mult  = arm_local_mult;
+
+	if (bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY) ||
+	    bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
+		fprintf(stderr, "  auth map update failed: %s\n", strerror(errno));
+		fails++;
+	}
+}
+
+/* A keyed-SHA1 packet signed with `key`, sequence `seq`. */
+static void build_sha1_auth(struct frame *f, const char *key, __u8 keyid,
+			    __u32 seq, __u8 type)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	__u8 pkt[BFD_MAX_LEN] = {0};
+	__u8 kpad[SHA1_BLOCK_LEN] = {0};
+
+	p.flags |= BFD_F_AUTH;
+	p.len = BFD_MIN_LEN + BFD_AUTH_SHA1_LEN;
+	memcpy(pkt, &p, BFD_MIN_LEN);
+	memcpy(kpad, key, strlen(key));
+	bfd_auth_build(pkt, type, keyid, (const __u8 *)key,
+		       (__u8)strlen(key), kpad, seq);
+
+	/* build_v4 lays down the 24-byte header and reserves the rest of
+	 * the payload; the signed section goes in behind it. */
+	build_v4(f, 255, BFD_PORT_1HOP, (const struct bfd_ctrl_pkt *)pkt,
+		 BFD_AUTH_SHA1_LEN);
+	memcpy(f->b + sizeof(struct ethhdr) + sizeof(struct iphdr) +
+	       sizeof(struct udphdr) + BFD_MIN_LEN,
+	       pkt + BFD_MIN_LEN, BFD_AUTH_SHA1_LEN);
+}
+
+static void case_auth_reject(const char *name, __u8 type, const char *key,
+			     __u8 keyid, __u32 seq, int corrupt_digest,
+			     __u32 pre_seq, int want_accept)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct session_state st;
+	struct frame f;
+	unsigned long long before;
+	int v, bad = 0;
+
+	map_reset();
+	arm_session_auth(type, 7, "topsecret");
+
+	/* A window the case can replay into. */
+	if (pre_seq) {
+		if (bpf_map_lookup_elem(sess_fd, &k, &st)) {
+			printf("FAIL %-40s no state\n", name);
+			fails++;
+			return;
+		}
+		st.auth_rx_seq = pre_seq;
+		st.auth_rx_seen = 1;
+		bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY);
+	}
+
+	build_sha1_auth(&f, key, keyid, seq, type);
+	if (corrupt_digest)
+		f.b[f.len - 1] ^= 0xff;
+
+	before = stat_get(BFD_STAT_AUTH_BAD);
+	v = run_frame(&f, NULL, NULL);
+
+	if (want_accept) {
+		if (v != XDP_TX) {
+			printf("     verdict %s, want TX\n",
+			       v < 0 ? "syscall-error" : verdict_str(v));
+			bad = 1;
+		}
+	} else {
+		if (v != XDP_DROP) {
+			printf("     verdict %s, want DROP\n",
+			       v < 0 ? "syscall-error" : verdict_str(v));
+			bad = 1;
+		}
+		if (stat_get(BFD_STAT_AUTH_BAD) != before + 1) {
+			printf("     auth-bad did not move\n");
+			bad = 1;
+		}
+		/* A refused packet must leave no trace of having arrived. */
+		if (!bpf_map_lookup_elem(sess_fd, &k, &st) && st.rx_pkts) {
+			printf("     rx_pkts moved on a refused packet\n");
+			bad = 1;
+		}
+	}
+
+	if (bad) {
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s %s\n", name,
+		       want_accept ? "accepted" : "DROP, no state write");
+	}
+	map_reset();
+}
+
+/* The shared HMAC-SHA1 through the kernel, on the vectors hmac_run
+ * checks on the host. The BPF build inlines differently and answers to
+ * the verifier, so agreeing with the host is not something to assume. */
+struct hmac_scratch_u {
+	__u8  kpad[SHA1_BLOCK_LEN];
+	__u8  mblk[SHA1_BLOCK_LEN];
+	__u8  out[SHA1_DIGEST_LEN];
+	__u32 msglen;
+	__u32 ok;
+};
+
+static void case_hmac(const struct hmac_vec *v)
+{
+	struct hmac_scratch_u sc = {0};
+	unsigned char in[64] = {0}, out[64] = {0};
+	__u32 zero = 0;
+
+	if (hmac_prog_fd < 0) {
+		printf("FAIL %-40s no hmac program\n", v->name);
+		fails++;
+		return;
+	}
+
+	memcpy(sc.kpad, v->key, v->keylen);
+	memcpy(sc.mblk, v->msg, v->msglen);
+	sc.msglen = v->msglen;
+	if (bpf_map_update_elem(hmac_map_fd, &zero, &sc, BPF_ANY)) {
+		printf("FAIL %-40s scratch put\n", v->name);
+		fails++;
+		return;
+	}
+
+	LIBBPF_OPTS(bpf_test_run_opts, topts,
+		    .data_in = in, .data_size_in = sizeof(in),
+		    .data_out = out, .data_size_out = sizeof(out),
+		    .repeat = 1);
+	if (bpf_prog_test_run_opts(hmac_prog_fd, &topts) ||
+	    bpf_map_lookup_elem(hmac_map_fd, &zero, &sc)) {
+		printf("FAIL %-40s test_run\n", v->name);
+		fails++;
+		return;
+	}
+	if (!sc.ok) {
+		printf("FAIL %-40s kernel refused key %u msg %u\n",
+		       v->name, v->keylen, v->msglen);
+		fails++;
+		return;
+	}
+	if (memcmp(sc.out, v->want, SHA1_DIGEST_LEN)) {
+		printf("     want ");
+		for (int i = 0; i < SHA1_DIGEST_LEN; i++)
+			printf("%02x", v->want[i]);
+		printf("\n     got  ");
+		for (int i = 0; i < SHA1_DIGEST_LEN; i++)
+			printf("%02x", sc.out[i]);
+		printf("\n");
+		printf("FAIL %-40s\n", v->name);
+		fails++;
+		return;
+	}
+	printf("ok   %-40s key %2u msg %2u\n", v->name, v->keylen, v->msglen);
+}
+
 /* Demand mode (RFC 5880 s6.6): the engine asked this peer to stop
  * transmitting, so the silence the sweep measures is the silence we
  * requested. Without the hold every demanding session is torn down one
@@ -1763,6 +2048,63 @@ static void case_sweep_demand(void)
 		fails++;
 	} else {
 		printf("ok   %-40s alive 1\n", "sweep-demand-hold");
+	}
+
+	bpf_map_delete_elem(sweep_sess_fd, &k);
+	bpf_map_delete_elem(sweep_cfg_fd, &k);
+}
+
+/* The receive window ages out (RFC 5880 s6.7).
+ *
+ * A peer that restarts picks a fresh random sequence, which will not sit
+ * inside the window its predecessor left behind. Nothing else recovers
+ * from that: the program validates authentication whether or not it is
+ * answering, so the packets never reach userspace to be reconsidered.
+ * Twice the detection time of silence is what the RFC gives for it, and
+ * the sweep is where the silence is already measured.
+ *
+ * Both edges, because a window that ages out too eagerly is a replay
+ * window that is not one.
+ */
+static void case_sweep_auth_resync(const char *name, unsigned long long silent_ns,
+				   unsigned int want_seen, int demand_hold)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct session_state st = {0}, after = {0};
+	struct tx_cfg cfg = {0};
+	unsigned long long now = 1000ull * 1000 * 1000 * 60;
+
+	/* 10ms basis, mult 3: detection is 30ms, so the window ages at 60ms. */
+	st.last_seen_ns  = now - silent_ns;
+	st.detect_iv_us  = 10000;
+	st.detect_mult   = 3;
+	st.alive         = 1;
+	st.auth_rx_seen  = 1;
+	st.auth_rx_seq   = 12345;
+	cfg.min_rx_us    = 10000;
+	cfg.auth_type    = BFD_AUTH_KEYED_SHA1;
+	cfg.demand_hold  = demand_hold;
+
+	bpf_map_delete_elem(sweep_sess_fd, &k);
+	bpf_map_delete_elem(sweep_cfg_fd, &k);
+	if (!sweep_put(&k, &st, &cfg) || !sweep_at(now) ||
+	    bpf_map_lookup_elem(sweep_sess_fd, &k, &after)) {
+		printf("FAIL %-40s setup\n", name);
+		fails++;
+		return;
+	}
+
+	if (after.auth_rx_seen != want_seen) {
+		printf("     auth_rx_seen is %u, want %u\n",
+		       after.auth_rx_seen, want_seen);
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else if (!want_seen && after.auth_rx_seq) {
+		printf("     window cleared but the sequence was left behind\n");
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s auth_rx_seen %u\n", name, after.auth_rx_seen);
 	}
 
 	bpf_map_delete_elem(sweep_sess_fd, &k);
@@ -1888,7 +2230,90 @@ static void run_sweep_matrix(void)
 	 * The guard returns early rather than letting the unsigned delta
 	 * wrap into an enormous silence. */
 	case_sweep_negative();
+	case_auth_required(0);
+	case_auth_required(1);
+
+	/* The control: a correctly signed packet is answered. Without it
+	 * every rejection below would pass on a build that refused
+	 * everything. */
+#define KS BFD_AUTH_KEYED_SHA1
+#define MS BFD_AUTH_METICULOUS_SHA1
+	case_auth_reject("auth-good-signature", KS, "topsecret", 7, 100, 0, 0, 1);
+	case_auth_reject("auth-wrong-key",      KS, "wrongkey!", 7, 100, 0, 0, 0);
+	case_auth_reject("auth-wrong-keyid",    KS, "topsecret", 9, 100, 0, 0, 0);
+	case_auth_reject("auth-bad-digest",     KS, "topsecret", 7, 100, 1, 0, 0);
+	/* Replay: the window already sits above this sequence. */
+	case_auth_reject("auth-replayed-seq",   KS, "topsecret", 7, 100, 0, 500, 0);
+
+	/* The one thing that separates the two SHA1 types. A sequence
+	 * equal to the window is a repeat: RFC 5880 s6.7.4 lets the plain
+	 * form take it - which is what allows a Final to answer a Poll
+	 * without burning a sequence - and requires meticulous to refuse
+	 * it. Same packet, same key, same window, opposite verdicts. */
+	case_auth_reject("auth-equal-seq-plain",      KS, "topsecret", 7, 100,
+			 0, 100, 1);
+	case_auth_reject("auth-equal-seq-meticulous", MS, "topsecret", 7, 100,
+			 0, 100, 0);
+	/* The window has an upper edge as well as a lower one (s6.7.4:
+	 * RcvAuthSeq to RcvAuthSeq+3*Detect Mult). Detect Mult is 3 here,
+	 * so 9 ahead is the last acceptable sequence and 10 is not. Without
+	 * the upper bound almost the entire number space is acceptable, and
+	 * a wrap leaves the session rejecting forever. */
+	case_auth_reject("auth-window-upper-edge", KS, "topsecret", 7, 109,
+			 0, 100, 1);
+	case_auth_reject("auth-window-past-upper", KS, "topsecret", 7, 110,
+			 0, 100, 0);
+
+	/* RFC 5880 names the local state variable bfd.DetectMult and the
+	 * header field Detect Mult, and s6.7.4 asks for the latter. With a
+	 * local multiplier of 1 the window would stop at 3, so a distance of
+	 * 9 only passes if the packet's own Detect Mult of 3 is what sized
+	 * it. */
+	arm_local_mult = 1;
+	case_auth_reject("auth-window-mult-from-packet", KS, "topsecret", 7, 109,
+			 0, 100, 1);
+	arm_local_mult = 3;
+
+	/* Circular, not linear. A sequence far below the watermark is not
+	 * "less than" in a 32-bit circular space, it is very far ahead -
+	 * and still outside the window, which is what must refuse it. */
+	case_auth_reject("auth-window-wrapped-far", KS, "topsecret", 7,
+			 0x10000000, 0, 0xF0000000, 0);
+	/* The same wrap, one step past the watermark, is inside it. */
+	case_auth_reject("auth-window-wraps-cleanly", KS, "topsecret", 7,
+			 0x00000002, 0, 0xFFFFFFFF, 1);
+	/* A rollover leaves the peer signing with a key we have stopped
+	 * transmitting under, and refusing it is the breakage the accept
+	 * period exists to prevent. The session transmits under key 7 and
+	 * still accepts key 9. */
+	arm_extra_keyid = 9;
+	arm_extra_key = "otherkey1";
+	case_auth_reject("auth-rollover-old-key", KS, "otherkey1", 9, 100,
+			 0, 0, 1);
+	/* A key that is not in the set at all is still refused, so the
+	 * lookup has not simply become permissive. */
+	case_auth_reject("auth-rollover-unknown-key", KS, "otherkey1", 11, 100,
+			 0, 0, 0);
+	arm_extra_keyid = 0;
+	arm_extra_key = "";
+
+#undef KS
+#undef MS
+
 	case_sweep_demand();
+	/* Detection is 30ms here, so the window survives 40ms of silence
+	 * and is forgotten after 80ms. */
+	case_sweep_auth_resync("sweep-auth-window-held", 40000000ull, 1, 0);
+	case_sweep_auth_resync("sweep-auth-window-aged", 80000000ull, 0, 0);
+	/* Under demand hold the sweep leaves `alive` alone, but the window
+	 * must still age: a peer we asked to stop transmitting can restart
+	 * inside a silence no detection timer ends, and a window that
+	 * outlives it rejects every packet the peer will ever send. */
+	case_sweep_auth_resync("sweep-auth-window-aged-demand", 80000000ull, 0, 1);
+	case_sweep_auth_resync("sweep-auth-window-held-demand", 40000000ull, 1, 1);
+
+	for (int i = 0; i < HMAC_NVECS; i++)
+		case_hmac(&hmac_vecs[i]);
 
 	case_demand_bit_out(0, 0, 0, 0, "demand-bit-off-not-set");
 	case_demand_bit_out(1, 0, 1, 0, "demand-bit-on-set");
@@ -1944,6 +2369,13 @@ int main(void)
 								"bfd_sessions");
 			sweep_cfg_fd = bpf_object__find_map_fd_by_name(sweep_obj,
 							       "tx_config");
+			sp = bpf_object__find_program_by_name(sweep_obj,
+							      "hmac_once");
+			if (sp) {
+				hmac_prog_fd = bpf_program__fd(sp);
+				hmac_map_fd = bpf_object__find_map_fd_by_name(
+						sweep_obj, "hmac_scratch");
+			}
 		}
 	} else {
 		fprintf(stderr, "sweep object not loaded: %s\n", strerror(errno));

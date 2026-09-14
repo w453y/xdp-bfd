@@ -7,6 +7,8 @@
 #ifndef BFD_XDP_MAPS_H
 #define BFD_XDP_MAPS_H
 
+#include "hmac_sha1.h"
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, BFD_MAX_SESSIONS);
@@ -89,5 +91,40 @@ struct {
 	__type(key, __u32);
 	__type(value, struct sweep);
 } sweep_map SEC(".maps");
+
+/* Working space for authentication.
+ *
+ * Not on the stack: the verifier charges an entire call chain against
+ * one 512-byte budget, and the digest already spends most of it below
+ * this point. A block and a digest per CPU costs nothing and takes 84
+ * bytes out of the packet path's frame.
+ *
+ * Per-CPU because XDP runs concurrently on every queue. One entry is
+ * enough - a packet finishes with it before the next one starts, and
+ * verification is done before a reply is built.
+ */
+struct auth_scratch {
+	__u8 blk[SHA1_BLOCK_LEN];
+	__u8 dig[SHA1_DIGEST_LEN];
+	__u8 rcv[SHA1_DIGEST_LEN];   /* the digest as it arrived, kept
+	                              * while blk's copy is zeroed to
+	                              * recompute over the same bytes */
+	__u8 kpad[SHA1_BLOCK_LEN];   /* the chosen key, copied here so the
+	                              * digest is handed a pointer at a
+	                              * fixed offset. Reading it straight
+	                              * out of the map array instead means
+	                              * a variable offset, and the verifier
+	                              * then walks the whole compression
+	                              * again for every state that pointer
+	                              * could be in, which is millions of
+	                              * instructions rather than thousands. */
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct auth_scratch);
+} auth_scratch SEC(".maps");
 
 #endif /* BFD_XDP_MAPS_H */

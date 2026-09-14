@@ -111,6 +111,10 @@ struct session {
 	struct session_key pushed_key;
 	uint64_t last_rx_us, next_tx_us;
 	uint64_t tx_pkts;             /* userspace-sent control packets */
+	uint64_t tx_fail;             /* sendto(2) refused the packet: it
+	                               * never reached the wire, and the
+	                               * state it would have consumed is
+	                               * still pending */
 	uint64_t rx_pkts;             /* userspace-received control packets;
 	                               * the kernel keeps its own in
 	                               * session_state.rx_pkts and the two are

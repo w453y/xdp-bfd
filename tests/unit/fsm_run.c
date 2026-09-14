@@ -18,6 +18,7 @@
  *     make test-fsm
  */
 #define _GNU_SOURCE
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <arpa/inet.h>
@@ -233,6 +234,89 @@ static void run_table(void)
  * along, so whether the change was noticed depended on whether the fast
  * path happened to be armed.
  */
+/* A send that failed consumed nothing.
+ *
+ * sendto's return was discarded, so tx_pkts counted attempts as packets
+ * and every piece of state a transmission is supposed to consume was
+ * consumed whether or not one happened. send_final is the one that costs:
+ * a Final answers the peer's Poll, and clearing it on a refused send means
+ * the peer waits out its whole detection time for an answer this session
+ * believes it has already given. The demand announcement quota is the same
+ * shape - three announcements spent into a closed socket and the peer
+ * never sees the D bit at all.
+ *
+ * The refusal is driven through fsm_send_hook rather than by arranging for
+ * the kernel to refuse a datagram, which is not something a unit test can
+ * ask for reliably.
+ */
+static ssize_t refuse_send(int fd, const void *buf, size_t len,
+			   const struct sockaddr *dst, socklen_t dlen)
+{
+	(void)fd; (void)buf; (void)len; (void)dst; (void)dlen;
+	errno = EPERM;
+	return -1;
+}
+
+static void case_failed_send_keeps_pending(void)
+{
+	struct session *s;
+	int bad = 0;
+
+	s = sess_init(ST_UP);
+	s->rdisc = 0x33333333;
+	s->send_final = 1;
+	s->just_up = 1;
+	s->demand = 1;
+	s->r_state = ST_UP;
+	s->next_tx_us = 0;
+
+	fsm_send_hook = refuse_send;
+	fsm_tx(s, 2000000);
+	fsm_send_hook = NULL;
+
+	if (s->tx_pkts) {
+		printf("     tx_pkts %llu after a refused send\n",
+		       (unsigned long long)s->tx_pkts);
+		bad = 1;
+	}
+	if (!s->tx_fail) {
+		printf("     the refusal was not counted\n");
+		bad = 1;
+	}
+	if (!s->send_final) {
+		printf("     send_final cleared by a send that did not happen\n");
+		bad = 1;
+	}
+	if (!s->just_up) {
+		printf("     just_up cleared by a send that did not happen\n");
+		bad = 1;
+	}
+	if (s->demand_announced) {
+		printf("     demand quota spent on a refused send\n");
+		bad = 1;
+	}
+
+	/* The schedule comes round again and the socket is working. */
+	s->next_tx_us = 0;
+	fsm_tx(s, 2100000);
+	if (!s->tx_pkts) {
+		printf("     nothing sent once the socket recovered\n");
+		bad = 1;
+	}
+	if (s->send_final) {
+		printf("     the Final was never answered\n");
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL %-44s\n", "failed-send-keeps-pending");
+		fails++;
+	} else {
+		printf("ok   %-44s pending held, then sent\n",
+		       "failed-send-keeps-pending");
+	}
+}
+
 static void case_echo_only_change_notifies(void)
 {
 	struct bfd_ctrl_pkt p = pkt(ST_UP, 0);
@@ -785,6 +869,7 @@ int main(void)
 {
 	run_table();
 	run_detect_vectors();
+	case_failed_send_keeps_pending();
 	case_echo_only_change_notifies();
 	case_passive();
 	case_admin_down();

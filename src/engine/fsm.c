@@ -35,6 +35,25 @@ int tx_sock = -1, tx6_sock = -1;
  * address-based demux for your_disc=0 packets). Opened lazily and
  * kept; a reused slot with a different local address rebinds.
  * Stored as fd+1; 0 = not opened; -1 = bind failed. */
+/* The one send.
+ *
+ * Tests replace it to drive the refusal path. That path is otherwise
+ * reachable only by arranging for the kernel to refuse a datagram, and
+ * what a refused send must not consume - a pending Final, the demand
+ * announcement quota - is the whole of what it is about. Same idiom as
+ * dp_recv_hook. Production keeps sendto(2).
+ */
+ssize_t (*fsm_send_hook)(int fd, const void *buf, size_t len,
+			 const struct sockaddr *dst, socklen_t dlen) = NULL;
+
+static ssize_t fsm_send(int fd, const void *buf, size_t len,
+			const struct sockaddr *dst, socklen_t dlen)
+{
+	if (fsm_send_hook)
+		return fsm_send_hook(fd, buf, len, dst, dlen);
+	return sendto(fd, buf, len, 0, dst, dlen);
+}
+
 static int slot_tx[MAX_SESSIONS];
 static struct bfd_addr slot_tx_ip[MAX_SESSIONS];
 
@@ -282,13 +301,17 @@ static void tx_one(struct session *s)
 	__u8 buf[BFD_MAX_LEN] = {0};
 	struct bfd_ctrl_pkt o = {0};
 	unsigned olen = BFD_MIN_LEN;
+	int announcing = 0;
+	ssize_t sent;
 	o.vers_diag   = (1 << 5) | (s->diag & 0x1f);
 	o.flags       = (s->state << 6) |
 		      (s->send_final ? F_F : (s->polling ? F_P : 0));
+	/* Counted after the send, not here. An announcement that never
+	 * left the host has not been made, and spending the quota on it
+	 * means the peer may never see the D bit at all. */
 	if (demand_bit_out(s)) {
 		o.flags |= F_D;
-		if (s->demand_announced < DEMAND_ANNOUNCE_N)
-			s->demand_announced++;
+		announcing = s->demand_announced < DEMAND_ANNOUNCE_N;
 	}
 	o.detect_mult = s->detect_mult;
 	o.len         = 24;
@@ -331,13 +354,34 @@ static void tx_one(struct session *s)
 		struct sockaddr_in6 dst = { .sin6_family = AF_INET6,
 			.sin6_port = htons(s->is_mhop ? BFD_PORT_MHOP : PORT_CTRL) };
 		memcpy(&dst.sin6_addr, s->peer.b, 16);
-		sendto(txfd, buf, olen, 0, (void *)&dst, sizeof(dst));
+		sent = fsm_send(txfd, buf, olen, (void *)&dst, sizeof(dst));
 	} else {
 		struct sockaddr_in dst = { .sin_family = AF_INET,
 			.sin_port = htons(s->is_mhop ? BFD_PORT_MHOP : PORT_CTRL) };
 		memcpy(&dst.sin_addr.s_addr, &s->peer.b[12], 4);
-		sendto(txfd, buf, olen, 0, (void *)&dst, sizeof(dst));
+		sent = fsm_send(txfd, buf, olen, (void *)&dst, sizeof(dst));
 	}
+
+	/* Nothing below this line may run for a packet that did not leave.
+	 *
+	 * send_final is the one that matters: a Final answers the peer's
+	 * Poll, and clearing it on a send that failed means the peer waits
+	 * out its detection time for an answer this session believes it
+	 * has already given. just_up and the demand quota are the same
+	 * shape of mistake, and tx_pkts reporting attempts as packets is
+	 * what made all three invisible - the counter went up either way,
+	 * so a link that was refusing every datagram looked busy.
+	 *
+	 * Nothing is retried here. The transmit schedule comes round
+	 * again, and the pending state is still set when it does. */
+	if (sent != (ssize_t)olen) {
+		s->tx_fail++;
+		log_debug("lid=%u send failed: %s\n", s->lid, strerror(errno));
+		return;
+	}
+
+	if (announcing)
+		s->demand_announced++;
 	s->tx_pkts++;
 	s->send_final = 0;
 	s->just_up = 0;

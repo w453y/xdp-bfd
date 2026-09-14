@@ -257,6 +257,102 @@ static ssize_t refuse_send(int fd, const void *buf, size_t len,
 	return -1;
 }
 
+/* A peer advertising Required Min RX Interval zero is asking us to stop.
+ *
+ * RFC 5880 s6.8.7: a system MUST NOT periodically transmit while
+ * bfd.RemoteMinRxInterval is zero. Nothing gated on it, and the interval
+ * arithmetic takes the larger of the local rate and the peer's, so zero
+ * simply meant the local rate and transmission carried on at full pace.
+ *
+ * The exemptions are the ones demand mode already has: a Poll, a pending
+ * Final and an unsent demand announcement still have to arrive, or the
+ * session has no way to renegotiate out of the state it is in.
+ *
+ * s6.8.1 initialises the variable to 1, not 0, so the rule cannot fire on
+ * a session that has heard nothing yet - one that could otherwise never
+ * come up. That is what the last_rx_us term stands for.
+ */
+static void case_zero_remote_min_rx_halts_tx(void)
+{
+    struct bfd_ctrl_pkt p = pkt(ST_UP, 0);
+    struct session *s;
+    int bad = 0;
+
+    s = sess_init(ST_UP);
+    s->rdisc = 0x44444444;
+    s->r_state = ST_UP;
+
+    /* Never heard from: must transmit, or it cannot come up. */
+    s->last_rx_us = 0;
+    s->r_min_rx = 0;
+    s->next_tx_us = 0;
+    fsm_tx(s, 2000000);
+    if (!s->tx_pkts) {
+        printf("     silent before hearing a peer at all\n");
+        bad = 1;
+    }
+
+    /* The peer says zero. */
+    p.min_rx = htonl(0);
+    fsm_rx(s, &p, 2100000);
+    if (s->r_min_rx != 0) {
+        printf("     r_min_rx %u after the peer advertised zero\n",
+               s->r_min_rx);
+        bad = 1;
+    }
+
+    s->tx_pkts = 0;
+    s->next_tx_us = 0;
+    fsm_tx(s, 2200000);
+    if (s->tx_pkts) {
+        printf("     still transmitting against a zero Min RX\n");
+        bad = 1;
+    }
+    if (ktx_answers(s)) {
+        printf("     the fast path is still armed to answer\n");
+        bad = 1;
+    }
+
+    /* A Final still has to reach it. */
+    s->send_final = 1;
+    s->next_tx_us = 0;
+    fsm_tx(s, 2300000);
+    if (!s->tx_pkts) {
+        printf("     a pending Final was withheld\n");
+        bad = 1;
+    }
+
+    /* And so does a Poll. */
+    s->tx_pkts = 0;
+    s->polling = 1;
+    s->next_tx_us = 0;
+    fsm_tx(s, 2400000);
+    if (!s->tx_pkts) {
+        printf("     a Poll was withheld\n");
+        bad = 1;
+    }
+    s->polling = 0;
+
+    /* A non-zero advertisement resumes it. */
+    s->tx_pkts = 0;
+    p.min_rx = htonl(50000);
+    fsm_rx(s, &p, 2500000);
+    s->next_tx_us = 0;
+    fsm_tx(s, 2600000);
+    if (!s->tx_pkts) {
+        printf("     still silent after the peer withdrew the zero\n");
+        bad = 1;
+    }
+
+    if (bad) {
+        printf("FAIL %-44s\n", "zero-remote-min-rx-halts-tx");
+        fails++;
+    } else {
+        printf("ok   %-44s halted, Poll and Final exempt\n",
+               "zero-remote-min-rx-halts-tx");
+    }
+}
+
 static void case_failed_send_keeps_pending(void)
 {
 	struct session *s;
@@ -869,6 +965,7 @@ int main(void)
 {
 	run_table();
 	run_detect_vectors();
+	case_zero_remote_min_rx_halts_tx();
 	case_failed_send_keeps_pending();
 	case_echo_only_change_notifies();
 	case_passive();

@@ -244,6 +244,23 @@ static inline int demand_announce_due(const struct session *s)
  * demanding - it asked, not us. A Poll sequence, a pending Final and an
  * unsent D are exempt: they are the only things that still have to
  * reach a peer that has stopped listening on a schedule. */
+/* RFC 5880 s6.8.7: a system MUST NOT periodically transmit while
+ * bfd.RemoteMinRxInterval is zero. The peer is saying it cannot receive
+ * them, which is a different request from demand mode but has the same
+ * answer, so the same three exemptions apply: a Poll, a pending Final and
+ * an unsent demand announcement still have to reach it.
+ *
+ * s6.8.1 initialises bfd.RemoteMinRxInterval to 1, not 0, precisely so
+ * this rule cannot fire on a session that has heard nothing yet, which
+ * would be a session that could never come up. `last_rx_us` is how that
+ * initial value is expressed here.
+ */
+static inline int zero_rx_tx_held(const struct session *s)
+{
+	return s->last_rx_us && s->r_min_rx == 0 &&
+	       !s->polling && !s->send_final && !demand_announce_due(s);
+}
+
 static inline int demand_tx_held(const struct session *s)
 {
 	return (s->r_flags & BFD_F_DEMAND) && s->state == ST_UP &&
@@ -293,7 +310,13 @@ static inline int auth_fast_capable(const struct session *s)
 
 static inline int ktx_answers(const struct session *s)
 {
-	return s->state == ST_UP && auth_fast_capable(s) && !demand_tx_held(s);
+	/* zero_rx_tx_held for the same reason as the demand hold: RX-clocked
+	 * TX answers every accepted packet, so leaving it armed transmits at
+	 * exactly the rate the peer has asked this session to stop using.
+	 * Disarming hands the frames to userspace, which honours the same
+	 * three exemptions. */
+	return s->state == ST_UP && auth_fast_capable(s) &&
+	       !demand_tx_held(s) && !zero_rx_tx_held(s);
 }
 
 /* Whether the program still holds what this session last pushed.

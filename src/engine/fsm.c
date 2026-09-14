@@ -473,7 +473,7 @@ void fsm_tx(struct session *s, uint64_t t)
 	 * packet after the hold lifts is on time rather than immediate.
 	 * bfdd does the same in ptm_bfd_xmt_TO, restarting its transmit
 	 * timer and returning without sending. */
-	if (demand_tx_held(s)) {
+	if (demand_tx_held(s) || zero_rx_tx_held(s)) {
 		if (t >= s->next_tx_us)
 			tx_reschedule(s, t);
 		return;

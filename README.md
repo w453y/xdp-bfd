@@ -33,6 +33,7 @@ In the order they happened.
 | [08-echo](milestones/08-echo/) | Echo mode: reflector in XDP, originator in userspace. |
 | [09-multihop](milestones/09-multihop/) | Multihop (RFC 5883) and per-session minimum TTL. |
 | [10-auth](milestones/10-auth/) | Authentication (RFC 5880 s6.7): a keyed digest in the driver, and the key chain that feeds it. |
+| [11-review-hardening](milestones/11-review-hardening/) | Two reviews worked through: a dead-man gate on the fast path, demand-mode path verification, an ABI handshake, and four defects found by tests that were wrong. |
 
 ## Investigations
 
@@ -44,8 +45,8 @@ Questions asked after the fact, each answered with a measurement.
 | [tick-ladder](investigations/tick-ladder/) | What the loop's tick interval costs. |
 | [sweep-ladder](investigations/sweep-ladder/) | The sweep interval does not set detection latency. |
 | [starved-detection](investigations/starved-detection/) | Detection under RT starvation, measured from outside. |
-| [wedged-ktx](investigations/wedged-ktx/) | Kernel-TX carries sessions through a stopped userspace. |
-| [symmetric-ktx](investigations/symmetric-ktx/) | Two RX-clocked engines facing each other saturate the link. |
+| [wedged-ktx](investigations/wedged-ktx/) | Kernel-TX carries sessions through a stopped userspace. Closed by m11. |
+| [symmetric-ktx](investigations/symmetric-ktx/) | Two RX-clocked engines facing each other saturate the link. The pacing gate it proposed was abandoned when the storm failed to reproduce; see m11 section 1. |
 | [multi-interface](investigations/multi-interface/) | Attaching the fast path to more than one interface. |
 | [v6-echo](investigations/v6-echo/) | IPv6 echo origination, and the assumption it corrected. |
 | [netns-rig](investigations/netns-rig/) | Testing the userspace receive path in namespaces. |

@@ -306,7 +306,8 @@ Four things went upstream, three as patches and one as a report.
 |---|---|
 | [PR 23281](https://github.com/FRRouting/frr/pull/23281) | Keyed SHA1 sequence number validation. The same window defect as section 6, in bfdd. |
 | [PR 23282](https://github.com/FRRouting/frr/pull/23282) | A keychain with no usable key ran the session unauthenticated rather than refusing it. |
-| [PR 23284](https://github.com/FRRouting/frr/pull/23284) | `your_disc == 0` was tested against session state instead of the packet's State field, so a peer that lost its state could not be readmitted. |
+| [PR 23284](https://github.com/FRRouting/frr/pull/23284) | `your_disc == 0` was tested against session state instead of the packet's State field, so a peer that lost its state could not be readmitted. **Merged 2026-09-14.** |
+| [PR 23331](https://github.com/FRRouting/frr/pull/23331) | The protocol extension itself: `DP_SESSION_AUTH` carrying every key in the chain with its send and accept lifetimes. |
 | [Issue 23274](https://github.com/FRRouting/frr/issues/23274) | The keyed-SHA1 digest is an HMAC where s6.7.4 specifies a plain SHA1 with the key embedded. Reported without a patch. |
 
 PR 23284 was cross-validated here in a way it could not be inside FRR's
@@ -314,12 +315,20 @@ own test suite: the engine emits `Down` with `your_disc = 0` when it
 loses a peer, and the fixed bfdd accepts it. Both flap timelines in
 section 10 show that exchange against a non-FRR implementation.
 
-Separately, `bfddp-auth-lifetimes` on the fork carries the protocol
-extension itself: a `DP_SESSION_AUTH` message carrying every key in the
-chain with its send and accept periods, listener support, and a
-topotest. The design point is that the data plane decides which key
-applies to a packet, because it is the only side holding the packet. It
-is not proposed upstream yet.
+The extension is now [PR
+23331](https://github.com/FRRouting/frr/pull/23331): a `DP_SESSION_AUTH`
+message carrying every key in the chain with its send and accept periods,
+listener support, and a topotest. The design point is that the data plane
+decides which key applies to a packet, because it is the only side
+holding the packet.
+
+Two things it cost to get right, both found on the live mesh rather than
+in review. `accept.end == 0` means "no lifetime", not "expired", because
+`key_new` uses `XCALLOC`: the first version of the key filter read it as
+expired and took down every authenticated session. And the keychain CLI
+accepts years only in the range 1993 to 2035, so fixture dates in 2040
+produce `% Unknown command`, which fails the whole candidate config and
+takes the `bfd peer` block down with it.
 
 There is no capability negotiation in this protocol, so bfdd cannot tell
 whether a data plane honours `SESSION_AUTH` at all. Nothing can be
@@ -436,6 +445,11 @@ Authentication protects the packets a session sends; it cannot protect a
 session that has agreed to stop sending. Everything recovered on its own
 when the key was put back.
 
+This was recorded here as a limitation and is now fixed. A demanding
+session verifies its own path on a timer, which forces the exchange that
+a changed key then fails: see [m11 section
+3](../11-review-hardening/). The measurement above is what motivated it.
+
 ## 12. Not covered
 
 Keyed MD5 (types 2 and 3) is not implemented, because bfdd cannot
@@ -447,8 +461,10 @@ possible for keyed SHA1 and was not attempted, for the digest reason in
 the header of this document. Simple password has no such problem.
 
 The key rollover in section 7 was measured on one async session. It was
-not exercised on a demanding session, where section 11 says it cannot
-work, nor across a peer restart landing inside the overlap window.
+not exercised on a demanding session, nor across a peer restart landing
+inside the overlap window. Section 11's demanding case now has a
+mechanism behind it, but the rollover itself was not re-measured against
+one.
 
 The 64-session ladder was not re-run with authentication on every
 session. The fast-path cost of the digest is measured per session, not

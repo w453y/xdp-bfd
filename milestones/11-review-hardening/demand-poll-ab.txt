@@ -1,0 +1,33 @@
+Demand-mode verification poll, both arms, against stock FRR bfdd.
+One mesh session (10.66.0.115 -> 10.66.0.15) with demand-mode configured
+on the DUT side only, so the DUT's detection timer is held while the peer,
+having been asked to, stops transmitting. The DUT is therefore the end
+that cannot see the peer disappear.
+
+The peer is then silenced with an iptables OUTPUT drop on the PEER host
+(not the DUT: XDP sits ahead of netfilter, so a local rule would never
+see these packets).
+
+--- steady state, gate armed ---------------------------------------
+state=Up demand={'on': True, 'peer': False, 'tx_held': False,
+                 'detect_held': True}
+polls=7 polling=False rx=1 tx=195
+
+Seven polls in eight seconds and polling=False on each sample: every Poll
+was answered with a Final by stock bfdd. That is the interoperation
+question settled.
+
+--- --demand-poll-us 0 ---------------------------------------------
+before: state=Up detect_held=True polls=0
+STILL UP after 25s: polls 0 -> 0
+  the session cannot notice its peer is gone
+recovered
+
+--- --demand-poll-us 1000000 (default) -----------------------------
+before: state=Up detect_held=True polls=29
+DOWN after 1.45s: diag=1 reason='detect timeout' polls 29 -> 31
+recovered
+
+diag 1 is correct and deliberate: the poll re-arms detection and the
+missing Final expires it. The gate does not announce anything, it makes
+the peer's absence measurable.

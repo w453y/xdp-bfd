@@ -1,0 +1,43 @@
+The ABI handshake, both directions, and the proof it is not decorative.
+
+The skew is one field added to tx_cfg. Deliberately NOT session_state,
+which was the first choice and is the wrong one: growing session_state by
+eight bytes pushes the packet path over the verifier's 512-byte combined
+stack budget, so the skewed object fails to load whether or not anything
+checks its ABI, and the test would pass against an engine with no check
+at all. tx_cfg is reached through a map pointer and costs no stack.
+
+--- with the check DISABLED, skewed object -------------------------
+kernel-tx: dead-man gate at 1000000us
+kernel-tx: XDP attached to lo (generic mode, link)
+echo-tx: ifindex 1 src-mac 00:00:00:00:00:00 sock 26
+bfd_tx: static session lid=1652027835 10.0.0.1 -> 10.0.0.2 (kernel-tx)
+
+It loads, it attaches, it brings a session up. Nothing logged, nothing
+refused. Both halves are now reading the same map bytes as different
+structs.
+
+--- with the check enabled, skewed object --------------------------
+kernel-tx: /tmp/.../bfd_xdp.o was built with tx_cfg at 1212 bytes, this
+           engine has 1208
+kernel-tx: refusing to load ... - rebuild both halves from the same tree
+... load failed
+
+--- with the check enabled, a genuinely old object (eda42fd) -------
+kernel-tx: ... has no BTF record of struct bfd_event, so it predates this check
+kernel-tx: ... has no BTF record of struct bfd_ctrl_pkt, so it predates this check
+kernel-tx: ... sizes bfd_stats for 14 entries, this engine expects 15
+kernel-tx: ... sizes tunables for 1 entries, this engine expects 2
+kernel-tx: refusing to load ... - rebuild both halves from the same tree
+
+--- with the check enabled, the matching object --------------------
+kernel-tx: dead-man gate at 1000000us
+kernel-tx: XDP attached to lo (generic mode, link)
+
+The first version of this check refused the matching object. BTF for a
+BPF object is built from map definitions and program signatures, so
+bfd_event and bfd_ctrl_pkt, named only inside function bodies, were
+pruned entirely. Caught only because the positive case was tested too.
+They are now held in BTF by a witness in maps.h, declared BY VALUE: a
+pointer can be recorded against a forward declaration, and a forward
+declaration has no size to compare.

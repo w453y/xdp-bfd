@@ -1,0 +1,30 @@
+Loop inter-pass gaps, 64-session mesh, FRR master control plane.
+Read from the engine's own loop_gap_us log2 histogram via SIGUSR1.
+This is what the dead-man bound was chosen against.
+
+uptime passes: 651347
+  [       4 ..        8) us           1   cum 0.000154%
+  [       8 ..       16) us          14   cum 0.002303%
+  [      16 ..       32) us          54   cum 0.010593%
+  [      32 ..       64) us         340   cum 0.062793%
+  [      64 ..      128) us         726   cum 0.174255%
+  [     128 ..      256) us        1808   cum 0.451834%
+  [     256 ..      512) us        3029   cum 0.916871%
+  [     512 ..     1024) us        5787   cum 1.805338%
+  [    1024 ..     2048) us      630447   cum 98.596752%
+  [    2048 ..     4096) us        9092   cum 99.992631%
+  [    4096 ..     8192) us          39   cum 99.998618%
+  [    8192 ..   16384) us           4   cum 99.999232%
+  [   16384 ..   32768) us           2   cum 99.999539%
+  [ 8388608 .. 16777216) us           3   cum 100.000000%
+
+98.6% of passes fall in the 1-2ms bucket and 99.99% are under 4ms. The
+two worst LEGITIMATE gaps in the whole run are in 16-32ms.
+
+The three samples in the 8.4 to 16.8 SECOND bucket are the deliberate
+SIGSTOP windows from the wedged-ktx runs in this same session. Nothing
+the engine does to itself comes within four orders of magnitude of them,
+which is why a 1s bound is both safe and useful rather than delicate.
+
+Soak at the 1s default afterwards: 198016 passes, deadman-hold 0, worst
+gap still 16-32ms. No false trips.

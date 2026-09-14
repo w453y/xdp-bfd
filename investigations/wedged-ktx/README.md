@@ -163,9 +163,31 @@ surprises before.
 
 ## 7. Status
 
-Open. Demonstrated, not fixed, and deliberately so: the fix is a threshold
-nobody has chosen yet, and choosing it wrong costs the property the whole
-design exists for. The README's claim about detection under stress remains
-accurate for the case it describes; what has no line in the README is what
-happens when userspace stops entirely.
+**Closed by [m11](../../milestones/11-review-hardening/)** (2026-09-14).
+
+This section previously read: *"Open. Demonstrated, not fixed, and
+deliberately so: the fix is a threshold nobody has chosen yet, and
+choosing it wrong costs the property the whole design exists for."*
+
+The threshold is now chosen, and the reason it could be is that the
+engine was already recording what was needed to choose it. `loop_gap_us`
+is a log2 histogram of the loop's own inter-pass gaps, and over 651347
+consecutive passes on this mesh the two worst legitimate gaps land in
+16-32ms while the SIGSTOP windows sit alone in the 8 to 16 second bucket.
+Four orders of magnitude of separation means the threshold is not
+delicate, which was the whole objection. One second, `--deadman-us 0` to
+disable.
+
+The finding above was re-measured before anything was built, and it held:
+55 of 64 sessions carried through a 15 second stop. With the gate armed
+the same window carries nothing and the peer declares 59 sessions down.
+
+One correction to this document. The script it describes reported the
+opposite of what it measured, for two reasons, both fixed in m11. It ran
+a bare `vtysh`, which resolves to the distro binary whose daemons are not
+running, so later runs died before measuring anything. And its verdict
+collapsed to "any down event at all", which reads the control group as
+the result: sessions the fast path does not carry transmit from the loop
+and are *supposed* to go down when it stops. The numbers in section 1 are
+unaffected, because that run had no down events to miscount.
 

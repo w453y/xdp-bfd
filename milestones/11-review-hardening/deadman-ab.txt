@@ -1,0 +1,47 @@
+Dead-man gate, both arms, same build, same 15s SIGSTOP window.
+64-session mesh, DUT engine held in T state, measured entirely from the
+peer's own counters because a stopped engine cannot answer SIGUSR1.
+
+"carried" = the peer kept receiving from that session AND never recorded
+a down event for it. "dropped" = the peer declared it down. The
+distinction matters: a gate that answers for its first second still moves
+the peer's input counter, so "received something" would read a dropped
+session as a carried one.
+
+--- --deadman-us 0 (gate off) --------------------------------------
+baseline: 64 of 64 up, kernel_tx True
+STOP pid 2529972: stat T
+after 15s: stat T, resumed
+
+peer, over the 15s window (64 sessions)
+  session-down       +4
+  session-up         +0
+  carried            55  (heard from, never declared down)
+  dropped            4   (peer declared down)
+  silent             5   (no traffic either way)
+
+verdict
+  55 session(s) stayed Up for 15s with userspace stopped, the peer still
+  receiving. Kernel-TX alone carried them: WEDGED-BUT-ALIVE IS REAL.
+  (4 went down: sessions the fast path does not carry transmit from the
+  loop, so a stopped loop takes them down. That is the control arm.)
+
+--- --deadman-us 1000000 (default) ---------------------------------
+baseline: 64 of 64 up, kernel_tx True
+STOP pid 2523943: stat T
+after 15s: stat T, resumed
+
+peer, over the 15s window (64 sessions)
+  session-down       +59
+  session-up         +0
+  carried            0
+  dropped            59
+  silent             5
+
+stats.deadman-hold on the DUT: 165
+
+165 rather than thousands because a peer that has gone Down no longer
+passes the rstate check, so the fast path only withholds for the couple
+of hundred milliseconds between the gate tripping and the peer noticing.
+
+Recovery after CONT: 64/64 up, deadman-hold unchanged at 165.

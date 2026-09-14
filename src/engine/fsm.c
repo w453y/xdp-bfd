@@ -512,7 +512,22 @@ void fsm_tx(struct session *s, uint64_t t)
 		 * peer paces slower than our required rate (its detect
 		 * budget for us), transmit from here at the required
 		 * pace; otherwise stay silent as before. last_rx_us is
-		 * synced from the map, so it tracks kernel echo times. */
+		 * synced from the map, so it tracks kernel echo times.
+		 *
+		 * This reads arrival time and means "the fast path has
+		 * replied recently". The two are the same thing only while
+		 * every accepted packet is answered, which is true today and
+		 * is not a property anything enforces. Anything that lets the
+		 * program decline to answer - a rate gate on the bounce, a
+		 * liveness gate on a wedged control plane - breaks the
+		 * equivalence, and userspace then stays quiet believing the
+		 * kernel is transmitting when it has just decided not to.
+		 * Both ends go silent and the session times out; measured at
+		 * a flap every 32ms, which is the detect budget exactly.
+		 *
+		 * Whatever introduces such a gate has to give this a record
+		 * of when the program last transmitted and key off that
+		 * instead. */
 		uint64_t pace = s->applied_tx_us > s->r_min_rx ?
 				s->applied_tx_us : s->r_min_rx;
 		if (t - s->last_rx_us < pace)

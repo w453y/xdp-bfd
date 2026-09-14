@@ -149,8 +149,17 @@ void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 	 * change, which alters the peer's detection budget for us.
 	 */
 	uint32_t ntx = ntohl(p->min_tx), nrx = ntohl(p->min_rx);
+	uint32_t nec = ntohl(p->min_echo_rx);
 	uint8_t  nfl = p->flags & 0x3f;
+	/* min_echo_rx belongs here with the rest. It is assigned below and
+	 * reported by dp_notify_state, but it was left out of the test, so
+	 * a peer that changed only its echo interval - or withdrew echo by
+	 * advertising zero - produced no notification and the control plane
+	 * kept the old value indefinitely. ktx_poll_map has always compared
+	 * it, so the two paths disagreed about what counts as a change
+	 * depending on whether the fast path happened to be armed. */
 	int rparams_changed = (ntx != s->r_min_tx || nrx != s->r_min_rx ||
+			       nec != s->r_min_echo ||
 			       nfl != s->r_flags ||
 			       p->detect_mult != s->r_mult);
 
@@ -158,7 +167,7 @@ void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 	s->r_state  = ps;
 	s->r_min_rx = nrx;
 	s->r_min_tx = ntx;
-	s->r_min_echo = ntohl(p->min_echo_rx);
+	s->r_min_echo = nec;
 	s->r_mult   = p->detect_mult;
 	s->r_flags  = nfl;
 
@@ -394,12 +403,6 @@ void fsm_tx(struct session *s, uint64_t t)
 	if (s->admin_down && s->state != ST_ADMINDOWN)
 		state_transition(s, ST_ADMINDOWN, 7, t, "admin shutdown");
 
-	/* RFC 5880 s6.8.7: the peer is demanding, so periodic transmission
-	 * stops. Nothing else changes - the session stays Up, the mirror
-	 * stays current, and the schedule keeps advancing so the first
-	 * packet after the hold lifts is on time rather than immediate.
-	 * bfdd does the same in ptm_bfd_xmt_TO, restarting its transmit
-	 * timer and returning without sending. */
 	/* RFC 5880 s6.8.7: a system MUST NOT transmit while it is taking
 	 * the passive role and bfd.RemoteDiscr is zero. That is the whole
 	 * of what passive means - it does not begin the handshake - and
@@ -420,6 +423,12 @@ void fsm_tx(struct session *s, uint64_t t)
 		return;
 	}
 
+	/* RFC 5880 s6.8.7: the peer is demanding, so periodic transmission
+	 * stops. Nothing else changes - the session stays Up, the mirror
+	 * stays current, and the schedule keeps advancing so the first
+	 * packet after the hold lifts is on time rather than immediate.
+	 * bfdd does the same in ptm_bfd_xmt_TO, restarting its transmit
+	 * timer and returning without sending. */
 	if (demand_tx_held(s)) {
 		if (t >= s->next_tx_us)
 			tx_reschedule(s, t);

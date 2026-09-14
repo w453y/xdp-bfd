@@ -223,6 +223,67 @@ static void run_table(void)
  * peer's Down, which still converged through the peer's Init a round trip
  * later, so nothing looked broken from outside.
  */
+/* An echo-only change reaches the control plane.
+ *
+ * dp_notify_state reports the peer's echo interval, so a peer that changes
+ * only that - or withdraws echo by advertising zero - is a change the
+ * control plane has to hear about. It was assigned but left out of the
+ * test that decides whether to notify, so FRR kept a stale value for as
+ * long as nothing else about the peer moved. ktx_poll_map compared it all
+ * along, so whether the change was noticed depended on whether the fast
+ * path happened to be armed.
+ */
+static void case_echo_only_change_notifies(void)
+{
+	struct bfd_ctrl_pkt p = pkt(ST_UP, 0);
+	struct session *s;
+	int bad = 0;
+	int base;
+
+	s = sess_init(ST_UP);
+	s->rdisc = 0x22222222;
+	s->r_min_echo = 50000;
+
+	p.min_echo_rx = htonl(50000);
+	notify_calls = 0;
+	fsm_rx(s, &p, 2000000);
+	base = notify_calls;
+	if (base) {
+		printf("     %d notifications for a packet that changed nothing\n",
+		       base);
+		bad = 1;
+	}
+
+	/* Only the echo interval moves. */
+	p.min_echo_rx = htonl(200000);
+	fsm_rx(s, &p, 2100000);
+	if (notify_calls != base + 1) {
+		printf("     %d notifications for an echo-only change, want 1\n",
+		       notify_calls - base);
+		bad = 1;
+	}
+	if (s->r_min_echo != 200000) {
+		printf("     r_min_echo %u, want 200000\n", s->r_min_echo);
+		bad = 1;
+	}
+
+	/* Withdrawing echo is a change too. */
+	p.min_echo_rx = htonl(0);
+	fsm_rx(s, &p, 2200000);
+	if (notify_calls != base + 2) {
+		printf("     withdrawing echo did not notify\n");
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL %-44s\n", "echo-only-change-notifies");
+		fails++;
+	} else {
+		printf("ok   %-44s notified twice\n",
+		       "echo-only-change-notifies");
+	}
+}
+
 static void case_passive(void)
 {
 	struct bfd_ctrl_pkt p = pkt(ST_DOWN, 0);
@@ -724,6 +785,7 @@ int main(void)
 {
 	run_table();
 	run_detect_vectors();
+	case_echo_only_change_notifies();
 	case_passive();
 	case_admin_down();
 	case_poll_bits();

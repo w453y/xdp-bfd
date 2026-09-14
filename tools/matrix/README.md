@@ -1,5 +1,25 @@
 # Support matrix arms
 
+## Four ways to produce a plausible but false row
+
+All four happened on the first run, and all four produce a row that looks
+filled in. The RPM arms will reproduce them, so read these first.
+
+- **`PRETTY_NAME` contains spaces.** A word split put the kernel version in
+  the `os` field and everything else in `arch`. Ask for each fact in its
+  own call.
+- **Every compile line carries `-Werror`.** Grepping a build log for
+  "error" therefore reports the *command* as the failure. And "failure"
+  matches the success line `0 failure(s)`, so a real failure gets recorded
+  as that string. Match what a failure actually says.
+- **`libbpf-dev` is multiarch**, so `dpkg-query -W` needs the architecture
+  qualifier or returns nothing and the field is silently empty.
+- **`/usr/sbin` is not on `PATH`** for a non-login shell as a normal user
+  on Debian. `ethtool` and `ip` report themselves absent on a machine where
+  `dpkg -l` shows them installed, and the row records "ethtool absent"
+  which is a lie.
+
+
 `run-arm.sh <ssh-target> <arm-name> [object ...]` answers, for one distro,
 whether it builds the engine, loads the object, and brings a session up.
 One JSON object per arm on stdout; the rows live beside this file.

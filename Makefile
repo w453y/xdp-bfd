@@ -39,7 +39,9 @@ bfd_tx: $(ENGINE_OBJS)
 
 clean:
 	rm -f bfd_xdp.o bfd_loader bfd_tx $(ENGINE_OBJS) \
-	      tests/unit/bfd_xdp_test.o tests/unit/hmac_run
+	      tests/unit/bfd_xdp_test.o tests/unit/hmac_run \
+	      tests/unit/xdp_run tests/unit/fsm_run tests/unit/dp_run \
+	      tests/unit/dp_fuzz
 
 # Same flags and headers as bfd_xdp.o. Test-only: never shipped, never
 # loaded outside tests/unit/xdp_run.

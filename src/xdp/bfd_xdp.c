@@ -237,6 +237,13 @@ int bfd_observer(struct xdp_md *ctx)
 			st->detect_iv_us = cand;
 	}
 
+	/* Not atomic, and that rests on RSS: a 5-tuple hashes to one queue,
+	 * so one session's packets are handled by one CPU and these are
+	 * uncontended. Break that assumption - generic XDP with RPS
+	 * spreading a flow across CPUs - and two packets can pass the
+	 * replay check against the same window, or take the same
+	 * auth_tx_seq. One packet of replay tolerance, not a lost session,
+	 * but the assumption is worth stating where it is relied on. */
 	st->last_seen_ns = now;
 	st->rx_pkts++;
 	__builtin_memcpy(st->peer_mac, eth->h_source, 6);
@@ -255,6 +262,14 @@ int bfd_observer(struct xdp_md *ctx)
 	 * F. tx_cfg is userspace-owned, so ack via kernel-owned
 	 * final_seq instead of clearing cfg->poll in place (a racing
 	 * userspace mirror push could resurrect the finished poll). */
+	/* Whatever Poll is current, not the one this F answers: the packet
+	 * carries no sequence, so a Final that was in flight when a second
+	 * Poll began terminates the second one. It takes two Polls inside
+	 * one round trip to reach, which needs a parameter change landing
+	 * immediately after a demand verification poll, and the cost is one
+	 * poll ending early rather than a wrong value being applied. Noted
+	 * rather than fixed, because fixing it means a sequence on the wire
+	 * that RFC 5880 does not have. */
 	if (cfg && cfg->poll && (bfd->flags & BFD_F_FINAL))
 		st->final_seq = cfg->poll_seq;
 

@@ -50,10 +50,11 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx,
         	 * userspace path already does. Single-hop frames arrive at 255
         	 * and skip this entirely. */
         	if (iph && iph->ttl != 255) {
-        		__u16 ow = *(__u16 *)&iph->ttl;
-	
+        		/* No incremental checksum fixup: the v4 header check is
+        		 * zeroed and folded again in full below, once the
+        		 * length is final, so patching it here is work whose
+        		 * result is overwritten. */
         		iph->ttl = 255;
-        		csum_replace2(&iph->check, ow, *(__u16 *)&iph->ttl);
         	} else if (ip6 && ip6->hop_limit != 255) {
         		ip6->hop_limit = 255;   /* no checksum in v6 */
         	}

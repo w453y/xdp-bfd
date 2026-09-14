@@ -4,6 +4,7 @@
 #define BFD_ENGINE_DPLANE_H
 
 #include <stdint.h>
+#include <sys/types.h>
 
 #include "session.h"
 
@@ -22,5 +23,6 @@ void dp_flush(void);
 void dp_accept(void);
 void dp_fds(int *listen_fd, int *conn_fd);
 int dp_listen_init(const char *arg);
+void dp_set_peer_uid(uid_t uid);
 
 #endif /* BFD_ENGINE_DPLANE_H */

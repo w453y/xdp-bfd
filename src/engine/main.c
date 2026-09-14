@@ -37,6 +37,8 @@
 #include "util.h"
 #include "log.h"
 #include "session.h"
+#include <pwd.h>
+
 #include "dplane.h"
 #include "ktx.h"
 #include "fsm.h"
@@ -274,6 +276,29 @@ int main(int argc, char **argv)
 			}
 			dp_hold_us = v * 1000000ull;
 		}
+		else if (!strcmp(argv[i], "--dp-peer") && i + 1 < argc) {
+			/* The account bfdd runs as. A UNIX control socket is
+			 * created 0600 without this, so an engine running as
+			 * root and a bfdd running as `frr` need to be told.
+			 * Also the uid SO_PEERCRED is checked against, so it
+			 * is authorization rather than only file mode. */
+			const char *a = argv[++i];
+			const struct passwd *pw = getpwnam(a);
+			char *end;
+
+			if (pw) {
+				dp_set_peer_uid(pw->pw_uid);
+			} else {
+				unsigned long long v = strtoull(a, &end, 10);
+
+				if (end == a || *end || v > (unsigned)-2) {
+					log_err("--dp-peer: no such user and not a uid: '%s'\n",
+						a);
+					return 1;
+				}
+				dp_set_peer_uid((uid_t)v);
+			}
+		}
 		else if (!static_local)
 			static_local = argv[i];
 		else if (!static_peer)
@@ -291,6 +316,7 @@ int main(int argc, char **argv)
 		log_err(
 			"usage: %s <local-ip> <peer-ip> [--kernel-tx <if>]\n"
 			"       %s --dplane <port|sock-path> [--kernel-tx <if>] [--dp-hold <sec>]\n"
+			"       [--dp-peer <user|uid>]  (the account bfdd runs as)\n"
 			"       [--bpf-obj <path>] [--xdp-mode drv|generic]\n"
 			"       [--stats-dump <path>]   (SIGUSR1 writes it)\n"
 			"       [--sweep-us <500-100000>]\n"

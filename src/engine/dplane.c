@@ -131,12 +131,25 @@ static void dp_sessions_orphan(const char *why)
 static char dp_out[65536];
 static size_t dp_out_len;
 
+/* Everything a connection carried, forgotten in one place.
+ *
+ * Both buffers belong to the byte stream that is going away. Input is
+ * obvious; output is the half that was missed, because a message queued
+ * for the old client is not a message for the new one, and after a partial
+ * write what is left is the tail of a frame the new client never saw the
+ * head of. It would then read a message boundary in the middle of one.
+ */
+static void dp_conn_reset(void)
+{
+	dp_have = 0;
+	dp_out_len = 0;
+}
+
 static void dp_drop_conn(const char *why)
 {
 	close(dp_conn);
 	dp_conn = -1;
-	dp_have = 0;
-	dp_out_len = 0;
+	dp_conn_reset();
 	dp_sessions_orphan(why);
 }
 
@@ -769,7 +782,7 @@ void dp_accept(void)
 	if (dp_conn >= 0) {
 		log_info("dplane: replacing existing bfdd connection\n");
 		close(dp_conn);
-		dp_have = 0;
+		dp_conn_reset();
 		dp_sessions_orphan("connection replaced");
 	}
 	fcntl(c, F_SETFL, O_NONBLOCK);

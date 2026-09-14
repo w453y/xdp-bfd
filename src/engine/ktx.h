@@ -10,6 +10,8 @@ extern const char *ktx_obj_path;
 extern unsigned int ktx_xdp_flags;
 extern int ktx_ifindex;
 extern __u64 ktx_sweep_ns;
+extern __u64 ktx_deadman_ns;
+void ktx_heartbeat(uint64_t now);
 extern int sess_fd;
 extern int echo_peers_fd;
 extern int echo_disc_fd;
@@ -27,6 +29,9 @@ void ktx_update_mhop_flag(void);
 void ktx_mirror(struct session *s);
 void ktx_clear(struct session *s);
 void ktx_poll_all(void);
+int ktx_events_fd(void);
+void ktx_drain_events(void);
+const char *ktx_poll_mode(void);
 void ktx_poll_map(struct session *s, uint64_t t);
 
 #endif /* BFD_ENGINE_KTX_H */

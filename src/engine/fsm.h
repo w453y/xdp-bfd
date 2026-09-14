@@ -4,6 +4,8 @@
 #define BFD_ENGINE_FSM_H
 
 #include <stdint.h>
+#include <sys/types.h>
+#include <sys/socket.h>
 
 #include "session.h"
 
@@ -21,6 +23,12 @@ void state_transition(struct session *s, int newstate, int diag,
 void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t);
 void fsm_detect(struct session *s, uint64_t t);
 void fsm_tx(struct session *s, uint64_t t);
+void fsm_start_poll(struct session *s, uint64_t t);
+extern uint64_t demand_poll_us;
+
+/* Test seam for the transmit refusal path; see fsm.c. NULL in production. */
+extern ssize_t (*fsm_send_hook)(int fd, const void *buf, size_t len,
+				const struct sockaddr *dst, socklen_t dlen);
 void fsm_announce_down(struct session *s);
 
 #endif /* BFD_ENGINE_FSM_H */

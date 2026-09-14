@@ -52,6 +52,8 @@ void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local,
 }
 void ktx_update_mhop_flag(void) { }
 void ktx_mirror(struct session *s) { (void)s; }
+/* No program, no sweep, no ring; fsm_detect keeps the whole budget. */
+int ktx_events_fd(void) { return -1; }
 void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip)
 {
 	(void)peer; (void)skip;
@@ -534,6 +536,150 @@ static void case_add_without_auth(void)
 /* An ADD for an existing lid may move the address pair. The old pair's
  * map entries would otherwise stay behind with enable=1 and keep being
  * answered by the fast path. */
+/* A repeated ADD must not slow transmission mid-Poll.
+ *
+ * Raising min_tx on an Up session starts a Poll sequence and deliberately
+ * keeps transmitting at the old interval until the peer answers with a
+ * Final, which is what s6.8.3 requires. A second ADD carrying the same
+ * values compares equal against what the first one stored, so it misses
+ * the parameter-change branch entirely and used to fall through to a bare
+ * assignment, applying the slower rate while the poll was still open. The
+ * peer would then time out against an interval it had not agreed to.
+ */
+/* The mirror cache is keyed as well as valued.
+ *
+ * ktx_mirror skips the map write when what it would push equals what it
+ * last pushed. An UPDATE that moves the address pair changes no tx_cfg
+ * field at all, so on the value alone the answer is "nothing to do" while
+ * the old entry has already been cleared and the new key has none. The
+ * session keeps running in userspace with nobody saying why.
+ *
+ * ktx_mirror itself is stubbed here, which is precisely how the address
+ * move case above passed while this went unnoticed, so the predicate is
+ * tested rather than the caller.
+ */
+static void case_mirror_cache_tracks_key(void)
+{
+	struct session_key k1 = {}, k2 = {};
+	struct tx_cfg c = {};
+	struct session s = {};
+	uint32_t a1 = inet_addr("10.0.0.41");
+	uint32_t a2 = inet_addr("10.0.0.42");
+	int bad = 0;
+
+	k1.peer.b[10] = k1.peer.b[11] = 0xff;
+	memcpy(&k1.peer.b[12], &a1, 4);
+	k2 = k1;
+	memcpy(&k2.peer.b[12], &a2, 4);
+
+	c.min_tx_us = 50000;
+
+	if (!ktx_push_needed(&s, &c, &k1)) {
+		printf("     nothing pushed yet and it says no push needed\n");
+		bad = 1;
+	}
+
+	/* Stand in for a push that landed. */
+	s.pushed_cfg = c;
+	s.pushed_key = k1;
+	s.pushed_valid = 1;
+
+	if (ktx_push_needed(&s, &c, &k1)) {
+		printf("     same key and same value still wants a push\n");
+		bad = 1;
+	}
+	if (!ktx_push_needed(&s, &c, &k2)) {
+		printf("     the address pair moved and it wants no push\n");
+		bad = 1;
+	}
+
+	c.min_tx_us = 10000;
+	if (!ktx_push_needed(&s, &c, &k1)) {
+		printf("     the value changed and it wants no push\n");
+		bad = 1;
+	}
+
+	report("mirror-cache-tracks-key", bad, "key and value both count");
+}
+
+static void case_repeated_add_during_poll(void)
+{
+	unsigned char buf[256];
+	struct session *s;
+	size_t n;
+	int bad = 0;
+
+	sessions_clear();
+	n = build_add(buf, 0x4009, "10.0.0.1", "10.0.0.40");
+	((struct bfddp_session_msg *)(buf + sizeof(struct bfddp_message_header)))
+		->min_tx = htonl(10000);
+	feed(buf, n);
+	dp_read();
+
+	s = sess_by_lid(0x4009);
+	if (!s) {
+		printf("     session missing after the first add\n");
+		printf("FAIL %-44s\n", "repeated-add-holds-applied-tx");
+		fails++;
+		return;
+	}
+	s->state = ST_UP;
+	s->applied_tx_us = 10000;
+
+	/* Raise it: poll opens, the applied rate stays where it was. */
+	n = build_add(buf, 0x4009, "10.0.0.1", "10.0.0.40");
+	((struct bfddp_session_msg *)(buf + sizeof(struct bfddp_message_header)))
+		->min_tx = htonl(50000);
+	feed(buf, n);
+	dp_read();
+
+	s = sess_by_lid(0x4009);
+	if (!s->polling) {
+		printf("     no poll sequence after the increase\n");
+		bad = 1;
+	}
+	if (s->applied_tx_us != 10000) {
+		printf("     applied_tx_us %u after the increase, want 10000\n",
+		       s->applied_tx_us);
+		bad = 1;
+	}
+
+	/* The same message again, before any Final. */
+	n = build_add(buf, 0x4009, "10.0.0.1", "10.0.0.40");
+	((struct bfddp_session_msg *)(buf + sizeof(struct bfddp_message_header)))
+		->min_tx = htonl(50000);
+	feed(buf, n);
+	dp_read();
+
+	s = sess_by_lid(0x4009);
+	if (!s->polling) {
+		printf("     the repeat ended the poll\n");
+		bad = 1;
+	}
+	if (s->applied_tx_us != 10000) {
+		printf("     applied_tx_us %u after the repeat, want 10000\n",
+		       s->applied_tx_us);
+		bad = 1;
+	}
+
+	/* The peer answers: now it may apply. */
+	s->polling = 0;
+	s->applied_tx_us = s->min_tx_us;
+	if (s->applied_tx_us != 50000) {
+		printf("     applied_tx_us %u after the final, want 50000\n",
+		       s->applied_tx_us);
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL %-44s\n", "repeated-add-holds-applied-tx");
+		fails++;
+	} else {
+		printf("ok   %-44s held 10000 until the final\n",
+		       "repeated-add-holds-applied-tx");
+	}
+}
+
 static void case_address_move(void)
 {
 	unsigned char buf[256];
@@ -721,6 +867,8 @@ int main(void)
 	case_fresh_v6();
 	case_update_keeps_disc();
 	case_add_without_auth();
+	case_mirror_cache_tracks_key();
+	case_repeated_add_during_poll();
 	case_address_move();
 	case_flags();
 

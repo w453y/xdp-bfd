@@ -144,7 +144,7 @@ _Static_assert(BFD_MAX_LEN <= HMAC_SHA1_MAX_MSG + SHA1_DIGEST_LEN,
  * by count, so inserting a member in the middle fails rather than shifting
  * everything below it. */
 _Static_assert(BFD_TUNE_SWEEP_NS == 0, "BFD_TUNE_SWEEP_NS");
-_Static_assert(BFD_TUNE_MAX == 1, "BFD_TUNE_MAX");
+_Static_assert(BFD_TUNE_MAX == 2, "BFD_TUNE_MAX");
 _Static_assert(ST_ADMINDOWN == 0, "ST_ADMINDOWN");
 _Static_assert(ST_DOWN == 1, "ST_DOWN");
 _Static_assert(ST_INIT == 2, "ST_INIT");
@@ -166,4 +166,4 @@ _Static_assert(BFD_STAT_ECHO_TTL == 8, "BFD_STAT_ECHO_TTL");
 _Static_assert(BFD_STAT_UNSUPPORTED_FLAGS == 9, "BFD_STAT_UNSUPPORTED_FLAGS");
 _Static_assert(BFD_STAT_SWEEP_INIT_FAIL == 10, "BFD_STAT_SWEEP_INIT_FAIL");
 _Static_assert(BFD_STAT_IP_OPTIONS == 11, "BFD_STAT_IP_OPTIONS");
-_Static_assert(BFD_STAT_MAX == 14, "BFD_STAT_MAX");
+_Static_assert(BFD_STAT_MAX == 15, "BFD_STAT_MAX");

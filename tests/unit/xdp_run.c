@@ -239,6 +239,7 @@ static void expect(const char *name, int got, int want)
 /* ---------- map state ---------- */
 
 static int cfg_fd = -1, sess_fd = -1, stats_fd = -1;
+static int tune_fd = -1, hb_fd = -1;
 static int flags_fd = -1;
 static int echo_peers_fd = -1, echo_disc_fd = -1;
 /* The sweep lives behind a bpf_timer, which does not fire under
@@ -859,6 +860,71 @@ static void case_demand_bit_out(uint8_t cfg_demand, uint8_t in_flags,
 	} else {
 		printf("ok   %-40s D %u F %u\n", name, got, gotf);
 	}
+	map_reset();
+}
+
+/* The dead-man gate: the fast path answers on the engine's behalf only
+ * while the engine is still saying it is there.
+ *
+ * `age_us` is how stale the heartbeat is made, relative to the bound. The
+ * program reads bpf_ktime_get_ns itself, so the heartbeat is written as an
+ * offset from the same clock rather than the clock being controlled - the
+ * margins here are whole seconds against a test that takes microseconds,
+ * so the drift between writing it and the program reading it cannot reach
+ * a verdict.
+ *
+ * A bound of zero is the gate switched off, and a heartbeat of zero is an
+ * engine that has not written one yet; both must answer, and both are
+ * checked, because they are the two ways the gate could be armed against a
+ * healthy system.
+ */
+static void case_deadman(const char *name, __u64 bound_ns, __u64 hb_ns,
+			 int want_tx)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	unsigned char out[FRAME_MAX];
+	unsigned int out_len = 0;
+	struct frame f;
+	unsigned long long held0, held1;
+	__u32 zero = 0;
+	__u32 tk = BFD_TUNE_DEADMAN_NS;
+	int v, want;
+
+	if (tune_fd < 0 || hb_fd < 0) {
+		printf("FAIL %-40s no tunables/heartbeat map\n", name);
+		fails++;
+		return;
+	}
+	map_reset();
+	arm_session();
+	bpf_map_update_elem(tune_fd, &tk, &bound_ns, BPF_ANY);
+	bpf_map_update_elem(hb_fd, &zero, &hb_ns, BPF_ANY);
+
+	held0 = stat_get(BFD_STAT_DEADMAN_HOLD);
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+	v = run_frame(&f, out, &out_len);
+	held1 = stat_get(BFD_STAT_DEADMAN_HOLD);
+
+	/* Withholding the reply is XDP_PASS, which is also what an
+	 * unconfigured session gets, so the verdict alone would pass if the
+	 * gate were deleted and the session simply failed to arm. The
+	 * counter is the witness that this packet reached the gate. */
+	want = want_tx ? XDP_TX : XDP_PASS;
+	if (v != want || (held1 - held0) != (unsigned long long)!want_tx) {
+		printf("FAIL %-40s want %s hold+%d, got %s hold+%llu\n",
+		       name, verdict_str(want), !want_tx,
+		       v < 0 ? "syscall-error" : verdict_str(v),
+		       held1 - held0);
+		fails++;
+	} else {
+		printf("ok   %-40s %s, hold+%llu\n", name, verdict_str(v),
+		       held1 - held0);
+	}
+
+	bound_ns = 0;
+	hb_ns = 0;
+	bpf_map_update_elem(tune_fd, &tk, &bound_ns, BPF_ANY);
+	bpf_map_update_elem(hb_fd, &zero, &hb_ns, BPF_ANY);
 	map_reset();
 }
 
@@ -1687,16 +1753,150 @@ static void run_echo_v6_matrix(void)
 		     1, XDP_TX, BFD_STAT_REFLECTED);
 }
 
-/* IP options. A single-hop BFD control packet never carries them, and
- * passing one would leave the UDP header at a variable offset, skipping
- * GTSM and demux and leaking the packet to the userspace socket
- * unvalidated - the same bypass class as an XDP_PASS reject.
+/* An envelope that does not describe the frame.
  *
- * The check sits before the port test, so this drops any UDP packet with
- * options, not only BFD-bound ones. That is broader than the fragment
- * rule, which only drops fragments aimed at a BFD port, and the
- * other-port arm below pins the difference. */
-static void case_ip_options(const char *name, uint16_t dport)
+ * bfd_ctrl_check takes the payload length from udp->len, which is whatever
+ * the sender wrote, and nothing compared it against what actually arrived.
+ * A 66 byte frame claiming a UDP length of 208 was accepted: no overread,
+ * because every field read afterwards is inside the 24 bytes already
+ * bounds-checked, but it refreshed liveness and could acknowledge a Poll
+ * on a packet that is not what it says it is.
+ *
+ * Worse on the way out. The bounce trimmed and rewrote the lengths only
+ * when there was a tail to trim, so a frame with nothing spare went back
+ * out still claiming 208 - built by this engine, with a length its own
+ * receive path would now refuse.
+ *
+ * MALFORMED and PASS rather than DROP, like a broken BFD header: a length
+ * that does not match the frame is not evidence of an attack, and the
+ * stack applies the same rule.
+ */
+static void case_bad_envelope(const char *name, int which)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct session_state after;
+	unsigned long long before;
+	struct frame f;
+	int v, bad = 0;
+
+	map_reset();
+	arm_session();
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+
+	struct iphdr *ip = (void *)(f.b + sizeof(struct ethhdr));
+	struct udphdr *udp = (void *)(ip + 1);
+
+	if (which == 0)
+		udp->len = htons(208);          /* more UDP than arrived */
+	else
+		ip->tot_len = htons(400);       /* more IP than arrived */
+
+	ip->check = 0;
+	ip->check = csum16(ip, sizeof(*ip), 0);
+
+	before = stat_get(BFD_STAT_MALFORMED);
+	v = run_frame(&f, NULL, NULL);
+
+	if (v != XDP_PASS) {
+		printf("     verdict %s, want PASS\n",
+		       v < 0 ? "syscall-error" : verdict_str(v));
+		bad = 1;
+	}
+	if (stat_get(BFD_STAT_MALFORMED) != before + 1) {
+		printf("     malformed counter did not move\n");
+		bad = 1;
+	}
+	if (read_state(&k, &after) && after.rx_pkts != 0) {
+		printf("     rx_pkts is %llu, a lying envelope refreshed liveness\n",
+		       (unsigned long long)after.rx_pkts);
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s PASS, no state write\n", name);
+	}
+	map_reset();
+}
+
+/* Whatever came in, what goes out says 24 bytes of BFD.
+ *
+ * The reply is the received frame rewritten in place, so its envelope is
+ * the sender's until this overwrites it. Asserting on the reply is the
+ * only way to see that: the trim used to be conditional on there being a
+ * tail, and a frame with none kept whatever length it arrived with.
+ */
+static void case_bounce_envelope_is_ours(void)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	unsigned char out[256];
+	unsigned out_len = 0;
+	struct frame f;
+	int v, bad = 0;
+
+	map_reset();
+	arm_session();
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+
+	v = run_frame(&f, out, &out_len);
+	if (v != XDP_TX) {
+		printf("     verdict %s, want TX\n",
+		       v < 0 ? "syscall-error" : verdict_str(v));
+		bad = 1;
+	} else {
+		const struct iphdr *oi = (void *)(out + sizeof(struct ethhdr));
+		const struct udphdr *ou = (void *)(oi + 1);
+		unsigned want_udp = sizeof(*ou) + BFD_MIN_LEN;
+		unsigned want_ip = sizeof(*oi) + want_udp;
+
+		if (ntohs(ou->len) != want_udp) {
+			printf("     reply udp->len %u, want %u\n",
+			       ntohs(ou->len), want_udp);
+			bad = 1;
+		}
+		if (ntohs(oi->tot_len) != want_ip) {
+			printf("     reply tot_len %u, want %u\n",
+			       ntohs(oi->tot_len), want_ip);
+			bad = 1;
+		}
+		if (out_len != sizeof(struct ethhdr) + want_ip) {
+			printf("     reply is %u bytes, want %zu\n",
+			       out_len, sizeof(struct ethhdr) + want_ip);
+			bad = 1;
+		}
+	}
+
+	if (bad) {
+		printf("FAIL %-40s\n", "bounce-envelope-is-ours");
+		fails++;
+	} else {
+		printf("ok   %-40s lengths rewritten\n",
+		       "bounce-envelope-is-ours");
+	}
+	map_reset();
+}
+
+/* IP options.
+ *
+ * A BFD control packet never carries them, and with them the UDP header is
+ * at an offset the fixed-offset reads in the parser would get wrong, so one
+ * aimed at a BFD port is dropped rather than passed: passing it would skip
+ * GTSM and demux and leak it to the userspace socket unvalidated.
+ *
+ * The rule is about BFD, so it is gated on the port like every other rule
+ * here. An optioned packet going anywhere else is not ours and reaches the
+ * stack untouched, which the other-port arm pins.
+ *
+ * The frame is built properly, with the options actually present between
+ * the IP header and the UDP header rather than declared in `ihl` and not
+ * there. The earlier version of this case set `ihl` alone, which the parser
+ * could not have distinguished from a lie and which no real sender emits.
+ */
+static void case_ip_options(const char *name, uint16_t dport, int want,
+			    int want_counter)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
 	unsigned long long before;
@@ -1705,27 +1905,41 @@ static void case_ip_options(const char *name, uint16_t dport)
 
 	map_reset();
 	arm_session();
-	build_v4(&f, 255, dport, &p, 4);   /* 4 spare bytes to hold the option */
+	build_v4(&f, 255, dport, &p, 0);
 
-	struct iphdr *ip = (void *)(f.b + sizeof(struct ethhdr));
+	struct ethhdr *eth = (void *)f.b;
+	struct iphdr *ip = (void *)(eth + 1);
+	unsigned char *opt = (unsigned char *)(ip + 1);
+	unsigned int moved = sizeof(struct udphdr) + sizeof(p);
 
-	/* Claim a 24-byte header. The frame already carries the extra 4
-	 * bytes; their content does not matter, only that ihl says the UDP
-	 * header is not where a 20-byte header would put it. */
+	/* Open four bytes after the IP header and fill them with a real
+	 * option: NOP, NOP, NOP, End of Option List. Everything after
+	 * shifts, which is what makes this an optioned packet rather than
+	 * a claim of one. */
+	memmove(opt + 4, opt, moved);
+	opt[0] = 1;
+	opt[1] = 1;
+	opt[2] = 1;
+	opt[3] = 0;
+	f.len += 4;
+
 	ip->ihl = 6;
+	ip->tot_len = htons(ntohs(ip->tot_len) + 4);
 	ip->check = 0;
-	ip->check = csum16(ip, sizeof(*ip), 0);
+	ip->check = csum16(ip, 6 * 4, 0);
 
 	before = stat_get(BFD_STAT_IP_OPTIONS);
 	v = run_frame(&f, NULL, NULL);
 
-	if (v != XDP_DROP) {
-		printf("     verdict %s, want DROP\n",
-		       v < 0 ? "syscall-error" : verdict_str(v));
+	if (v != want) {
+		printf("     verdict %s, want %s\n",
+		       v < 0 ? "syscall-error" : verdict_str(v),
+		       verdict_str(want));
 		bad = 1;
 	}
-	if (stat_get(BFD_STAT_IP_OPTIONS) != before + 1) {
-		printf("     ip-options counter did not increment\n");
+	if (stat_get(BFD_STAT_IP_OPTIONS) != before + want_counter) {
+		printf("     ip-options counter moved by %llu, want %d\n",
+		       stat_get(BFD_STAT_IP_OPTIONS) - before, want_counter);
 		bad = 1;
 	}
 
@@ -1733,8 +1947,71 @@ static void case_ip_options(const char *name, uint16_t dport)
 		printf("FAIL %-40s\n", name);
 		fails++;
 	} else {
-		printf("ok   %-40s DROP\n", name);
+		printf("ok   %-40s %s\n", name, verdict_str(want));
 	}
+	map_reset();
+}
+
+/* An `ihl` that claims options the frame does not carry.
+ *
+ * The parser reads the port where the header says the payload starts, and
+ * so does the stack, so both look at the same wrong bytes and neither
+ * delivers it to a BFD socket. Passing it is therefore not a bypass, and
+ * dropping it would mean dropping on a declared length alone, which is how
+ * unrelated traffic got caught before.
+ */
+static void case_ip_options_lying(void)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct frame f;
+	int v;
+
+	map_reset();
+	arm_session();
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+
+	struct iphdr *ip = (void *)(f.b + sizeof(struct ethhdr));
+
+	ip->ihl = 6;   /* the UDP header is still at twenty bytes */
+	ip->check = 0;
+	ip->check = csum16(ip, 6 * 4, 0);
+
+	v = run_frame(&f, NULL, NULL);
+	expect("ip-options-declared-not-present", v, XDP_PASS);
+	map_reset();
+}
+
+/* Traffic that is not BFD, at the TTLs real traffic arrives with.
+ *
+ * Every BFD rejection rule is about BFD. Before they were gated on the
+ * port, a DNS reply at TTL 57 was dropped in the driver whenever no
+ * multihop session existed, which is most deployments.
+ */
+static void case_not_bfd_ttl(uint8_t ttl)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	char name[64];
+	struct frame f;
+
+	map_reset();
+	arm_session();
+	build_v4(&f, ttl, 1234, &p, 0);
+	snprintf(name, sizeof(name), "non-bfd-v4-ttl-%u-passes", ttl);
+	expect(name, run_frame(&f, NULL, NULL), XDP_PASS);
+	map_reset();
+}
+
+static void case_not_bfd_v6_hlim(uint8_t hlim)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	char name[64];
+	struct frame f;
+
+	map_reset();
+	arm_session();
+	build_v6(&f, hlim, 1234, &p, 0);
+	snprintf(name, sizeof(name), "non-bfd-v6-hlim-%u-passes", hlim);
+	expect(name, run_frame(&f, NULL, NULL), XDP_PASS);
 	map_reset();
 }
 
@@ -2315,6 +2592,25 @@ static void run_sweep_matrix(void)
 	for (int i = 0; i < HMAC_NVECS; i++)
 		case_hmac(&hmac_vecs[i]);
 
+	/* One second bound throughout, the shipped default. */
+#define DM_BOUND (1000ull * 1000 * 1000)
+	/* Armed and the engine is current: answer as always. */
+	case_deadman("deadman-fresh", DM_BOUND, mono_ns(), 1);
+	/* Armed and the engine went quiet two bounds ago: withhold. */
+	case_deadman("deadman-stale", DM_BOUND, mono_ns() - 2 * DM_BOUND, 0);
+	/* Just inside the bound is not stale. Half a bound is 500ms of
+	 * margin either side of a test that runs in microseconds. */
+	case_deadman("deadman-within-bound", DM_BOUND,
+		     mono_ns() - DM_BOUND / 2, 1);
+	/* Bound zero is the off switch, and a heartbeat old enough to trip
+	 * any armed gate must not trip this one. */
+	case_deadman("deadman-disarmed", 0, mono_ns() - 60ull * DM_BOUND, 1);
+	/* Heartbeat zero is the window between program load and the
+	 * engine's first pass. Tripping there holds every session down at
+	 * startup, so it reads as healthy. */
+	case_deadman("deadman-never-beaten", DM_BOUND, 0, 1);
+#undef DM_BOUND
+
 	case_demand_bit_out(0, 0, 0, 0, "demand-bit-off-not-set");
 	case_demand_bit_out(1, 0, 1, 0, "demand-bit-on-set");
 	case_demand_bit_out(1, BFD_F_POLL, 1, 1, "demand-bit-rides-with-final");
@@ -2350,6 +2646,8 @@ int main(void)
 	cfg_fd  = bpf_object__find_map_fd_by_name(obj, "tx_config");
 	sess_fd = bpf_object__find_map_fd_by_name(obj, "bfd_sessions");
 	stats_fd = bpf_object__find_map_fd_by_name(obj, "bfd_stats");
+	tune_fd = bpf_object__find_map_fd_by_name(obj, "tunables");
+	hb_fd = bpf_object__find_map_fd_by_name(obj, "heartbeat");
 	flags_fd = bpf_object__find_map_fd_by_name(obj, "prog_flags");
 	echo_peers_fd = bpf_object__find_map_fd_by_name(obj, "echo_peers");
 	echo_disc_fd = bpf_object__find_map_fd_by_name(obj, "echo_disc");
@@ -2402,8 +2700,19 @@ int main(void)
 	run_frag_matrix();
 	run_echo_matrix();
 	run_echo_v6_matrix();
-	case_ip_options("ip-options-bfd-port", BFD_PORT_1HOP);
-	case_ip_options("ip-options-other-port", 1234);
+	case_bad_envelope("envelope-udp-len-overruns-frame", 0);
+	case_bad_envelope("envelope-ip-len-overruns-frame", 1);
+	case_bounce_envelope_is_ours();
+	case_ip_options("ip-options-bfd-port", BFD_PORT_1HOP, XDP_DROP, 1);
+	case_ip_options("ip-options-other-port", 1234, XDP_PASS, 0);
+	case_ip_options_lying();
+	case_not_bfd_ttl(1);
+	case_not_bfd_ttl(64);
+	case_not_bfd_ttl(128);
+	case_not_bfd_ttl(255);
+	case_not_bfd_v6_hlim(1);
+	case_not_bfd_v6_hlim(64);
+	case_not_bfd_v6_hlim(255);
 	run_sweep_matrix();
 
 	printf("\n%d failure(s)\n", fails);

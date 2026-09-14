@@ -131,12 +131,25 @@ static void dp_sessions_orphan(const char *why)
 static char dp_out[65536];
 static size_t dp_out_len;
 
+/* Everything a connection carried, forgotten in one place.
+ *
+ * Both buffers belong to the byte stream that is going away. Input is
+ * obvious; output is the half that was missed, because a message queued
+ * for the old client is not a message for the new one, and after a partial
+ * write what is left is the tail of a frame the new client never saw the
+ * head of. It would then read a message boundary in the middle of one.
+ */
+static void dp_conn_reset(void)
+{
+	dp_have = 0;
+	dp_out_len = 0;
+}
+
 static void dp_drop_conn(const char *why)
 {
 	close(dp_conn);
 	dp_conn = -1;
-	dp_have = 0;
-	dp_out_len = 0;
+	dp_conn_reset();
 	dp_sessions_orphan(why);
 }
 
@@ -371,19 +384,17 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 		/* RFC 5880 s6.8.3: parameter change while Up requires a
 		 * Poll sequence. An increased min_tx must not slow actual
 		 * TX until the poll terminates; a decrease applies now. */
-		s->poll_seq++;
-		s->polling = 1;
 		if (s->min_tx_us < s->applied_tx_us || !s->applied_tx_us)
 			s->applied_tx_us = s->min_tx_us;
-		/* Starting a Poll re-arms detection on a demanding session
-		 * (demand_detect_held clears on !polling), and the peer has
-		 * been silent for as long as we asked it to be - measuring
-		 * the poll against that stale arrival declares a timeout on
-		 * the spot. bfdd resets its own recvtimer at the same point,
-		 * at the end of bfd_set_polling, for the same reason. */
-		if (s->demand)
-			s->last_rx_us = t;
-	} else {
+		fsm_start_poll(s, t);
+	} else if (!s->polling) {
+		/* Not while a Poll is outstanding. A repeated ADD carrying
+		 * the values the previous one already applied compares equal
+		 * here, so it lands in this branch, and assigning the new
+		 * min_tx would slow transmission to a rate the peer has not
+		 * accepted yet. s6.8.3 holds the old interval until the poll
+		 * terminates, and it is fsm_rx and ktx_poll_map that end it
+		 * on the peer's Final. */
 		s->applied_tx_us = s->min_tx_us;
 	}
 	if (fresh) {
@@ -676,6 +687,83 @@ void dp_read(void)
 	}
 }
 
+/* Which uid may drive this engine.
+ *
+ * -1 means "whoever runs the engine", which is the safe default: a UNIX
+ * socket is then created 0600 and only that account can open it. Naming a
+ * peer with --dp-peer widens it to that one account, chowns the socket and
+ * opens it to the group, which is what a deployment running bfdd as `frr`
+ * while the engine runs as root needs.
+ *
+ * root is always allowed. It can read the socket whatever the mode says,
+ * so refusing it would be a check that only looks like one.
+ */
+static uid_t dp_peer_uid = (uid_t)-1;
+
+void dp_set_peer_uid(uid_t uid)
+{
+	dp_peer_uid = uid;
+}
+
+/* Whether a freshly accepted client may replace the connection we have.
+ *
+ * Called before anything about the current connection is touched. The old
+ * order closed dp_conn and orphaned every session first and looked at the
+ * newcomer afterwards, so any local process could tear the control plane
+ * down by connecting once - and with the default hold of zero that is a
+ * teardown of all 64 sessions, not a pause.
+ *
+ * SO_PEERCRED is a UNIX socket facility. On TCP there is nothing to ask:
+ * the listener is bound to loopback, so the check is that the peer really
+ * is loopback and the rest is the operator's to control. That is weaker
+ * and the log says so at startup.
+ */
+static int dp_peer_allowed(int fd)
+{
+	/* Zeroed, so the family this branches on is AF_UNSPEC rather than
+	 * whatever was on the stack if either query below ever fails. The
+	 * returns already cover that, but scan-build does not model
+	 * getsockname as an initialiser and reads ss.ss_family as garbage,
+	 * and this decides whether a peer may take over the control
+	 * connection - not a place to answer a checker with a comment. */
+	struct sockaddr_storage ss = {0};
+	socklen_t sslen = sizeof(ss);
+
+	/* Ask the socket what it is rather than inferring it from a failed
+	 * getsockopt. SO_PEERCRED on a TCP socket does not fail: it returns
+	 * success with uid (uid_t)-1 and pid 0, so reading the error is how
+	 * you refuse every TCP client while believing you are checking a
+	 * credential. */
+	if (getsockname(fd, (void *)&ss, &sslen) != 0)
+		return 0;
+
+	if (ss.ss_family == AF_UNIX) {
+		struct ucred cr;
+		socklen_t crlen = sizeof(cr);
+
+		if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cr, &crlen) != 0)
+			return 0;
+		if (cr.uid == 0)
+			return 1;
+		if (dp_peer_uid != (uid_t)-1)
+			return cr.uid == dp_peer_uid;
+		return cr.uid == geteuid();
+	}
+
+	/* TCP. The listener is bound to loopback, so this only confirms what
+	 * the bind already guarantees; there is no credential to ask for. */
+	sslen = sizeof(ss);
+	if (getpeername(fd, (void *)&ss, &sslen) != 0)
+		return 0;
+	if (ss.ss_family == AF_INET) {
+		const struct sockaddr_in *si = (const void *)&ss;
+
+		return (ntohl(si->sin_addr.s_addr) >> 24) == 127;
+	}
+
+	return 0;
+}
+
 void dp_accept(void)
 {
 	if (dp_listen < 0)
@@ -683,10 +771,15 @@ void dp_accept(void)
 	int c = accept(dp_listen, NULL, NULL);
 	if (c < 0)
 		return;
+	if (!dp_peer_allowed(c)) {
+		log_err("dplane: refusing a control connection from an unauthorized peer\n");
+		close(c);
+		return;
+	}
 	if (dp_conn >= 0) {
 		log_info("dplane: replacing existing bfdd connection\n");
 		close(dp_conn);
-		dp_have = 0;
+		dp_conn_reset();
 		dp_sessions_orphan("connection replaced");
 	}
 	fcntl(c, F_SETFL, O_NONBLOCK);
@@ -721,7 +814,17 @@ int dp_listen_init(const char *arg)
 			perror("dplane listen (unix)");
 			return -1;
 		}
-		chmod(arg, 0666);
+		/* 0600 unless a peer was named, in which case the socket
+		 * belongs to that account and its group may open it. The
+		 * old 0666 let any local process connect, and dp_accept
+		 * displaced the live connection before looking at who had. */
+		if (dp_peer_uid != (uid_t)-1) {
+			if (chown(arg, dp_peer_uid, (gid_t)-1))
+				perror("dplane chown (unix)");
+			chmod(arg, 0660);
+		} else {
+			chmod(arg, 0600);
+		}
 		log_info("dplane: listening on %s (bfdd: unixc:%s)\n",
 		       arg, arg);
 	} else {
@@ -746,6 +849,10 @@ int dp_listen_init(const char *arg)
 		}
 		log_info("dplane: listening on 127.0.0.1:%d (bfdd: ipv4c:127.0.0.1:%d)\n",
 		       port, port);
+		/* No peer credentials on TCP. Loopback is the whole of the
+		 * access control, so any local process can drive the engine;
+		 * a UNIX socket with --dp-peer is the one that authorizes. */
+		log_info("dplane: TCP has no peer authorization, any local process may connect\n");
 	}
 	fcntl(dp_listen, F_SETFL, O_NONBLOCK);
 	return 0;

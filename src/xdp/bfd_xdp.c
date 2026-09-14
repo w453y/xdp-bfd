@@ -71,6 +71,48 @@ int bfd_observer(struct xdp_md *ctx)
 		count(BFD_STAT_MALFORMED);
 		return XDP_PASS;
 	}
+	/* The envelope has to describe the frame that arrived.
+	 *
+	 * bfd_ctrl_check derives the payload length from udp->len, which is
+	 * whatever the sender wrote, and nothing had compared it against
+	 * what was actually received. A frame carrying 24 bytes while
+	 * claiming 200 was accepted: no overread, since every field read
+	 * here is inside the header already bounds-checked above, but it
+	 * refreshed liveness and could acknowledge a Poll on a packet that
+	 * is not what it says it is.
+	 *
+	 * MALFORMED and PASS, like a broken BFD header: a length that does
+	 * not match the frame is not evidence of an attack, and the stack
+	 * applies the same rule and will reject it too.
+	 */
+	{
+		__u32 have = (__u32)((long)data_end - (long)udp);
+		__u16 ulen = bpf_ntohs(udp->len);
+
+		if (ulen < sizeof(*udp) || (__u32)ulen > have) {
+			count(BFD_STAT_MALFORMED);
+			return XDP_PASS;
+		}
+		if (iph) {
+			__u32 ihave = (__u32)((long)data_end - (long)iph);
+			__u16 tot = bpf_ntohs(iph->tot_len);
+
+			if (tot < sizeof(*iph) + sizeof(*udp) ||
+			    (__u32)tot > ihave) {
+				count(BFD_STAT_MALFORMED);
+				return XDP_PASS;
+			}
+		} else if (ip6) {
+			__u32 phave = (__u32)((long)data_end - (long)(ip6 + 1));
+			__u16 plen = bpf_ntohs(ip6->payload_len);
+
+			if (plen < sizeof(*udp) || (__u32)plen > phave) {
+				count(BFD_STAT_MALFORMED);
+				return XDP_PASS;
+			}
+		}
+	}
+
 	/* Only track sessions the control plane configured, unless the
 	 * standalone loader asked for promiscuous observation. Stops
 	 * unsolicited packets from filling the session map.
@@ -214,6 +256,29 @@ int bfd_observer(struct xdp_md *ctx)
 	 * Never echo Up at a peer that just said Down/AdminDown; let
 	 * userspace run the transition. */
 	if (cfg && cfg->enable && rstate >= 2) {
+	        /* Unless the engine has stopped saying it is there.
+	         *
+	         * Answering from softirq is what makes detection independent
+	         * of the loop, and it is also what lets a wedged engine lie:
+	         * the program keeps replying on the peer's clock whether or
+	         * not anything upstairs is still running, so a control plane
+	         * that is alive but making no progress presents Up sessions
+	         * to the whole network indefinitely. Measured, not supposed -
+	         * with the engine held in T state for twenty seconds, 57 of
+	         * 64 sessions stayed Up with the peer receiving at full rate.
+	         * That is exactly the lie BFD exists to prevent, arriving by
+	         * way of the optimisation.
+	         *
+	         * So the fast path answers on the engine's behalf only while
+	         * the engine is there to be answered for. Withholding the
+	         * reply does not take the session down here; it lets the peer
+	         * reach its own conclusion by its own detection timer, which
+	         * is the peer's decision to make and needs no new protocol.
+	         */
+	        if (deadman_tripped(now)) {
+	                count(BFD_STAT_DEADMAN_HOLD);
+	                return XDP_PASS;
+	        }
 	        return rx_clocked_tx(ctx, eth, iph, ip6, udp,
 	                             bfd, cfg, st, asc, data, data_end);
 	}

@@ -39,6 +39,15 @@ int ktx_attach_if(int ifindex, const char *ifname)
 }
 void ktx_mirror(struct session *s) { (void)s; }
 void ktx_forget(struct session *s) { (void)s; }
+/* No program, no sweep, no ring; fsm_detect keeps the whole budget.
+ *
+ * dp_run.c carries its own copy of this group rather than sharing one,
+ * because the two disagree on purpose - ktx_attach_if returns 0 here and
+ * -1 there. The cost of that is this: fsm.c gained a call, dp_run.c was
+ * given the stub, and nothing linked dp_fuzz until CI did. `check` builds
+ * dp_run and not dp_fuzz, since the latter needs a clang with
+ * -fsanitize=fuzzer that a developer may not have. */
+int ktx_events_fd(void) { return -1; }
 void ktx_update_mhop_flag(void) { }
 void ktx_poll_map(struct session *s, uint64_t t) { (void)s; (void)t; }
 void ktx_clear(struct session *s) { (void)s; }

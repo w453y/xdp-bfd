@@ -18,6 +18,7 @@
 #include "util.h"
 #include "session.h"
 #include "ktx.h"
+#include "fsm.h"
 #include "stats.h"
 
 const char *stats_path = "/tmp/bfd_tx_stats.json";
@@ -27,6 +28,37 @@ void stats_on_signal(int sig)
 {
 	(void)sig;
 	stats_wanted = 1;
+}
+
+/* Emit a string as a JSON value, escaping what the grammar forbids.
+ *
+ * Every value passed here today is a code literal, so nothing needs it
+ * yet. last_reason is twenty-four bytes of copied-anything by design
+ * though, and an interface name comes from the control plane, so the first
+ * caller to format an address or an errno into one would silently produce
+ * a document that the tests consuming this file cannot parse. Cheaper to
+ * escape than to rely on every future caller knowing.
+ */
+static void json_str(FILE *f, const char *v)
+{
+	fputc('"', f);
+	for (; *v; v++) {
+		unsigned char c = (unsigned char)*v;
+
+		switch (c) {
+		case '"':  fputs("\\\"", f); break;
+		case '\\': fputs("\\\\", f); break;
+		case '\n': fputs("\\n", f); break;
+		case '\r': fputs("\\r", f); break;
+		case '\t': fputs("\\t", f); break;
+		default:
+			if (c < 0x20)
+				fprintf(f, "\\u%04x", c);
+			else
+				fputc(c, f);
+		}
+	}
+	fputc('"', f);
 }
 
 /* Sum a per-CPU stat slot. Zero when the map is absent, which is the
@@ -64,10 +96,17 @@ static void one_session(FILE *f, const struct session *s, int first)
 		s->wire_disc, s->rdisc);
 	fprintf(f, " \"up_events\": %u, \"down_events\": %u,",
 		s->up_events, s->down_events);
-	fprintf(f, " \"last_transition_us\": %llu, \"last_reason\": \"%s\",",
-		(unsigned long long)s->last_transition_us, s->last_reason);
+	fprintf(f, " \"last_transition_us\": %llu, \"last_reason\": ",
+		(unsigned long long)s->last_transition_us);
+	json_str(f, s->last_reason);
+	fputc(',', f);
 	fprintf(f, " \"last_rx_us\": %llu,",
 		(unsigned long long)s->last_rx_us);
+	/* Beside last_rx_us because the pair is the measurement: while the
+	 * fast path answers every packet they track each other, and the gap
+	 * between them is how long the program has been declining to. */
+	fprintf(f, " \"last_ktx_us\": %llu,",
+		(unsigned long long)s->last_ktx_us);
 	fprintf(f, " \"last_detect_us\": %u, \"last_overshoot_us\": %u,",
 		s->last_detect_us, s->last_overshoot_us);
 	fprintf(f, " \"min_tx_us\": %u, \"min_rx_us\": %u, \"detect_mult\": %u,",
@@ -78,6 +117,7 @@ static void one_session(FILE *f, const struct session *s, int first)
 		s->r_mult, s->r_flags);
 	fprintf(f, " \"detect_basis_us\": %u, \"polling\": %s,",
 		s->detect_iv_us, s->polling ? "true" : "false");
+	fprintf(f, " \"demand_polls\": %u,", s->demand_polls);
 	fprintf(f, " \"orphaned\": %s,", s->orphaned ? "true" : "false");
 	/* Four separate facts, because in demand mode they routinely
 	 * disagree and a single "demand" boolean hides which way round it
@@ -91,6 +131,10 @@ static void one_session(FILE *f, const struct session *s, int first)
 		(s->r_flags & BFD_F_DEMAND) ? "true" : "false",
 		demand_tx_held(s) ? "true" : "false",
 		demand_detect_held(s) ? "true" : "false");
+	fprintf(f, " \"kernel_detects\": %u, \"last_detect_lag_us\": %u,",
+		s->kernel_detects, s->last_detect_lag_us);
+	fprintf(f, " \"tx_fail\": %llu,",
+		(unsigned long long)s->tx_fail);
 	fprintf(f, " \"rx_pkts\": %llu, \"tx_pkts\": %llu,",
 		(unsigned long long)s->rx_pkts,
 		(unsigned long long)s->tx_pkts);
@@ -157,9 +201,18 @@ void stats_dump(void)
 
 	fprintf(f, "{\n  \"now_us\": %llu,\n", (unsigned long long)now_us());
 	fprintf(f, "  \"kernel_tx\": %s,\n", use_ktx ? "true" : "false");
+	/* What is actually in force, not what was asked for: a bound that
+	 * failed to reach the map, or a heartbeat that failed to map, zero
+	 * this on the way through, so a snapshot saying 0 means the fast
+	 * path really will answer for a wedged engine. */
+	fprintf(f, "  \"deadman_us\": %llu,\n",
+		(unsigned long long)(ktx_deadman_ns / 1000));
+	fprintf(f, "  \"demand_poll_us\": %llu,\n",
+		(unsigned long long)demand_poll_us);
 	fprintf(f, "  \"xdp_ifindex\": %d,\n", ktx_ifindex);
 	fprintf(f, "  \"sessions_configured\": %d,\n", configured);
 	fprintf(f, "  \"sessions_up\": %d,\n", up);
+	fprintf(f, "  \"map_poll\": \"%s\",\n", ktx_poll_mode());
 	fprintf(f, "  \"loop_passes\": %llu, \"loop_rx_wakeups\": %llu,\n",
 		(unsigned long long)loop_passes,
 		(unsigned long long)loop_rx_wakeups);

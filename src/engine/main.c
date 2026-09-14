@@ -37,6 +37,8 @@
 #include "util.h"
 #include "log.h"
 #include "session.h"
+#include <pwd.h>
+
 #include "dplane.h"
 #include "ktx.h"
 #include "fsm.h"
@@ -132,6 +134,12 @@ static unsigned tick_us = TICK_US_DEFAULT;
  * stops being what clocks the loop and detection resolution stops
  * improving. Reported rather than reasoned about. */
 uint64_t loop_passes;
+/* --demand, for static mode only: under bfdd the flag arrives per session
+ * on the bfddp ADD. Without it standalone mode cannot reach demand mode at
+ * all, which left the one behaviour that only shows up there - a session
+ * whose detection is held and which therefore has to verify its own path -
+ * reachable only from a full FRR testbed. */
+static int static_demand;
 uint64_t loop_rx_wakeups;
 
 /* Inter-pass gap histogram, log2 buckets in microseconds. The ten-second
@@ -175,6 +183,22 @@ static void auth_rollover_tick(void)
 	}
 }
 
+/* SIGTERM and SIGINT ask for an orderly exit.
+ *
+ * Without this the process simply died. bpf_link detached the program,
+ * which is correct, but the peer then discovered the loss the slow way: a
+ * detect timeout, diag 1, after a full detection time. That is exactly the
+ * outcome fsm_announce_down exists to avoid, on the most common orderly
+ * shutdown there is - systemctl stop sends SIGTERM.
+ */
+static volatile sig_atomic_t shutdown_wanted;
+
+static void shutdown_on_signal(int sig)
+{
+	(void)sig;
+	shutdown_wanted = 1;
+}
+
 int main(int argc, char **argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);
@@ -208,6 +232,49 @@ int main(int argc, char **argv)
 				return 1;
 			}
 			ktx_sweep_ns = v * 1000ull;
+		}
+		else if (!strcmp(argv[i], "--deadman-us") && i + 1 < argc) {
+			const char *a = argv[++i];
+			char *end;
+			unsigned long long v = strtoull(a, &end, 10);
+
+			/* 0 is the documented off switch, so it is not a
+			 * range error. Above zero the floor is 50ms: the
+			 * worst loop gap measured over 651347 passes was in
+			 * the 16-32ms bucket, and a bound inside the range
+			 * the engine legitimately reaches would hold real
+			 * sessions down. The ceiling is a minute, past which
+			 * the gate is not bounding anything a human would
+			 * wait for. */
+			if (end == a || *end ||
+			    (v && (v < 50000 || v > 60000000))) {
+				log_err(
+					"--deadman-us: expected 0 (off) or 50000-60000000, got '%s'\n",
+					a);
+				return 1;
+			}
+			ktx_deadman_ns = v * 1000ull;
+		}
+		else if (!strcmp(argv[i], "--demand"))
+			static_demand = 1;
+		else if (!strcmp(argv[i], "--demand-poll-us") && i + 1 < argc) {
+			const char *a = argv[++i];
+			char *end;
+			unsigned long long v = strtoull(a, &end, 10);
+
+			/* 0 is the documented off switch. Above it the floor
+			 * is 10ms only to catch a typo; the effective
+			 * interval is raised to the session's detect budget
+			 * anyway, so a small value here means "as often as
+			 * detection would have run" rather than a flood. */
+			if (end == a || *end ||
+			    (v && (v < 10000 || v > 600000000))) {
+				log_err(
+					"--demand-poll-us: expected 0 (off) or 10000-600000000, got '%s'\n",
+					a);
+				return 1;
+			}
+			demand_poll_us = v;
 		}
 		else if (!strcmp(argv[i], "--log-level") && i + 1 < argc) {
 			const char *a = argv[++i];
@@ -274,6 +341,29 @@ int main(int argc, char **argv)
 			}
 			dp_hold_us = v * 1000000ull;
 		}
+		else if (!strcmp(argv[i], "--dp-peer") && i + 1 < argc) {
+			/* The account bfdd runs as. A UNIX control socket is
+			 * created 0600 without this, so an engine running as
+			 * root and a bfdd running as `frr` need to be told.
+			 * Also the uid SO_PEERCRED is checked against, so it
+			 * is authorization rather than only file mode. */
+			const char *a = argv[++i];
+			const struct passwd *pw = getpwnam(a);
+			char *end;
+
+			if (pw) {
+				dp_set_peer_uid(pw->pw_uid);
+			} else {
+				unsigned long long v = strtoull(a, &end, 10);
+
+				if (end == a || *end || v > (unsigned)-2) {
+					log_err("--dp-peer: no such user and not a uid: '%s'\n",
+						a);
+					return 1;
+				}
+				dp_set_peer_uid((uid_t)v);
+			}
+		}
 		else if (!static_local)
 			static_local = argv[i];
 		else if (!static_peer)
@@ -291,10 +381,13 @@ int main(int argc, char **argv)
 		log_err(
 			"usage: %s <local-ip> <peer-ip> [--kernel-tx <if>]\n"
 			"       %s --dplane <port|sock-path> [--kernel-tx <if>] [--dp-hold <sec>]\n"
+			"       [--dp-peer <user|uid>]  (the account bfdd runs as)\n"
 			"       [--bpf-obj <path>] [--xdp-mode drv|generic]\n"
 			"       [--stats-dump <path>]   (SIGUSR1 writes it)\n"
 			"       [--sweep-us <500-100000>]\n"
 			"       [--tick-us <200-100000>]\n"
+			"       [--deadman-us <0|50000-60000000>]  (0 = off)\n"
+			"       [--demand] [--demand-poll-us <0|10000-600000000>]\n"
 			"       [--log-level error|info|debug]\n",
 			argv[0], argv[0]);
 		return 1;
@@ -452,10 +545,11 @@ int main(int argc, char **argv)
 		return 1;
 
 	srandom(getpid() ^ time(NULL));
-	/* The only signal the engine handles. It sets a flag; the dump
-	 * happens in the loop below, so nothing in it needs to be
-	 * async-signal-safe. */
+	/* Both handlers set a flag and nothing else; the work happens in
+	 * the loop below, so neither needs to be async-signal-safe. */
 	signal(SIGUSR1, stats_on_signal);
+	signal(SIGTERM, shutdown_on_signal);
+	signal(SIGINT, shutdown_on_signal);
 
 	if (static_local) {
 		struct session *s = sess_alloc();
@@ -502,6 +596,7 @@ int main(int argc, char **argv)
 		s->min_rx_us   = DEF_MIN_RX;
 		s->detect_mult = DEF_MULT;
 		s->state       = ST_DOWN;
+		s->demand      = static_demand;
 		s->pushed_valid = 0;
 		s->next_tx_us  = now_us();
 		log_info("bfd_tx: static session lid=%u %s -> %s%s\n",
@@ -516,6 +611,29 @@ int main(int argc, char **argv)
 		 * the queue is empty, which is the normal case. */
 		dp_flush();
 
+		if (shutdown_wanted) {
+			/* Tell every peer before going, rather than leaving
+			 * each to time out. fsm_announce_down sends three
+			 * AdminDown packets because nothing retransmits once
+			 * we are gone, and it deliberately skips sessions the
+			 * dp-hold path has orphaned: those are meant to
+			 * survive a control-plane restart unnoticed, and this
+			 * is not that. */
+			int announced = 0;
+
+			for (int i = 0; i < MAX_SESSIONS; i++) {
+				struct session *cs = &sessions[i];
+
+				if (!cs->used || cs->orphaned)
+					continue;
+				fsm_announce_down(cs);
+				announced++;
+			}
+			log_info("shutdown: announced AdminDown on %d session(s)\n",
+				 announced);
+			break;
+		}
+
 		if (stats_wanted) {
 			stats_wanted = 0;
 			stats_dump();
@@ -524,14 +642,6 @@ int main(int argc, char **argv)
 		__u8 p_buf[BFD_MAX_LEN] = {0};
 		struct bfd_ctrl_pkt p;
 		struct sockaddr_in from;
-		struct iovec iov = { .iov_base = p_buf, .iov_len = sizeof(p_buf) };
-		char cbuf[CMSG_SPACE(sizeof(struct in_pktinfo)) +
-			  CMSG_SPACE(sizeof(int))];
-		struct msghdr mh = {
-			.msg_name = &from, .msg_namelen = sizeof(from),
-			.msg_iov = &iov, .msg_iovlen = 1,
-			.msg_control = cbuf, .msg_controllen = sizeof(cbuf),
-		};
 		/* Packets drained per socket per pass. Draining until EAGAIN
 		 * lets a sustained flood starve everything below it -
 		 * transmit, detection, the map poll, the dplane read - while
@@ -547,7 +657,9 @@ int main(int argc, char **argv)
 		 * socket, so no socket waits out another's timeout. All four
 		 * drains below are non-blocking, and the drain budget rather
 		 * than the blocking discipline is what bounds a pass. */
-		struct pollfd pfd[7] = {0};
+		/* tick, four receive sockets, the dplane listener and its
+		 * connection, and the sweep event ring. */
+		struct pollfd pfd[8] = {0};
 		int dp_l = -1, dp_c = -1;
 
 		dp_fds(&dp_l, &dp_c);
@@ -556,6 +668,8 @@ int main(int argc, char **argv)
 			uint64_t exp;
 
 			pfd[np].fd = tick_fd; pfd[np++].events = POLLIN;
+			if (ktx_events_fd() >= 0)
+				{ pfd[np].fd = ktx_events_fd(); pfd[np++].events = POLLIN; }
 			if (rx_sock >= 0)
 				{ pfd[np].fd = rx_sock; pfd[np++].events = POLLIN; }
 			if (rx6_sock >= 0)
@@ -598,12 +712,17 @@ int main(int argc, char **argv)
 		 * this ever disagreed. Stating the invariant in code rather
 		 * than in prose costs one comparison per pass and lets the
 		 * analyser run as a gate with no findings to excuse. */
-		ssize_t n = (rd4 && rx_sock >= 0)
-				  ? recvmsg(rx_sock, &mh, MSG_DONTWAIT | MSG_TRUNC)
-				  : -1;
-		memcpy(&p, p_buf, sizeof(p));
 		uint64_t t = now_us();
 		loop_passes++;
+		/* Still here. The fast path answers on our behalf only for
+		 * as long as this keeps moving; see the gate in bfd_xdp.c.
+		 *
+		 * Here rather than at the top of the pass, because the top
+		 * is on the other side of poll(), and a pass that blocks
+		 * forever in poll is one of the wedges worth catching. This
+		 * is the first point at which the loop has demonstrably come
+		 * round again. */
+		ktx_heartbeat(t);
 		{
 			static uint64_t prev;
 			if (prev) {
@@ -615,41 +734,80 @@ int main(int argc, char **argv)
 			}
 			prev = t;
 		}
-		if (n >= 0)
-			loop_rx_wakeups++;
 
-		/* The same predicate the XDP path uses, so the two cannot
-		 * disagree about what is acceptable. */
-		/* cmsgs first: the arriving TTL decides whether the packet is
-		 * acceptable at all, so it is checked alongside the header
-		 * rather than after demux. rttl stays -1 when the cmsg is
-		 * missing, which drops the packet - that means the setsockopt
-		 * did not take, and accepting anything then is worse. */
-		uint32_t dst_ip = 0;
-		int rttl = -1;
+		/* Drained per pass like the other three sockets.
+		 *
+		 * This one took a single packet per pass, which the other
+		 * three were converted away from and this one was not. It is
+		 * the busiest socket in every deployment, and a pass is not
+		 * cheap: a batch map lookup plus a walk of all 64 sessions.
+		 * Correctness survived, because a backlog makes poll() return
+		 * at once and the loop comes round again, but each packet
+		 * then paid for a whole pass, so the drain rate was capped at
+		 * the loop rate and the per-packet cost was some sixty times
+		 * its siblings.
+		 *
+		 * loop_rx_wakeups still counts passes on which this socket
+		 * had something, not packets, so the histogram it feeds keeps
+		 * meaning what it meant.
+		 */
+		for (int d = 0; rd4 && rx_sock >= 0 && d < drain_budget; d++) {
+			struct iovec iov4 = { .iov_base = p_buf,
+					      .iov_len = sizeof(p_buf) };
+			char cbuf4[CMSG_SPACE(sizeof(struct in_pktinfo)) +
+				   CMSG_SPACE(sizeof(int))];
+			struct msghdr mh4 = {
+				.msg_name = &from, .msg_namelen = sizeof(from),
+				.msg_iov = &iov4, .msg_iovlen = 1,
+				.msg_control = cbuf4,
+				.msg_controllen = sizeof(cbuf4),
+			};
+			ssize_t n = recvmsg(rx_sock, &mh4,
+					    MSG_DONTWAIT | MSG_TRUNC);
 
-		if (n >= 0)
-			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh); c;
-			     c = CMSG_NXTHDR(&mh, c)) {
+			if (n < 0)
+				break;
+			if (!d)
+				loop_rx_wakeups++;
+			memcpy(&p, p_buf, sizeof(p));
+
+			/* The same predicate the XDP path uses, so the two
+			 * cannot disagree about what is acceptable. */
+			/* cmsgs first: the arriving TTL decides whether the
+			 * packet is acceptable at all, so it is checked
+			 * alongside the header rather than after demux. rttl
+			 * stays -1 when the cmsg is missing, which drops the
+			 * packet - that means the setsockopt did not take,
+			 * and accepting anything then is worse. */
+			uint32_t dst_ip = 0;
+			int rttl = -1;
+
+			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh4); c;
+			     c = CMSG_NXTHDR(&mh4, c)) {
 				if (c->cmsg_level == IPPROTO_IP &&
 				    c->cmsg_type == IP_PKTINFO)
 					dst_ip = ((struct in_pktinfo *)
 						  CMSG_DATA(c))->ipi_addr.s_addr;
 				if (c->cmsg_level == IPPROTO_IP &&
 				    c->cmsg_type == IP_TTL)
-					memcpy(&rttl, CMSG_DATA(c), sizeof(rttl));
+					memcpy(&rttl, CMSG_DATA(c),
+					       sizeof(rttl));
 			}
 
-		if (n >= 0 && rttl == 255 &&
-		    bfd_ctrl_check(p.vers_diag, p.flags, p.detect_mult, p.len,
-				   p.my_disc, (__u32)n,
-				   !!(p.flags & BFD_F_AUTH)) == BFD_CTRL_ACCEPT) {
+			if (rttl != 255 ||
+			    bfd_ctrl_check(p.vers_diag, p.flags, p.detect_mult,
+					   p.len, p.my_disc, (__u32)n,
+					   !!(p.flags & BFD_F_AUTH)) !=
+				    BFD_CTRL_ACCEPT)
+				continue;
+
 			/* Demux (RFC 5880 s6.8.6), the same rule XDP applies:
 			 * your_disc must name our session, or be zero with the
 			 * peer in Down or AdminDown - it has lost state, or is
-			 * starting. Falling back to the address pair on any miss
-			 * accepted packets naming a discriminator we never issued,
-			 * which is the divergence tests/netns_userspace.py found. */
+			 * starting. Falling back to the address pair on any
+			 * miss accepted packets naming a discriminator we
+			 * never issued, which is the divergence
+			 * tests/netns_userspace.py found. */
 			uint32_t ydisc = ntohl(p.your_disc);
 			struct session *rs = sess_by_wire(ydisc);
 
@@ -850,6 +1008,12 @@ int main(int argc, char **argv)
 
 		/* One map fetch for the whole pass; each session reads its own
 		 * entry out of it below. */
+		/* The sweep's verdicts, before the per-session walk below,
+		 * so a session the kernel has already declared down is seen
+		 * as down by everything that follows in this pass rather
+		 * than the next one. */
+		ktx_drain_events();
+
 		ktx_poll_all();
 		for (int i = 0; i < MAX_SESSIONS; i++) {
 			struct session *cs = &sessions[i];

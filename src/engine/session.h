@@ -96,6 +96,10 @@ struct session {
 	uint32_t detect_iv_us;        /* poll-aware effective detect basis */
 	int      send_final, just_up;
 	int      polling;             /* our Poll sequence in flight */
+	uint32_t demand_polls;        /* Polls started to verify an idle
+	                               * demanding session. Flat while
+	                               * sessions demand is the witness that
+	                               * the verification is not running. */
 	uint32_t poll_seq;            /* id of current/last Poll sequence */
 	uint32_t wire_disc;           /* my_disc on the wire; survives bfdd
 	                               * restarts even when lid changes */
@@ -105,8 +109,32 @@ struct session {
 	                               * min_tx increase until poll ends */
 	int      pushed_valid;
 	struct tx_cfg pushed_cfg;
+	/* The map key the cached config was pushed under. Without it a
+	 * session whose address pair moves compares equal on the value
+	 * alone and never gets inserted under the new key. */
+	struct session_key pushed_key;
 	uint64_t last_rx_us, next_tx_us;
+	uint64_t last_ktx_us;         /* when the fast path last transmitted
+	                               * for this session. What fsm_tx's
+	                               * backstop keys off, so it asks whether
+	                               * the kernel sent rather than inferring
+	                               * it from a packet having arrived. */
+	uint64_t ktx_tx_pkts;         /* the kernel's reply count as of the
+	                               * previous poll; the two differing is
+	                               * what says it transmitted. */
 	uint64_t tx_pkts;             /* userspace-sent control packets */
+	uint32_t last_detect_lag_us;  /* between the sweep deciding a session
+	                               * was down and the loop acting on it.
+	                               * The verdict is the kernel's and
+	                               * carries its own timestamp, so this
+	                               * separates how long detection took
+	                               * from how late the loop was. */
+	uint32_t kernel_detects;      /* verdicts taken from the sweep rather
+	                               * than re-derived here */
+	uint64_t tx_fail;             /* sendto(2) refused the packet: it
+	                               * never reached the wire, and the
+	                               * state it would have consumed is
+	                               * still pending */
 	uint64_t rx_pkts;             /* userspace-received control packets;
 	                               * the kernel keeps its own in
 	                               * session_state.rx_pkts and the two are
@@ -236,6 +264,23 @@ static inline int demand_announce_due(const struct session *s)
  * demanding - it asked, not us. A Poll sequence, a pending Final and an
  * unsent D are exempt: they are the only things that still have to
  * reach a peer that has stopped listening on a schedule. */
+/* RFC 5880 s6.8.7: a system MUST NOT periodically transmit while
+ * bfd.RemoteMinRxInterval is zero. The peer is saying it cannot receive
+ * them, which is a different request from demand mode but has the same
+ * answer, so the same three exemptions apply: a Poll, a pending Final and
+ * an unsent demand announcement still have to reach it.
+ *
+ * s6.8.1 initialises bfd.RemoteMinRxInterval to 1, not 0, precisely so
+ * this rule cannot fire on a session that has heard nothing yet, which
+ * would be a session that could never come up. `last_rx_us` is how that
+ * initial value is expressed here.
+ */
+static inline int zero_rx_tx_held(const struct session *s)
+{
+	return s->last_rx_us && s->r_min_rx == 0 &&
+	       !s->polling && !s->send_final && !demand_announce_due(s);
+}
+
 static inline int demand_tx_held(const struct session *s)
 {
 	return (s->r_flags & BFD_F_DEMAND) && s->state == ST_UP &&
@@ -285,7 +330,32 @@ static inline int auth_fast_capable(const struct session *s)
 
 static inline int ktx_answers(const struct session *s)
 {
-	return s->state == ST_UP && auth_fast_capable(s) && !demand_tx_held(s);
+	/* zero_rx_tx_held for the same reason as the demand hold: RX-clocked
+	 * TX answers every accepted packet, so leaving it armed transmits at
+	 * exactly the rate the peer has asked this session to stop using.
+	 * Disarming hands the frames to userspace, which honours the same
+	 * three exemptions. */
+	return s->state == ST_UP && auth_fast_capable(s) &&
+	       !demand_tx_held(s) && !zero_rx_tx_held(s);
+}
+
+/* Whether the program still holds what this session last pushed.
+ *
+ * Both halves matter. An UPDATE that moves the address pair leaves every
+ * tx_cfg field identical, so a value-only comparison says nothing needs
+ * doing while the entry now lives under a key nobody will look up.
+ *
+ * Out here rather than inside ktx_mirror so it can be tested without a
+ * loaded program: the mirror is stubbed in the dplane harness, which is
+ * why an address move had no coverage of the thing that went wrong.
+ */
+static inline int ktx_push_needed(const struct session *s,
+				  const struct tx_cfg *c,
+				  const struct session_key *k)
+{
+	return !s->pushed_valid ||
+	       memcmp(c, &s->pushed_cfg, sizeof(*c)) != 0 ||
+	       memcmp(k, &s->pushed_key, sizeof(*k)) != 0;
 }
 
 extern struct session sessions[MAX_SESSIONS];

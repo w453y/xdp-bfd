@@ -100,6 +100,32 @@ static __always_inline __u64 sweep_interval(void)
 	return (v && *v) ? *v : SWEEP_NS;
 }
 
+/* Has the engine gone quiet for longer than it is allowed to?
+ *
+ * Two fail-open cases, both deliberate. No bound, or a bound of zero, is
+ * the gate switched off. A heartbeat of zero is an engine that has not
+ * written one yet - the window between program load and its first loop
+ * pass - and tripping there would hold every session down at startup.
+ *
+ * Signed subtraction: `now` is the caller's, taken a few instructions
+ * earlier, and the engine's store can land between the two on another
+ * CPU, which would make the difference wrap enormous if read unsigned.
+ */
+static __always_inline int deadman_tripped(__u64 now)
+{
+	__u32 k = BFD_TUNE_DEADMAN_NS;
+	__u64 *bound = bpf_map_lookup_elem(&tunables, &k);
+	__u32 zero = 0;
+	__u64 *hb;
+
+	if (!bound || !*bound)
+		return 0;
+	hb = bpf_map_lookup_elem(&heartbeat, &zero);
+	if (!hb || !*hb)
+		return 0;
+	return (__s64)(now - *hb) > (__s64)*bound;
+}
+
 static int sweep_fire(void *map, __u32 *key, struct sweep *sw)
 {
 	__u64 now = bpf_ktime_get_ns();

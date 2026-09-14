@@ -18,6 +18,7 @@
  *     make test-fsm
  */
 #define _GNU_SOURCE
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <arpa/inet.h>
@@ -30,6 +31,11 @@
 
 struct session sessions[MAX_SESSIONS];
 int use_ktx;                 /* 0: the kernel-TX gate in fsm_tx stays shut */
+
+/* No program loaded here, so no sweep and no ring: fsm_detect keeps the
+ * whole detection budget rather than deferring to a verdict that will
+ * never arrive. */
+int ktx_events_fd(void) { return -1; }
 
 static int notify_calls;
 
@@ -210,21 +216,301 @@ static void run_table(void)
 
 /* A passive session does not start the handshake: it answers, but Down +
  * peer Down leaves it Down rather than moving to Init. */
-static void case_passive(void)
+/* Passive gates transmission, not the state machine.
+ *
+ * RFC 5880 s6.8.7 says a passive system MUST NOT transmit while
+ * bfd.RemoteDiscr is zero: it does not begin the handshake, and it has no
+ * discriminator to address a packet to. s6.8.6 has no passive exception
+ * at all, so once a packet does arrive the transition runs like any
+ * other.
+ *
+ * The old arrangement had these the wrong way round. It transmitted into
+ * the silence it was meant to be keeping, and refused Down to Init on the
+ * peer's Down, which still converged through the peer's Init a round trip
+ * later, so nothing looked broken from outside.
+ */
+/* An echo-only change reaches the control plane.
+ *
+ * dp_notify_state reports the peer's echo interval, so a peer that changes
+ * only that - or withdraws echo by advertising zero - is a change the
+ * control plane has to hear about. It was assigned but left out of the
+ * test that decides whether to notify, so FRR kept a stale value for as
+ * long as nothing else about the peer moved. ktx_poll_map compared it all
+ * along, so whether the change was noticed depended on whether the fast
+ * path happened to be armed.
+ */
+/* A send that failed consumed nothing.
+ *
+ * sendto's return was discarded, so tx_pkts counted attempts as packets
+ * and every piece of state a transmission is supposed to consume was
+ * consumed whether or not one happened. send_final is the one that costs:
+ * a Final answers the peer's Poll, and clearing it on a refused send means
+ * the peer waits out its whole detection time for an answer this session
+ * believes it has already given. The demand announcement quota is the same
+ * shape - three announcements spent into a closed socket and the peer
+ * never sees the D bit at all.
+ *
+ * The refusal is driven through fsm_send_hook rather than by arranging for
+ * the kernel to refuse a datagram, which is not something a unit test can
+ * ask for reliably.
+ */
+static ssize_t refuse_send(int fd, const void *buf, size_t len,
+			   const struct sockaddr *dst, socklen_t dlen)
+{
+	(void)fd; (void)buf; (void)len; (void)dst; (void)dlen;
+	errno = EPERM;
+	return -1;
+}
+
+/* A peer advertising Required Min RX Interval zero is asking us to stop.
+ *
+ * RFC 5880 s6.8.7: a system MUST NOT periodically transmit while
+ * bfd.RemoteMinRxInterval is zero. Nothing gated on it, and the interval
+ * arithmetic takes the larger of the local rate and the peer's, so zero
+ * simply meant the local rate and transmission carried on at full pace.
+ *
+ * The exemptions are the ones demand mode already has: a Poll, a pending
+ * Final and an unsent demand announcement still have to arrive, or the
+ * session has no way to renegotiate out of the state it is in.
+ *
+ * s6.8.1 initialises the variable to 1, not 0, so the rule cannot fire on
+ * a session that has heard nothing yet - one that could otherwise never
+ * come up. That is what the last_rx_us term stands for.
+ */
+static void case_zero_remote_min_rx_halts_tx(void)
+{
+    struct bfd_ctrl_pkt p = pkt(ST_UP, 0);
+    struct session *s;
+    int bad = 0;
+
+    s = sess_init(ST_UP);
+    s->rdisc = 0x44444444;
+    s->r_state = ST_UP;
+
+    /* Never heard from: must transmit, or it cannot come up. */
+    s->last_rx_us = 0;
+    s->r_min_rx = 0;
+    s->next_tx_us = 0;
+    fsm_tx(s, 2000000);
+    if (!s->tx_pkts) {
+        printf("     silent before hearing a peer at all\n");
+        bad = 1;
+    }
+
+    /* The peer says zero. */
+    p.min_rx = htonl(0);
+    fsm_rx(s, &p, 2100000);
+    if (s->r_min_rx != 0) {
+        printf("     r_min_rx %u after the peer advertised zero\n",
+               s->r_min_rx);
+        bad = 1;
+    }
+
+    s->tx_pkts = 0;
+    s->next_tx_us = 0;
+    fsm_tx(s, 2200000);
+    if (s->tx_pkts) {
+        printf("     still transmitting against a zero Min RX\n");
+        bad = 1;
+    }
+    if (ktx_answers(s)) {
+        printf("     the fast path is still armed to answer\n");
+        bad = 1;
+    }
+
+    /* A Final still has to reach it. */
+    s->send_final = 1;
+    s->next_tx_us = 0;
+    fsm_tx(s, 2300000);
+    if (!s->tx_pkts) {
+        printf("     a pending Final was withheld\n");
+        bad = 1;
+    }
+
+    /* And so does a Poll. */
+    s->tx_pkts = 0;
+    s->polling = 1;
+    s->next_tx_us = 0;
+    fsm_tx(s, 2400000);
+    if (!s->tx_pkts) {
+        printf("     a Poll was withheld\n");
+        bad = 1;
+    }
+    s->polling = 0;
+
+    /* A non-zero advertisement resumes it. */
+    s->tx_pkts = 0;
+    p.min_rx = htonl(50000);
+    fsm_rx(s, &p, 2500000);
+    s->next_tx_us = 0;
+    fsm_tx(s, 2600000);
+    if (!s->tx_pkts) {
+        printf("     still silent after the peer withdrew the zero\n");
+        bad = 1;
+    }
+
+    if (bad) {
+        printf("FAIL %-44s\n", "zero-remote-min-rx-halts-tx");
+        fails++;
+    } else {
+        printf("ok   %-44s halted, Poll and Final exempt\n",
+               "zero-remote-min-rx-halts-tx");
+    }
+}
+
+static void case_failed_send_keeps_pending(void)
 {
 	struct session *s;
+	int bad = 0;
+
+	s = sess_init(ST_UP);
+	s->rdisc = 0x33333333;
+	s->send_final = 1;
+	s->just_up = 1;
+	s->demand = 1;
+	s->r_state = ST_UP;
+	s->next_tx_us = 0;
+
+	fsm_send_hook = refuse_send;
+	fsm_tx(s, 2000000);
+	fsm_send_hook = NULL;
+
+	if (s->tx_pkts) {
+		printf("     tx_pkts %llu after a refused send\n",
+		       (unsigned long long)s->tx_pkts);
+		bad = 1;
+	}
+	if (!s->tx_fail) {
+		printf("     the refusal was not counted\n");
+		bad = 1;
+	}
+	if (!s->send_final) {
+		printf("     send_final cleared by a send that did not happen\n");
+		bad = 1;
+	}
+	if (!s->just_up) {
+		printf("     just_up cleared by a send that did not happen\n");
+		bad = 1;
+	}
+	if (s->demand_announced) {
+		printf("     demand quota spent on a refused send\n");
+		bad = 1;
+	}
+
+	/* The schedule comes round again and the socket is working. */
+	s->next_tx_us = 0;
+	fsm_tx(s, 2100000);
+	if (!s->tx_pkts) {
+		printf("     nothing sent once the socket recovered\n");
+		bad = 1;
+	}
+	if (s->send_final) {
+		printf("     the Final was never answered\n");
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL %-44s\n", "failed-send-keeps-pending");
+		fails++;
+	} else {
+		printf("ok   %-44s pending held, then sent\n",
+		       "failed-send-keeps-pending");
+	}
+}
+
+static void case_echo_only_change_notifies(void)
+{
+	struct bfd_ctrl_pkt p = pkt(ST_UP, 0);
+	struct session *s;
+	int bad = 0;
+	int base;
+
+	s = sess_init(ST_UP);
+	s->rdisc = 0x22222222;
+	s->r_min_echo = 50000;
+
+	p.min_echo_rx = htonl(50000);
+	notify_calls = 0;
+	fsm_rx(s, &p, 2000000);
+	base = notify_calls;
+	if (base) {
+		printf("     %d notifications for a packet that changed nothing\n",
+		       base);
+		bad = 1;
+	}
+
+	/* Only the echo interval moves. */
+	p.min_echo_rx = htonl(200000);
+	fsm_rx(s, &p, 2100000);
+	if (notify_calls != base + 1) {
+		printf("     %d notifications for an echo-only change, want 1\n",
+		       notify_calls - base);
+		bad = 1;
+	}
+	if (s->r_min_echo != 200000) {
+		printf("     r_min_echo %u, want 200000\n", s->r_min_echo);
+		bad = 1;
+	}
+
+	/* Withdrawing echo is a change too. */
+	p.min_echo_rx = htonl(0);
+	fsm_rx(s, &p, 2200000);
+	if (notify_calls != base + 2) {
+		printf("     withdrawing echo did not notify\n");
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL %-44s\n", "echo-only-change-notifies");
+		fails++;
+	} else {
+		printf("ok   %-44s notified twice\n",
+		       "echo-only-change-notifies");
+	}
+}
+
+static void case_passive(void)
+{
 	struct bfd_ctrl_pkt p = pkt(ST_DOWN, 0);
+	struct session *s;
+	int bad = 0;
 
 	s = sess_init(ST_DOWN);
 	s->passive = 1;
-	fsm_rx(s, &p, 2000000);
+	s->rdisc = 0;
+	s->last_rx_us = 0;
+	s->next_tx_us = 0;
 
-	if (s->state != ST_DOWN) {
-		printf("     passive session moved to %s\n", st_name(s->state));
-		printf("FAIL %-44s\n", "passive-down+down-stays-down");
+	/* Nothing heard from the peer: silent. */
+	fsm_tx(s, 2000000);
+	if (s->tx_pkts) {
+		printf("     passive transmitted %llu before hearing a peer\n",
+		       (unsigned long long)s->tx_pkts);
+		bad = 1;
+	}
+
+	/* The peer speaks first, as passive requires. */
+	fsm_rx(s, &p, 2000000);
+	if (s->state != ST_INIT) {
+		printf("     passive stayed %s on the peer's Down, want Init\n",
+		       st_name(s->state));
+		bad = 1;
+	}
+
+	/* Now it has a discriminator to answer, so it may transmit. */
+	s->next_tx_us = 0;
+	fsm_tx(s, 2100000);
+	if (!s->tx_pkts) {
+		printf("     passive still silent after the peer was heard\n");
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL %-44s\n", "passive-silent-then-init");
 		fails++;
 	} else {
-		printf("ok   %-44s Down\n", "passive-down+down-stays-down");
+		printf("ok   %-44s silent, then Init\n",
+		       "passive-silent-then-init");
 	}
 }
 
@@ -616,6 +902,86 @@ static void case_demand_tx_hold(void)
 	check("demand-tx-needs-peer-up", s->tx_pkts == 1, "transmitting");
 }
 
+/* A demanding session verifies its own path (RFC 5880 s6.6).
+ *
+ * While we demand, demand_detect_held stops the detection timer, so
+ * nothing else can ever take the session down. These cases pin the timer
+ * that makes it falsifiable again, and the two negatives matter as much
+ * as the positive: a poll that fires on a session which has just heard
+ * from its peer is pure cost, and one that fires faster than the detect
+ * budget spends more than demand mode saves.
+ */
+static void case_demand_poll(void)
+{
+	struct session *s;
+	uint64_t t = 2000000;
+	uint64_t saved = demand_poll_us;
+
+	demand_poll_us = 1000000;
+
+	/* Heard from a moment ago: nothing to verify. */
+	s = demand_sess(1, 1);
+	s->last_rx_us = t - 10000;
+	fsm_tx(s, t);
+	check("demand-poll-not-when-fresh", !s->polling && !s->demand_polls,
+	      "no poll");
+
+	/* Unverified for the interval: poll. */
+	s = demand_sess(1, 1);
+	s->last_rx_us = t - 1000000;
+	fsm_tx(s, t);
+	check("demand-poll-when-stale", s->polling && s->demand_polls == 1,
+	      "poll started");
+
+	/* And the poll re-arms detection against NOW, not against the
+	 * silence we asked for. Without this the session times out on the
+	 * spot, which is the whole reason fsm_start_poll exists. */
+	check("demand-poll-rearms-detection", s->last_rx_us == t,
+	      "clock reset");
+
+	/* Only we demand: the peer has stopped, our detection is held, and
+	 * this is the case that hides a dead peer even though we are still
+	 * transmitting. A plain packet obliges no answer; only a Poll does. */
+	s = demand_sess(1, 0);
+	s->last_rx_us = t - 1000000;
+	fsm_tx(s, t);
+	check("demand-poll-when-only-we-demand", s->demand_polls == 1,
+	      "poll started");
+
+	/* The peer demands and we do not: our detection is running, so
+	 * silence is already a fault and there is nothing to verify. */
+	s = demand_sess(0, 1);
+	s->last_rx_us = t - 1000000;
+	fsm_tx(s, t);
+	check("demand-poll-not-when-only-peer-demands", !s->demand_polls,
+	      "no poll");
+
+	/* Never faster than the detect budget. The knob asks for 10ms; the
+	 * session's budget is 3 x 10ms, so 20ms of silence is not yet due. */
+	demand_poll_us = 10000;
+	s = demand_sess(1, 1);
+	s->last_rx_us = t - 20000;
+	fsm_tx(s, t);
+	check("demand-poll-floors-at-detect-budget", !s->demand_polls,
+	      "no poll");
+	s = demand_sess(1, 1);
+	s->last_rx_us = t - 40000;
+	fsm_tx(s, t);
+	check("demand-poll-fires-past-detect-budget", s->demand_polls == 1,
+	      "poll started");
+
+	/* Zero is the off switch, and the case this whole feature changes:
+	 * stale for a minute, still no poll. */
+	demand_poll_us = 0;
+	s = demand_sess(1, 1);
+	s->last_rx_us = t - 60000000;
+	fsm_tx(s, t);
+	check("demand-poll-disarmed", !s->polling && !s->demand_polls,
+	      "no poll");
+
+	demand_poll_us = saved;
+}
+
 /* Both ends demanding: we must get our own D out before going quiet, or
  * the peer never learns to stop and keeps transmitting forever. */
 static void case_demand_announce(void)
@@ -625,6 +991,13 @@ static void case_demand_announce(void)
 	int sent = 0;
 
 	s->demand_announced = 0;
+	/* Just heard from the peer, which is how a session arrives at this
+	 * state at all: r_state reaches Up on the peer's packet and, if the
+	 * peer is also demanding, that same packet carries its D bit. The
+	 * fixture's default clock is a second old, which is long enough to
+	 * be due a verification poll, and the poll lifts the very hold this
+	 * case is measuring. */
+	s->last_rx_us = t;
 	for (int i = 0; i < 20; i++) {
 		s->next_tx_us = 0;          /* due every pass */
 		fsm_tx(s, t);
@@ -684,6 +1057,9 @@ int main(void)
 {
 	run_table();
 	run_detect_vectors();
+	case_zero_remote_min_rx_halts_tx();
+	case_failed_send_keeps_pending();
+	case_echo_only_change_notifies();
 	case_passive();
 	case_admin_down();
 	case_poll_bits();
@@ -705,6 +1081,7 @@ int main(void)
 
 	case_demand_bit();
 	case_demand_tx_hold();
+	case_demand_poll();
 	case_demand_announce();
 	case_demand_detect_hold();
 

@@ -35,6 +35,25 @@ int tx_sock = -1, tx6_sock = -1;
  * address-based demux for your_disc=0 packets). Opened lazily and
  * kept; a reused slot with a different local address rebinds.
  * Stored as fd+1; 0 = not opened; -1 = bind failed. */
+/* The one send.
+ *
+ * Tests replace it to drive the refusal path. That path is otherwise
+ * reachable only by arranging for the kernel to refuse a datagram, and
+ * what a refused send must not consume - a pending Final, the demand
+ * announcement quota - is the whole of what it is about. Same idiom as
+ * dp_recv_hook. Production keeps sendto(2).
+ */
+ssize_t (*fsm_send_hook)(int fd, const void *buf, size_t len,
+			 const struct sockaddr *dst, socklen_t dlen) = NULL;
+
+static ssize_t fsm_send(int fd, const void *buf, size_t len,
+			const struct sockaddr *dst, socklen_t dlen)
+{
+	if (fsm_send_hook)
+		return fsm_send_hook(fd, buf, len, dst, dlen);
+	return sendto(fd, buf, len, 0, dst, dlen);
+}
+
 static int slot_tx[MAX_SESSIONS];
 static struct bfd_addr slot_tx_ip[MAX_SESSIONS];
 
@@ -149,8 +168,17 @@ void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 	 * change, which alters the peer's detection budget for us.
 	 */
 	uint32_t ntx = ntohl(p->min_tx), nrx = ntohl(p->min_rx);
+	uint32_t nec = ntohl(p->min_echo_rx);
 	uint8_t  nfl = p->flags & 0x3f;
+	/* min_echo_rx belongs here with the rest. It is assigned below and
+	 * reported by dp_notify_state, but it was left out of the test, so
+	 * a peer that changed only its echo interval - or withdrew echo by
+	 * advertising zero - produced no notification and the control plane
+	 * kept the old value indefinitely. ktx_poll_map has always compared
+	 * it, so the two paths disagreed about what counts as a change
+	 * depending on whether the fast path happened to be armed. */
 	int rparams_changed = (ntx != s->r_min_tx || nrx != s->r_min_rx ||
+			       nec != s->r_min_echo ||
 			       nfl != s->r_flags ||
 			       p->detect_mult != s->r_mult);
 
@@ -158,10 +186,27 @@ void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 	s->r_state  = ps;
 	s->r_min_rx = nrx;
 	s->r_min_tx = ntx;
-	s->r_min_echo = ntohl(p->min_echo_rx);
+	s->r_min_echo = nec;
 	s->r_mult   = p->detect_mult;
 	s->r_flags  = nfl;
 
+	/* Only in Up, deliberately.
+	 *
+	 * This is a BFD_STATE_CHANGE message, and below Up the state is
+	 * about to change anyway: a session that is Down or Init is on its
+	 * way somewhere, and state_transition notifies unconditionally with
+	 * whatever the remote parameters are by then. So nothing is lost
+	 * here, only deferred to an event already on its way.
+	 *
+	 * Widening it would cost more than it buys. The first packet of a
+	 * session populates every remote field from zero, so every session
+	 * coming up would send a state change whose state had not changed,
+	 * immediately before the transition that says the same thing -
+	 * during bring-up, which is when the control plane is busiest.
+	 *
+	 * ktx_poll_map has the same rule by construction: it returns early
+	 * unless the session is Up.
+	 */
 	if (s->state == ST_UP && rparams_changed)
 		dp_notify_state(s);
 
@@ -193,7 +238,7 @@ void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 	}
 	switch (s->state) {
 	case ST_DOWN:
-		if (ps == ST_DOWN && !s->passive)
+		if (ps == ST_DOWN)
 			state_transition(s, ST_INIT, s->diag, t,
 					 "peer sent Down");
 		else if (ps == ST_INIT)
@@ -255,7 +300,29 @@ void fsm_detect(struct session *s, uint64_t t)
 	if (sd < 0)
 		sd = 0;
 	uint8_t mult = s->r_mult ? s->r_mult : s->detect_mult;
-	if ((uint64_t)sd > (uint64_t)mult * iv) {
+	uint64_t budget = (uint64_t)mult * iv;
+
+	/* For a session the fast path carries, the sweep is what detects.
+	 *
+	 * It computes the same verdict from the same map every
+	 * BFD_SWEEP_NS_DEFAULT and publishes it on the ring, and the loop
+	 * ticks faster than that, so deriving it here too simply means this
+	 * always won the race and the kernel's verdict was never used. Two
+	 * derivations of one fact is also how they come to disagree: the
+	 * peer's detect multiplier not being carried back made this time out
+	 * against a budget the sweep knew was longer.
+	 *
+	 * Not a hand-off though. If the ring stops delivering - a consumer
+	 * that never runs, a full ring, a sweep that failed to arm - nothing
+	 * else would ever take the session down, so this stays as a backstop
+	 * at twice the budget: late enough never to race the sweep, early
+	 * enough to bound the failure. kernel_detects staying flat while
+	 * sessions still go down is the witness that it happened.
+	 */
+	if (use_ktx && !s->ktx_uncovered && ktx_events_fd() >= 0)
+		budget *= 2;
+
+	if ((uint64_t)sd > budget) {
 		/* The transition below carries "detect timeout" as its
 		 * reason, so this line is a duplicate at INFO. */
 		log_debug("[%llu] lid=%u DETECT TIMEOUT (silent %.1fms)\n",
@@ -263,6 +330,38 @@ void fsm_detect(struct session *s, uint64_t t)
 		s->rdisc = 0;
 		state_transition(s, ST_DOWN, 1, t, "detect timeout");
 	}
+}
+
+/* Begin a Poll sequence (RFC 5880 s6.8.3).
+ *
+ * Out here because there are now two reasons to start one - a parameter
+ * change from bfdd, and the periodic verification below - and the third
+ * step is easy to leave out. Two spellings of this would differ in
+ * exactly that step, and the session that lost it would come down on its
+ * first poll.
+ */
+/* --demand-poll-us: how long a demanding session may go unverified. 0
+ * leaves the RFC's "may" unexercised, which is where this started. */
+uint64_t demand_poll_us = BFD_DEMAND_POLL_US_DEFAULT;
+
+void fsm_start_poll(struct session *s, uint64_t t)
+{
+	s->poll_seq++;
+	s->polling = 1;
+
+	/* A Poll re-arms detection on a demanding session, because
+	 * demand_detect_held clears on !polling. The peer has been silent
+	 * for exactly as long as we asked it to be, so measuring the poll
+	 * against that stale arrival declares a timeout on the spot. bfdd
+	 * resets its own recvtimer at the same point, at the end of
+	 * bfd_set_polling, for the same reason.
+	 *
+	 * It is also what bounds the poll: detection now runs against this
+	 * instant, so a Final that never arrives brings the session down on
+	 * the detect budget rather than leaving the poll outstanding for
+	 * ever. */
+	if (s->demand)
+		s->last_rx_us = t;
 }
 
 /* Build and send one control packet from the session's current state.
@@ -273,13 +372,17 @@ static void tx_one(struct session *s)
 	__u8 buf[BFD_MAX_LEN] = {0};
 	struct bfd_ctrl_pkt o = {0};
 	unsigned olen = BFD_MIN_LEN;
+	int announcing = 0;
+	ssize_t sent;
 	o.vers_diag   = (1 << 5) | (s->diag & 0x1f);
 	o.flags       = (s->state << 6) |
 		      (s->send_final ? F_F : (s->polling ? F_P : 0));
+	/* Counted after the send, not here. An announcement that never
+	 * left the host has not been made, and spending the quota on it
+	 * means the peer may never see the D bit at all. */
 	if (demand_bit_out(s)) {
 		o.flags |= F_D;
-		if (s->demand_announced < DEMAND_ANNOUNCE_N)
-			s->demand_announced++;
+		announcing = s->demand_announced < DEMAND_ANNOUNCE_N;
 	}
 	o.detect_mult = s->detect_mult;
 	o.len         = 24;
@@ -322,13 +425,34 @@ static void tx_one(struct session *s)
 		struct sockaddr_in6 dst = { .sin6_family = AF_INET6,
 			.sin6_port = htons(s->is_mhop ? BFD_PORT_MHOP : PORT_CTRL) };
 		memcpy(&dst.sin6_addr, s->peer.b, 16);
-		sendto(txfd, buf, olen, 0, (void *)&dst, sizeof(dst));
+		sent = fsm_send(txfd, buf, olen, (void *)&dst, sizeof(dst));
 	} else {
 		struct sockaddr_in dst = { .sin_family = AF_INET,
 			.sin_port = htons(s->is_mhop ? BFD_PORT_MHOP : PORT_CTRL) };
 		memcpy(&dst.sin_addr.s_addr, &s->peer.b[12], 4);
-		sendto(txfd, buf, olen, 0, (void *)&dst, sizeof(dst));
+		sent = fsm_send(txfd, buf, olen, (void *)&dst, sizeof(dst));
 	}
+
+	/* Nothing below this line may run for a packet that did not leave.
+	 *
+	 * send_final is the one that matters: a Final answers the peer's
+	 * Poll, and clearing it on a send that failed means the peer waits
+	 * out its detection time for an answer this session believes it
+	 * has already given. just_up and the demand quota are the same
+	 * shape of mistake, and tx_pkts reporting attempts as packets is
+	 * what made all three invisible - the counter went up either way,
+	 * so a link that was refusing every datagram looked busy.
+	 *
+	 * Nothing is retried here. The transmit schedule comes round
+	 * again, and the pending state is still set when it does. */
+	if (sent != (ssize_t)olen) {
+		s->tx_fail++;
+		log_debug("lid=%u send failed: %s\n", s->lid, strerror(errno));
+		return;
+	}
+
+	if (announcing)
+		s->demand_announced++;
 	s->tx_pkts++;
 	s->send_final = 0;
 	s->just_up = 0;
@@ -394,13 +518,90 @@ void fsm_tx(struct session *s, uint64_t t)
 	if (s->admin_down && s->state != ST_ADMINDOWN)
 		state_transition(s, ST_ADMINDOWN, 7, t, "admin shutdown");
 
+	/* RFC 5880 s6.8.7: a system MUST NOT transmit while it is taking
+	 * the passive role and bfd.RemoteDiscr is zero. That is the whole
+	 * of what passive means - it does not begin the handshake - and
+	 * until the peer has been heard from there is nothing to address a
+	 * packet to: Your Discriminator would go out as zero.
+	 *
+	 * The gate was on the receive transition instead, which s6.8.6 has
+	 * no exception for, so a passive session refused to leave Down on
+	 * the peer's Down and transmitted into the silence it was supposed
+	 * to be keeping. It still converged, one round trip later, through
+	 * the peer's Init.
+	 *
+	 * Schedule keeps rolling, as with demand, so the first packet after
+	 * the peer appears is on time rather than immediate. */
+	if (s->passive && !s->rdisc) {
+		if (t >= s->next_tx_us)
+			tx_reschedule(s, t);
+		return;
+	}
+
+	/* Verify a path nothing else will (RFC 5880 s6.6).
+	 *
+	 * While we are demanding, our detection timer does not run: we told
+	 * the peer to go quiet, so its silence is what we asked for and
+	 * cannot be read as a fault. Nothing then ever takes the session
+	 * down. It is not a quiet corner either - it was measured here.
+	 * Changing the key on one end of the live mesh took down every
+	 * authenticated session except the one demanding at both ends, which
+	 * stayed Up against a key it could no longer have verified, because
+	 * neither end was transmitting anything to verify.
+	 *
+	 * s6.6 leaves the timing to the implementation: a system MAY send a
+	 * Poll Sequence to verify connectivity, and stock bfdd reaches
+	 * bfd_set_polling only from a parameter change, so in practice never
+	 * does. Doing it on a timer is what makes the mode falsifiable - the
+	 * poll re-arms detection, so a peer that has gone away now brings
+	 * the session down on the detect budget rather than never.
+	 *
+	 * Keyed off last_rx_us rather than a timer of its own, because that
+	 * is already the answer to "when was this path last verified": a
+	 * packet arriving is a verification, the Final that ends a poll is
+	 * one, and fsm_start_poll stamps it so an unanswered poll restarts
+	 * the same clock it is measured against.
+	 *
+	 * Never faster than the session's own detect budget. A poll costs a
+	 * round trip and demand mode exists to stop paying for those, so
+	 * polling more often than asynchronous detection would have run
+	 * spends more than the mode saves.
+	 *
+	 * Not while the D bit is still going out, and not before a packet
+	 * has ever arrived. Neither is an idle path: the first is a session
+	 * still telling the peer to stop, and the second has nothing to
+	 * measure "unverified since" from - r_state cannot reach Up without
+	 * a packet, so it only arises in a fixture, but the predicate should
+	 * be true rather than true by luck.
+	 */
+	if (demand_poll_us && demand_detect_held(s) && s->last_rx_us &&
+	    !demand_announce_due(s)) {
+		uint64_t iv = s->detect_iv_us;
+		uint8_t mult = s->r_mult ? s->r_mult : s->detect_mult;
+		uint64_t every;
+
+		if (!iv)
+			iv = s->r_min_tx > s->min_rx_us ? s->r_min_tx
+							: s->min_rx_us;
+		every = (uint64_t)mult * iv;
+		if (every < demand_poll_us)
+			every = demand_poll_us;
+		if (t - s->last_rx_us >= every) {
+			log_debug("[%llu] lid=%u demand poll (unverified %.1fms)\n",
+				  (unsigned long long)t, s->lid,
+				  (t - s->last_rx_us) / 1000.0);
+			s->demand_polls++;
+			fsm_start_poll(s, t);
+		}
+	}
+
 	/* RFC 5880 s6.8.7: the peer is demanding, so periodic transmission
 	 * stops. Nothing else changes - the session stays Up, the mirror
 	 * stays current, and the schedule keeps advancing so the first
 	 * packet after the hold lifts is on time rather than immediate.
 	 * bfdd does the same in ptm_bfd_xmt_TO, restarting its transmit
 	 * timer and returning without sending. */
-	if (demand_tx_held(s)) {
+	if (demand_tx_held(s) || zero_rx_tx_held(s)) {
 		if (t >= s->next_tx_us)
 			tx_reschedule(s, t);
 		return;
@@ -421,11 +622,27 @@ void fsm_tx(struct session *s, uint64_t t)
 		/* Kernel echo covers TX only at the peer's pace. If the
 		 * peer paces slower than our required rate (its detect
 		 * budget for us), transmit from here at the required
-		 * pace; otherwise stay silent as before. last_rx_us is
-		 * synced from the map, so it tracks kernel echo times. */
+		 * pace; otherwise stay silent as before.
+		 *
+		 * last_ktx_us, not last_rx_us. This used to read arrival
+		 * time and take it to mean "the fast path has replied
+		 * recently", which holds only while every accepted packet is
+		 * answered - true once, enforced by nothing. A gate that
+		 * lets the program decline to answer breaks it, and
+		 * userspace then stays quiet believing the kernel is
+		 * transmitting when it has just decided not to; both ends go
+		 * silent and the session times out, at a flap every 32ms,
+		 * the detect budget exactly. The program now records when it
+		 * transmitted and this asks that question directly, so a
+		 * declined reply reads as "the kernel did not send" and
+		 * userspace covers it.
+		 *
+		 * Zero until the fast path has bounced anything, which fails
+		 * open: the subtraction is huge, due stays set, and
+		 * userspace transmits until the kernel demonstrably has. */
 		uint64_t pace = s->applied_tx_us > s->r_min_rx ?
 				s->applied_tx_us : s->r_min_rx;
-		if (t - s->last_rx_us < pace)
+		if (t - s->last_ktx_us < pace)
 			due = 0;
 	}
 	if (!due)

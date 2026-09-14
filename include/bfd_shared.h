@@ -95,7 +95,10 @@ struct bfd_ctrl_pkt {
 	X(SWEEP_INIT_FAIL,   "sweep-init-fail")    /* sweeper never armed */ \
 	X(IP_OPTIONS,        "ip-options")         /* any UDP with options */ \
 	X(AUTH_MISMATCH,     "auth-mismatch")      /* A bit vs session */   \
-	X(AUTH_BAD,          "auth-bad")           /* key, digest or seq */
+	X(AUTH_BAD,          "auth-bad")           /* key, digest or seq */ \
+	X(DEADMAN_HOLD,      "deadman-hold")       /* reply withheld: the
+	                                            * engine has stopped
+	                                            * making progress */
 
 /* Load-time tunables, written by userspace between load and attach and
  * read-only to the program thereafter. Their own map rather than
@@ -104,6 +107,9 @@ struct bfd_ctrl_pkt {
  * not write over. */
 enum bfd_tunable {
 	BFD_TUNE_SWEEP_NS,   /* 0 means use the compiled default */
+	BFD_TUNE_DEADMAN_NS, /* how long the engine may go without a
+	                      * heartbeat before the fast path stops
+	                      * answering for it. 0 disables the gate. */
 	BFD_TUNE_MAX
 };
 
@@ -114,6 +120,33 @@ enum bfd_tunable {
 /* The compiled sweep interval. Shared because the engine reports what it
  * overrode and against what. */
 #define BFD_SWEEP_NS_DEFAULT (5ull * 1000 * 1000)
+
+/* How stale the engine's heartbeat may get before the fast path stops
+ * answering for it.
+ *
+ * One second, against a measured distribution. 651347 consecutive loop
+ * passes on the 64-session mesh: 98.6% fell in the 1-2ms bucket, 99.99%
+ * under 4ms, and the two worst legitimate gaps in the whole run landed in
+ * 16-32ms. The only samples past that were deliberate SIGSTOPs, which sat
+ * in the 8-16 SECOND bucket. Between the worst thing the engine does to
+ * itself and the thing this is here to catch there are four orders of
+ * magnitude, so the threshold does not need to be delicate and should not
+ * be: a false trip costs real sessions, and 1s is some thirty times the
+ * worst gap ever observed while still turning "never noticed" into
+ * "noticed within a second plus the peer's own detection time".
+ */
+#define BFD_DEADMAN_NS_DEFAULT (1000ull * 1000 * 1000)
+
+/* How long a demanding session may go without verifying its path.
+ *
+ * One second, matching the dead-man bound, because it answers the same
+ * question: how stale may this engine's claim that a session is Up be
+ * allowed to get. Both are floors rather than targets - the effective
+ * poll interval is at least the session's detect budget - so a session
+ * with slow timers polls at its own rate and a session with fast ones
+ * still pays a round trip only once a second instead of continuously.
+ */
+#define BFD_DEMAND_POLL_US_DEFAULT 1000000ull
 
 enum bfd_stat {
 #define BFD_STAT_ENUM(n, s) BFD_STAT_##n,

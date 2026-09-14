@@ -44,7 +44,11 @@ import sweep_ladder as sl          # noqa: E402
 
 
 def peer_counters():
-    out = sl.peer_sh("sudo vtysh -c 'show bfd peers counters json'")
+    # sweep_ladder.VTYSH, not a bare name: the peer also carries a distro
+    # vtysh whose daemons are not running, and that one answers "failed to
+    # connect to any daemons", which the caller cannot tell from a mesh
+    # that is simply empty.
+    out = sl.peer_sh("sudo %s -c 'show bfd peers counters json'" % sl.VTYSH)
     return {(s["peer"], s["local"]): s for s in json.loads(out)}
 
 
@@ -65,7 +69,19 @@ def main():
         return 1
 
     ours = {(s["peer"], s["local"]) for s in d0["sessions"]}
-    pid = int(sl.sh("pgrep -x bfd_tx").split()[0])
+
+    # Not `pgrep -x bfd_tx | head -1`. A previous run can leave a defunct
+    # engine behind (see below), and pgrep lists it first by pid order, so
+    # the run would STOP a corpse and measure a healthy mesh through it.
+    pid = ppid = None
+    for line in sl.sh("ps -eo pid=,ppid=,stat=,comm=").splitlines():
+        f = line.split()
+        if len(f) == 4 and f[3] == "bfd_tx" and not f[2].startswith("Z"):
+            pid, ppid = int(f[0]), int(f[1])
+            break
+    if pid is None:
+        print("REFUSING: no live bfd_tx")
+        return 1
 
     p0 = peer_counters()
     sl.sh("sudo kill -STOP %d" % pid)
@@ -82,43 +98,81 @@ def main():
         # closed before anything can recover and hide a flap.
         p1 = peer_counters()
     finally:
+        # The parent as well as the engine. The engine is started under
+        # sudo, and sudo follows job-control convention: when the child it
+        # is waiting on stops, it stops itself, so the shell sees the whole
+        # job stopped. Resuming only the child leaves sudo in T for good,
+        # and a stopped parent cannot reap - so the next `pkill -x bfd_tx`
+        # produces a defunct engine that never goes away and that pgrep
+        # then hands to the following run. Costs nothing when the parent
+        # was never stopped.
         sl.sh("sudo kill -CONT %d" % pid)
+        sl.sh("sudo kill -CONT %d" % ppid, check=False)
     print("after %ds: stat %s, resumed" % (args.seconds, stat_out))
     if not stat_out.startswith("T"):
         print("REFUSING: process did not stay stopped")
         return 1
 
-    downs = ups = rx_moved = rx_flat = 0
+    # Classified per session, not summed. "The peer received something"
+    # is not the question: a gate that answers for its first second and
+    # then stops still moves that counter, and the run would read as a
+    # session carried all the way through. What separates the two is
+    # whether the peer ever concluded the session was down.
+    downs = ups = 0
+    carried = dropped = silent = 0
     for peer, local in ours:
         a, b = p0.get((local, peer)), p1.get((local, peer))
         if not a or not b:
             continue
-        downs += b["session-down"] - a["session-down"]
+        dd = b["session-down"] - a["session-down"]
+        downs += dd
         ups += b["session-up"] - a["session-up"]
-        if b["control-packet-input"] > a["control-packet-input"]:
-            rx_moved += 1
+        drx = b["control-packet-input"] - a["control-packet-input"]
+        if dd:
+            dropped += 1
+        elif drx > 0:
+            carried += 1
         else:
-            rx_flat += 1
+            silent += 1
 
     print("\npeer, over the %ds window (%d sessions)"
-          % (args.seconds, rx_moved + rx_flat))
+          % (args.seconds, carried + dropped + silent))
     print("  session-down       +%d" % downs)
     print("  session-up         +%d" % ups)
-    print("  control-pkt-input  %d climbing, %d flat" % (rx_moved, rx_flat))
+    print("  carried            %d  (heard from, never declared down)"
+          % carried)
+    print("  dropped            %d  (peer declared down)" % dropped)
+    print("  silent             %d  (no traffic either way)" % silent)
 
     print("\nverdict")
-    if rx_flat and not rx_moved:
+    if not carried and not dropped:
         print("  peer sent nothing; the window measured nothing")
         return 1
-    if downs == 0:
-        print("  %d sessions stayed Up for %ds with userspace stopped,"
-              " while the peer kept receiving." % (rx_moved, args.seconds))
+
+    # Not "any down event at all". The mesh is two populations, and only
+    # one of them is under test: sessions the fast path carries, where
+    # XDP answers from softirq, and sessions it does not, which transmit
+    # from the loop and are SUPPOSED to go down the moment the loop
+    # stops. Counting a down event from the second population as a
+    # refutation reads the control group as the result - it reported
+    # "unfounded" off 4 userspace-TX sessions while 55 kernel-TX ones sat
+    # there being carried, which is the finding, not the noise.
+    if carried:
+        print("  %d session(s) stayed Up for %ds with userspace stopped,"
+              " the peer still receiving." % (carried, args.seconds))
         print("  Kernel-TX alone carried them: WEDGED-BUT-ALIVE IS REAL,")
         print("  and 88a1eef did not close it.")
+        if dropped:
+            print("  (%d went down: sessions the fast path does not carry"
+                  " transmit from the loop, so a stopped loop takes them"
+                  " down. That is the control arm working.)" % dropped)
     else:
-        print("  %d down event(s): kernel-TX did NOT carry the sessions"
-              " through a stopped userspace." % downs)
-        print("  The wedged-but-alive concern is unfounded on this path.")
+        print("  nothing was carried: every session the peer was hearing"
+              " from went down inside the window.")
+        print("  A stopped engine is visible to its peers, which is what"
+              " the dead-man gate is for. Check stats.deadman-hold on the"
+              " DUT to confirm the gate is what did it rather than some"
+              " unrelated breakage.")
     return 0
 
 

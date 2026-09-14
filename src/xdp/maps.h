@@ -76,6 +76,50 @@ struct {
 	__type(value, __u64);
 } tunables SEC(".maps");
 
+/* Layouts that cross to the engine without a map to carry them into BTF.
+ *
+ * ktx_abi_check compares the program's recorded struct sizes against the
+ * engine's own, which is only possible for types BTF records - and BTF for
+ * a BPF object is built from map definitions and program signatures, so a
+ * struct named only inside a function body is pruned. session_key,
+ * session_state and tx_cfg are map key and value types and survive; these
+ * two do not, and both still cross the boundary. bfd_event crosses as ring
+ * bytes that the engine casts straight back to this struct, which is the
+ * shear surface exactly; bfd_ctrl_pkt is the wire format both halves build
+ * and parse independently.
+ *
+ * Declaring them by value rather than as pointers is the point: a pointer
+ * can be recorded against a forward declaration, and a forward declaration
+ * has no size to compare. Eighty bytes of .rodata to make a silent
+ * mismatch a startup refusal.
+ */
+static const struct {
+	struct bfd_event ev;
+	struct bfd_ctrl_pkt pkt;
+} bfd_abi_witness SEC(".rodata") __attribute__((used));
+
+/* The engine's heartbeat: the last CLOCK_MONOTONIC reading it took at the
+ * top of a loop pass, in nanoseconds, directly comparable to
+ * bpf_ktime_get_ns.
+ *
+ * BPF_F_MMAPABLE so the engine stores to it as memory rather than through
+ * bpf_map_update_elem. This is written once per loop pass - some five
+ * hundred times a second - and a syscall per pass to say "still here"
+ * would be a real cost to prove the absence of one.
+ *
+ * Zero means the engine has not written one yet, which is the state
+ * between program load and the first pass, and must read as healthy: a
+ * gate that trips before userspace has had a chance to say anything would
+ * hold down every session at startup.
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__uint(map_flags, BPF_F_MMAPABLE);
+	__type(key, __u32);
+	__type(value, __u64);
+} heartbeat SEC(".maps");
+
 struct sweep {
 	struct bpf_timer timer;
 	__u32 inited;

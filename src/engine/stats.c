@@ -18,6 +18,7 @@
 #include "util.h"
 #include "session.h"
 #include "ktx.h"
+#include "fsm.h"
 #include "stats.h"
 
 const char *stats_path = "/tmp/bfd_tx_stats.json";
@@ -116,6 +117,7 @@ static void one_session(FILE *f, const struct session *s, int first)
 		s->r_mult, s->r_flags);
 	fprintf(f, " \"detect_basis_us\": %u, \"polling\": %s,",
 		s->detect_iv_us, s->polling ? "true" : "false");
+	fprintf(f, " \"demand_polls\": %u,", s->demand_polls);
 	fprintf(f, " \"orphaned\": %s,", s->orphaned ? "true" : "false");
 	/* Four separate facts, because in demand mode they routinely
 	 * disagree and a single "demand" boolean hides which way round it
@@ -205,6 +207,8 @@ void stats_dump(void)
 	 * path really will answer for a wedged engine. */
 	fprintf(f, "  \"deadman_us\": %llu,\n",
 		(unsigned long long)(ktx_deadman_ns / 1000));
+	fprintf(f, "  \"demand_poll_us\": %llu,\n",
+		(unsigned long long)demand_poll_us);
 	fprintf(f, "  \"xdp_ifindex\": %d,\n", ktx_ifindex);
 	fprintf(f, "  \"sessions_configured\": %d,\n", configured);
 	fprintf(f, "  \"sessions_up\": %d,\n", up);

@@ -332,6 +332,38 @@ void fsm_detect(struct session *s, uint64_t t)
 	}
 }
 
+/* Begin a Poll sequence (RFC 5880 s6.8.3).
+ *
+ * Out here because there are now two reasons to start one - a parameter
+ * change from bfdd, and the periodic verification below - and the third
+ * step is easy to leave out. Two spellings of this would differ in
+ * exactly that step, and the session that lost it would come down on its
+ * first poll.
+ */
+/* --demand-poll-us: how long a demanding session may go unverified. 0
+ * leaves the RFC's "may" unexercised, which is where this started. */
+uint64_t demand_poll_us = BFD_DEMAND_POLL_US_DEFAULT;
+
+void fsm_start_poll(struct session *s, uint64_t t)
+{
+	s->poll_seq++;
+	s->polling = 1;
+
+	/* A Poll re-arms detection on a demanding session, because
+	 * demand_detect_held clears on !polling. The peer has been silent
+	 * for exactly as long as we asked it to be, so measuring the poll
+	 * against that stale arrival declares a timeout on the spot. bfdd
+	 * resets its own recvtimer at the same point, at the end of
+	 * bfd_set_polling, for the same reason.
+	 *
+	 * It is also what bounds the poll: detection now runs against this
+	 * instant, so a Final that never arrives brings the session down on
+	 * the detect budget rather than leaving the poll outstanding for
+	 * ever. */
+	if (s->demand)
+		s->last_rx_us = t;
+}
+
 /* Build and send one control packet from the session's current state.
  * Split out of fsm_tx so the teardown path can emit a few without
  * re-deriving any of the pacing logic that precedes it there. */
@@ -504,6 +536,63 @@ void fsm_tx(struct session *s, uint64_t t)
 		if (t >= s->next_tx_us)
 			tx_reschedule(s, t);
 		return;
+	}
+
+	/* Verify a path nothing else will (RFC 5880 s6.6).
+	 *
+	 * While we are demanding, our detection timer does not run: we told
+	 * the peer to go quiet, so its silence is what we asked for and
+	 * cannot be read as a fault. Nothing then ever takes the session
+	 * down. It is not a quiet corner either - it was measured here.
+	 * Changing the key on one end of the live mesh took down every
+	 * authenticated session except the one demanding at both ends, which
+	 * stayed Up against a key it could no longer have verified, because
+	 * neither end was transmitting anything to verify.
+	 *
+	 * s6.6 leaves the timing to the implementation: a system MAY send a
+	 * Poll Sequence to verify connectivity, and stock bfdd reaches
+	 * bfd_set_polling only from a parameter change, so in practice never
+	 * does. Doing it on a timer is what makes the mode falsifiable - the
+	 * poll re-arms detection, so a peer that has gone away now brings
+	 * the session down on the detect budget rather than never.
+	 *
+	 * Keyed off last_rx_us rather than a timer of its own, because that
+	 * is already the answer to "when was this path last verified": a
+	 * packet arriving is a verification, the Final that ends a poll is
+	 * one, and fsm_start_poll stamps it so an unanswered poll restarts
+	 * the same clock it is measured against.
+	 *
+	 * Never faster than the session's own detect budget. A poll costs a
+	 * round trip and demand mode exists to stop paying for those, so
+	 * polling more often than asynchronous detection would have run
+	 * spends more than the mode saves.
+	 *
+	 * Not while the D bit is still going out, and not before a packet
+	 * has ever arrived. Neither is an idle path: the first is a session
+	 * still telling the peer to stop, and the second has nothing to
+	 * measure "unverified since" from - r_state cannot reach Up without
+	 * a packet, so it only arises in a fixture, but the predicate should
+	 * be true rather than true by luck.
+	 */
+	if (demand_poll_us && demand_detect_held(s) && s->last_rx_us &&
+	    !demand_announce_due(s)) {
+		uint64_t iv = s->detect_iv_us;
+		uint8_t mult = s->r_mult ? s->r_mult : s->detect_mult;
+		uint64_t every;
+
+		if (!iv)
+			iv = s->r_min_tx > s->min_rx_us ? s->r_min_tx
+							: s->min_rx_us;
+		every = (uint64_t)mult * iv;
+		if (every < demand_poll_us)
+			every = demand_poll_us;
+		if (t - s->last_rx_us >= every) {
+			log_debug("[%llu] lid=%u demand poll (unverified %.1fms)\n",
+				  (unsigned long long)t, s->lid,
+				  (t - s->last_rx_us) / 1000.0);
+			s->demand_polls++;
+			fsm_start_poll(s, t);
+		}
 	}
 
 	/* RFC 5880 s6.8.7: the peer is demanding, so periodic transmission

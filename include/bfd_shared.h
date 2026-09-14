@@ -137,6 +137,17 @@ enum bfd_tunable {
  */
 #define BFD_DEADMAN_NS_DEFAULT (1000ull * 1000 * 1000)
 
+/* How long a demanding session may go without verifying its path.
+ *
+ * One second, matching the dead-man bound, because it answers the same
+ * question: how stale may this engine's claim that a session is Up be
+ * allowed to get. Both are floors rather than targets - the effective
+ * poll interval is at least the session's detect budget - so a session
+ * with slow timers polls at its own rate and a session with fast ones
+ * still pays a round trip only once a second instead of continuously.
+ */
+#define BFD_DEMAND_POLL_US_DEFAULT 1000000ull
+
 enum bfd_stat {
 #define BFD_STAT_ENUM(n, s) BFD_STAT_##n,
 	BFD_STAT_LIST(BFD_STAT_ENUM)

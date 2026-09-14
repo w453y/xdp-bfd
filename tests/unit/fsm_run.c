@@ -902,6 +902,86 @@ static void case_demand_tx_hold(void)
 	check("demand-tx-needs-peer-up", s->tx_pkts == 1, "transmitting");
 }
 
+/* A demanding session verifies its own path (RFC 5880 s6.6).
+ *
+ * While we demand, demand_detect_held stops the detection timer, so
+ * nothing else can ever take the session down. These cases pin the timer
+ * that makes it falsifiable again, and the two negatives matter as much
+ * as the positive: a poll that fires on a session which has just heard
+ * from its peer is pure cost, and one that fires faster than the detect
+ * budget spends more than demand mode saves.
+ */
+static void case_demand_poll(void)
+{
+	struct session *s;
+	uint64_t t = 2000000;
+	uint64_t saved = demand_poll_us;
+
+	demand_poll_us = 1000000;
+
+	/* Heard from a moment ago: nothing to verify. */
+	s = demand_sess(1, 1);
+	s->last_rx_us = t - 10000;
+	fsm_tx(s, t);
+	check("demand-poll-not-when-fresh", !s->polling && !s->demand_polls,
+	      "no poll");
+
+	/* Unverified for the interval: poll. */
+	s = demand_sess(1, 1);
+	s->last_rx_us = t - 1000000;
+	fsm_tx(s, t);
+	check("demand-poll-when-stale", s->polling && s->demand_polls == 1,
+	      "poll started");
+
+	/* And the poll re-arms detection against NOW, not against the
+	 * silence we asked for. Without this the session times out on the
+	 * spot, which is the whole reason fsm_start_poll exists. */
+	check("demand-poll-rearms-detection", s->last_rx_us == t,
+	      "clock reset");
+
+	/* Only we demand: the peer has stopped, our detection is held, and
+	 * this is the case that hides a dead peer even though we are still
+	 * transmitting. A plain packet obliges no answer; only a Poll does. */
+	s = demand_sess(1, 0);
+	s->last_rx_us = t - 1000000;
+	fsm_tx(s, t);
+	check("demand-poll-when-only-we-demand", s->demand_polls == 1,
+	      "poll started");
+
+	/* The peer demands and we do not: our detection is running, so
+	 * silence is already a fault and there is nothing to verify. */
+	s = demand_sess(0, 1);
+	s->last_rx_us = t - 1000000;
+	fsm_tx(s, t);
+	check("demand-poll-not-when-only-peer-demands", !s->demand_polls,
+	      "no poll");
+
+	/* Never faster than the detect budget. The knob asks for 10ms; the
+	 * session's budget is 3 x 10ms, so 20ms of silence is not yet due. */
+	demand_poll_us = 10000;
+	s = demand_sess(1, 1);
+	s->last_rx_us = t - 20000;
+	fsm_tx(s, t);
+	check("demand-poll-floors-at-detect-budget", !s->demand_polls,
+	      "no poll");
+	s = demand_sess(1, 1);
+	s->last_rx_us = t - 40000;
+	fsm_tx(s, t);
+	check("demand-poll-fires-past-detect-budget", s->demand_polls == 1,
+	      "poll started");
+
+	/* Zero is the off switch, and the case this whole feature changes:
+	 * stale for a minute, still no poll. */
+	demand_poll_us = 0;
+	s = demand_sess(1, 1);
+	s->last_rx_us = t - 60000000;
+	fsm_tx(s, t);
+	check("demand-poll-disarmed", !s->polling && !s->demand_polls,
+	      "no poll");
+
+	demand_poll_us = saved;
+}
+
 /* Both ends demanding: we must get our own D out before going quiet, or
  * the peer never learns to stop and keeps transmitting forever. */
 static void case_demand_announce(void)
@@ -911,6 +991,13 @@ static void case_demand_announce(void)
 	int sent = 0;
 
 	s->demand_announced = 0;
+	/* Just heard from the peer, which is how a session arrives at this
+	 * state at all: r_state reaches Up on the peer's packet and, if the
+	 * peer is also demanding, that same packet carries its D bit. The
+	 * fixture's default clock is a second old, which is long enough to
+	 * be due a verification poll, and the poll lifts the very hold this
+	 * case is measuring. */
+	s->last_rx_us = t;
 	for (int i = 0; i < 20; i++) {
 		s->next_tx_us = 0;          /* due every pass */
 		fsm_tx(s, t);
@@ -994,6 +1081,7 @@ int main(void)
 
 	case_demand_bit();
 	case_demand_tx_hold();
+	case_demand_poll();
 	case_demand_announce();
 	case_demand_detect_hold();
 

@@ -134,6 +134,12 @@ static unsigned tick_us = TICK_US_DEFAULT;
  * stops being what clocks the loop and detection resolution stops
  * improving. Reported rather than reasoned about. */
 uint64_t loop_passes;
+/* --demand, for static mode only: under bfdd the flag arrives per session
+ * on the bfddp ADD. Without it standalone mode cannot reach demand mode at
+ * all, which left the one behaviour that only shows up there - a session
+ * whose detection is held and which therefore has to verify its own path -
+ * reachable only from a full FRR testbed. */
+static int static_demand;
 uint64_t loop_rx_wakeups;
 
 /* Inter-pass gap histogram, log2 buckets in microseconds. The ten-second
@@ -249,6 +255,27 @@ int main(int argc, char **argv)
 			}
 			ktx_deadman_ns = v * 1000ull;
 		}
+		else if (!strcmp(argv[i], "--demand"))
+			static_demand = 1;
+		else if (!strcmp(argv[i], "--demand-poll-us") && i + 1 < argc) {
+			const char *a = argv[++i];
+			char *end;
+			unsigned long long v = strtoull(a, &end, 10);
+
+			/* 0 is the documented off switch. Above it the floor
+			 * is 10ms only to catch a typo; the effective
+			 * interval is raised to the session's detect budget
+			 * anyway, so a small value here means "as often as
+			 * detection would have run" rather than a flood. */
+			if (end == a || *end ||
+			    (v && (v < 10000 || v > 600000000))) {
+				log_err(
+					"--demand-poll-us: expected 0 (off) or 10000-600000000, got '%s'\n",
+					a);
+				return 1;
+			}
+			demand_poll_us = v;
+		}
 		else if (!strcmp(argv[i], "--log-level") && i + 1 < argc) {
 			const char *a = argv[++i];
 
@@ -360,6 +387,7 @@ int main(int argc, char **argv)
 			"       [--sweep-us <500-100000>]\n"
 			"       [--tick-us <200-100000>]\n"
 			"       [--deadman-us <0|50000-60000000>]  (0 = off)\n"
+			"       [--demand] [--demand-poll-us <0|10000-600000000>]\n"
 			"       [--log-level error|info|debug]\n",
 			argv[0], argv[0]);
 		return 1;
@@ -568,6 +596,7 @@ int main(int argc, char **argv)
 		s->min_rx_us   = DEF_MIN_RX;
 		s->detect_mult = DEF_MULT;
 		s->state       = ST_DOWN;
+		s->demand      = static_demand;
 		s->pushed_valid = 0;
 		s->next_tx_us  = now_us();
 		log_info("bfd_tx: static session lid=%u %s -> %s%s\n",

@@ -60,6 +60,8 @@ of every session, counter and histogram to `/tmp/bfd_tx_stats.json`.
   preserves drop-and-recreate.
 - **`--deadman-us <usec>`** bounds how long the fast path will answer for
   an engine that has stopped making progress. Default 1s; 0 disables.
+- **`--demand-poll-us <usec>`** bounds how long a demanding session may go
+  without verifying its path. Default 1s; 0 disables.
 - **Echo needs the neighbour to forward.** An echo packet is
   self-addressed, so the far end loops it back only with forwarding
   enabled for that family.
@@ -88,10 +90,11 @@ peers add them via vtysh after the data plane connects rather than from
   control plane on one side of every session here.
 - **Keyed MD5 (types 2 and 3) is not implemented,** because no bfdd
   keychain algorithm maps onto those types.
-- **Demand mode does not poll on its own (s6.6),** matching stock bfdd.
-  Demand at both ends without echo can leave a failure undetected,
-  including a changed key: a session that has agreed to stop sending
-  notices nothing at all.
+- **Demand mode verifies the path on a timer, where stock bfdd does
+  not.** A demanding system holds its detection timer, so without this
+  nothing could ever take such a session down. `--demand-poll-us` sets
+  how long it may go unverified (default 1s, never faster than the
+  session's own detect budget); 0 restores bfdd's behaviour.
 - **Two of these engines must not face each other.** RX-clocked TX has no
   clock of its own, so two `--kernel-tx` sides transmit as fast as they
   can process frames. Against bfdd this is bounded, because bfdd paces

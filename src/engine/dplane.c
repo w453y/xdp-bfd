@@ -384,18 +384,9 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 		/* RFC 5880 s6.8.3: parameter change while Up requires a
 		 * Poll sequence. An increased min_tx must not slow actual
 		 * TX until the poll terminates; a decrease applies now. */
-		s->poll_seq++;
-		s->polling = 1;
 		if (s->min_tx_us < s->applied_tx_us || !s->applied_tx_us)
 			s->applied_tx_us = s->min_tx_us;
-		/* Starting a Poll re-arms detection on a demanding session
-		 * (demand_detect_held clears on !polling), and the peer has
-		 * been silent for as long as we asked it to be - measuring
-		 * the poll against that stale arrival declares a timeout on
-		 * the spot. bfdd resets its own recvtimer at the same point,
-		 * at the end of bfd_set_polling, for the same reason. */
-		if (s->demand)
-			s->last_rx_us = t;
+		fsm_start_poll(s, t);
 	} else if (!s->polling) {
 		/* Not while a Poll is outstanding. A repeated ADD carrying
 		 * the values the previous one already applied compares equal

@@ -96,6 +96,10 @@ struct session {
 	uint32_t detect_iv_us;        /* poll-aware effective detect basis */
 	int      send_final, just_up;
 	int      polling;             /* our Poll sequence in flight */
+	uint32_t demand_polls;        /* Polls started to verify an idle
+	                               * demanding session. Flat while
+	                               * sessions demand is the witness that
+	                               * the verification is not running. */
 	uint32_t poll_seq;            /* id of current/last Poll sequence */
 	uint32_t wire_disc;           /* my_disc on the wire; survives bfdd
 	                               * restarts even when lid changes */

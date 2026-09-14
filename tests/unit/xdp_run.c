@@ -1687,6 +1687,132 @@ static void run_echo_v6_matrix(void)
 		     1, XDP_TX, BFD_STAT_REFLECTED);
 }
 
+/* An envelope that does not describe the frame.
+ *
+ * bfd_ctrl_check takes the payload length from udp->len, which is whatever
+ * the sender wrote, and nothing compared it against what actually arrived.
+ * A 66 byte frame claiming a UDP length of 208 was accepted: no overread,
+ * because every field read afterwards is inside the 24 bytes already
+ * bounds-checked, but it refreshed liveness and could acknowledge a Poll
+ * on a packet that is not what it says it is.
+ *
+ * Worse on the way out. The bounce trimmed and rewrote the lengths only
+ * when there was a tail to trim, so a frame with nothing spare went back
+ * out still claiming 208 - built by this engine, with a length its own
+ * receive path would now refuse.
+ *
+ * MALFORMED and PASS rather than DROP, like a broken BFD header: a length
+ * that does not match the frame is not evidence of an attack, and the
+ * stack applies the same rule.
+ */
+static void case_bad_envelope(const char *name, int which)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct session_state after;
+	unsigned long long before;
+	struct frame f;
+	int v, bad = 0;
+
+	map_reset();
+	arm_session();
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+
+	struct iphdr *ip = (void *)(f.b + sizeof(struct ethhdr));
+	struct udphdr *udp = (void *)(ip + 1);
+
+	if (which == 0)
+		udp->len = htons(208);          /* more UDP than arrived */
+	else
+		ip->tot_len = htons(400);       /* more IP than arrived */
+
+	ip->check = 0;
+	ip->check = csum16(ip, sizeof(*ip), 0);
+
+	before = stat_get(BFD_STAT_MALFORMED);
+	v = run_frame(&f, NULL, NULL);
+
+	if (v != XDP_PASS) {
+		printf("     verdict %s, want PASS\n",
+		       v < 0 ? "syscall-error" : verdict_str(v));
+		bad = 1;
+	}
+	if (stat_get(BFD_STAT_MALFORMED) != before + 1) {
+		printf("     malformed counter did not move\n");
+		bad = 1;
+	}
+	if (read_state(&k, &after) && after.rx_pkts != 0) {
+		printf("     rx_pkts is %llu, a lying envelope refreshed liveness\n",
+		       (unsigned long long)after.rx_pkts);
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s PASS, no state write\n", name);
+	}
+	map_reset();
+}
+
+/* Whatever came in, what goes out says 24 bytes of BFD.
+ *
+ * The reply is the received frame rewritten in place, so its envelope is
+ * the sender's until this overwrites it. Asserting on the reply is the
+ * only way to see that: the trim used to be conditional on there being a
+ * tail, and a frame with none kept whatever length it arrived with.
+ */
+static void case_bounce_envelope_is_ours(void)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	unsigned char out[256];
+	unsigned out_len = 0;
+	struct frame f;
+	int v, bad = 0;
+
+	map_reset();
+	arm_session();
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+
+	v = run_frame(&f, out, &out_len);
+	if (v != XDP_TX) {
+		printf("     verdict %s, want TX\n",
+		       v < 0 ? "syscall-error" : verdict_str(v));
+		bad = 1;
+	} else {
+		const struct iphdr *oi = (void *)(out + sizeof(struct ethhdr));
+		const struct udphdr *ou = (void *)(oi + 1);
+		unsigned want_udp = sizeof(*ou) + BFD_MIN_LEN;
+		unsigned want_ip = sizeof(*oi) + want_udp;
+
+		if (ntohs(ou->len) != want_udp) {
+			printf("     reply udp->len %u, want %u\n",
+			       ntohs(ou->len), want_udp);
+			bad = 1;
+		}
+		if (ntohs(oi->tot_len) != want_ip) {
+			printf("     reply tot_len %u, want %u\n",
+			       ntohs(oi->tot_len), want_ip);
+			bad = 1;
+		}
+		if (out_len != sizeof(struct ethhdr) + want_ip) {
+			printf("     reply is %u bytes, want %zu\n",
+			       out_len, sizeof(struct ethhdr) + want_ip);
+			bad = 1;
+		}
+	}
+
+	if (bad) {
+		printf("FAIL %-40s\n", "bounce-envelope-is-ours");
+		fails++;
+	} else {
+		printf("ok   %-40s lengths rewritten\n",
+		       "bounce-envelope-is-ours");
+	}
+	map_reset();
+}
+
 /* IP options.
  *
  * A BFD control packet never carries them, and with them the UDP header is
@@ -2487,6 +2613,9 @@ int main(void)
 	run_frag_matrix();
 	run_echo_matrix();
 	run_echo_v6_matrix();
+	case_bad_envelope("envelope-udp-len-overruns-frame", 0);
+	case_bad_envelope("envelope-ip-len-overruns-frame", 1);
+	case_bounce_envelope_is_ours();
 	case_ip_options("ip-options-bfd-port", BFD_PORT_1HOP, XDP_DROP, 1);
 	case_ip_options("ip-options-other-port", 1234, XDP_PASS, 0);
 	case_ip_options_lying();

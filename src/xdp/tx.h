@@ -117,23 +117,32 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx,
         	                 (iph ? sizeof(*iph) : sizeof(*ip6)) +
         	                 sizeof(*udp) + bfd->len);
         	int excess = (int)((long)data_end - (long)data) - want;
-        	if (excess > 0) {
-        		udp->len = bpf_htons(sizeof(*udp) + bfd->len);
-        		if (iph) {
-        			iph->tot_len = bpf_htons(sizeof(*iph) +
-        			                         sizeof(*udp) + bfd->len);
-        			iph->check = 0;
-        			__u32 csum = 0;
-        			__u16 *w = (__u16 *)iph;
-        			for (int i = 0; i < 10; i++)
-        				csum += w[i];
-        			csum = (csum & 0xffff) + (csum >> 16);
-        			csum = (csum & 0xffff) + (csum >> 16);
-        			iph->check = ~csum & 0xffff;
-        		} else if (ip6) {
-        			ip6->payload_len = bpf_htons(sizeof(*udp) +
-        			                             bfd->len);
-        		}
+
+        	/* Unconditional, not only when there is a tail to trim.
+        	 *
+        	 * The received envelope is whatever the sender wrote, and
+        	 * nothing upstream requires it to describe the frame. A 66
+        	 * byte frame claiming a UDP length of 208 has no excess to
+        	 * trim, so the rewrite was skipped and the reply went back
+        	 * out still claiming 208 - a frame this engine built, with a
+        	 * length its own receive path would refuse.
+        	 *
+        	 * What goes out is ours: a 24 byte control packet in an
+        	 * envelope that says so. */
+        	udp->len = bpf_htons(sizeof(*udp) + bfd->len);
+        	if (iph) {
+        		iph->tot_len = bpf_htons(sizeof(*iph) +
+        		                         sizeof(*udp) + bfd->len);
+        		iph->check = 0;
+        		__u32 csum = 0;
+        		__u16 *w = (__u16 *)iph;
+        		for (int i = 0; i < 10; i++)
+        			csum += w[i];
+        		csum = (csum & 0xffff) + (csum >> 16);
+        		csum = (csum & 0xffff) + (csum >> 16);
+        		iph->check = ~csum & 0xffff;
+        	} else if (ip6) {
+        		ip6->payload_len = bpf_htons(sizeof(*udp) + bfd->len);
         	}
 
         	/* v6: mandatory UDP checksum over pseudo-header + UDP header

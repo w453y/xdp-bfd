@@ -71,6 +71,48 @@ int bfd_observer(struct xdp_md *ctx)
 		count(BFD_STAT_MALFORMED);
 		return XDP_PASS;
 	}
+	/* The envelope has to describe the frame that arrived.
+	 *
+	 * bfd_ctrl_check derives the payload length from udp->len, which is
+	 * whatever the sender wrote, and nothing had compared it against
+	 * what was actually received. A frame carrying 24 bytes while
+	 * claiming 200 was accepted: no overread, since every field read
+	 * here is inside the header already bounds-checked above, but it
+	 * refreshed liveness and could acknowledge a Poll on a packet that
+	 * is not what it says it is.
+	 *
+	 * MALFORMED and PASS, like a broken BFD header: a length that does
+	 * not match the frame is not evidence of an attack, and the stack
+	 * applies the same rule and will reject it too.
+	 */
+	{
+		__u32 have = (__u32)((long)data_end - (long)udp);
+		__u16 ulen = bpf_ntohs(udp->len);
+
+		if (ulen < sizeof(*udp) || (__u32)ulen > have) {
+			count(BFD_STAT_MALFORMED);
+			return XDP_PASS;
+		}
+		if (iph) {
+			__u32 ihave = (__u32)((long)data_end - (long)iph);
+			__u16 tot = bpf_ntohs(iph->tot_len);
+
+			if (tot < sizeof(*iph) + sizeof(*udp) ||
+			    (__u32)tot > ihave) {
+				count(BFD_STAT_MALFORMED);
+				return XDP_PASS;
+			}
+		} else if (ip6) {
+			__u32 phave = (__u32)((long)data_end - (long)(ip6 + 1));
+			__u16 plen = bpf_ntohs(ip6->payload_len);
+
+			if (plen < sizeof(*udp) || (__u32)plen > phave) {
+				count(BFD_STAT_MALFORMED);
+				return XDP_PASS;
+			}
+		}
+	}
+
 	/* Only track sessions the control plane configured, unless the
 	 * standalone loader asked for promiscuous observation. Stops
 	 * unsolicited packets from filling the session map.

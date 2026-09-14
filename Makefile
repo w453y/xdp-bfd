@@ -108,7 +108,7 @@ check: check-host all test-xdp
 # parity rig runs first: it is the only coverage of the socket receive
 # path, where GTSM is enforced by IP_MINTTL and IPV6_MINHOPCOUNT.
 check-netns:
-	python3 tests/netns_userspace.py
+	python3 tests/testbed/netns_userspace.py
 	python3 -m pytest tests/e2e -v -m "not frr"
 
 # Scenarios against stock FRR bfdd in containers. Separate from

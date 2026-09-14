@@ -35,7 +35,10 @@ F_AUTH = 0x04
 F_MP = 0x01
 
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# tests/, one up: the namespace helpers are shared with the pytest e2e
+# suite and live in tests/lib, not beside the rigs.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), ".."))
 from lib.netns import (NS_A, NS_B, IP_A, IP_B, IP_A6, IP_B6, STATS,
                        sh, setup, teardown, ns_pids, start_engine,
                        dump, engine_log)
@@ -126,7 +129,7 @@ CASES = (
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--binary", default=os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "..", "bfd_tx"))
+        os.path.dirname(os.path.abspath(__file__)), "..", "..", "bfd_tx"))
     p.add_argument("--only")
     p.add_argument("--keep", action="store_true",
                    help="leave the namespaces up for poking at")

@@ -1687,16 +1687,24 @@ static void run_echo_v6_matrix(void)
 		     1, XDP_TX, BFD_STAT_REFLECTED);
 }
 
-/* IP options. A single-hop BFD control packet never carries them, and
- * passing one would leave the UDP header at a variable offset, skipping
- * GTSM and demux and leaking the packet to the userspace socket
- * unvalidated - the same bypass class as an XDP_PASS reject.
+/* IP options.
  *
- * The check sits before the port test, so this drops any UDP packet with
- * options, not only BFD-bound ones. That is broader than the fragment
- * rule, which only drops fragments aimed at a BFD port, and the
- * other-port arm below pins the difference. */
-static void case_ip_options(const char *name, uint16_t dport)
+ * A BFD control packet never carries them, and with them the UDP header is
+ * at an offset the fixed-offset reads in the parser would get wrong, so one
+ * aimed at a BFD port is dropped rather than passed: passing it would skip
+ * GTSM and demux and leak it to the userspace socket unvalidated.
+ *
+ * The rule is about BFD, so it is gated on the port like every other rule
+ * here. An optioned packet going anywhere else is not ours and reaches the
+ * stack untouched, which the other-port arm pins.
+ *
+ * The frame is built properly, with the options actually present between
+ * the IP header and the UDP header rather than declared in `ihl` and not
+ * there. The earlier version of this case set `ihl` alone, which the parser
+ * could not have distinguished from a lie and which no real sender emits.
+ */
+static void case_ip_options(const char *name, uint16_t dport, int want,
+			    int want_counter)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
 	unsigned long long before;
@@ -1705,27 +1713,41 @@ static void case_ip_options(const char *name, uint16_t dport)
 
 	map_reset();
 	arm_session();
-	build_v4(&f, 255, dport, &p, 4);   /* 4 spare bytes to hold the option */
+	build_v4(&f, 255, dport, &p, 0);
 
-	struct iphdr *ip = (void *)(f.b + sizeof(struct ethhdr));
+	struct ethhdr *eth = (void *)f.b;
+	struct iphdr *ip = (void *)(eth + 1);
+	unsigned char *opt = (unsigned char *)(ip + 1);
+	unsigned int moved = sizeof(struct udphdr) + sizeof(p);
 
-	/* Claim a 24-byte header. The frame already carries the extra 4
-	 * bytes; their content does not matter, only that ihl says the UDP
-	 * header is not where a 20-byte header would put it. */
+	/* Open four bytes after the IP header and fill them with a real
+	 * option: NOP, NOP, NOP, End of Option List. Everything after
+	 * shifts, which is what makes this an optioned packet rather than
+	 * a claim of one. */
+	memmove(opt + 4, opt, moved);
+	opt[0] = 1;
+	opt[1] = 1;
+	opt[2] = 1;
+	opt[3] = 0;
+	f.len += 4;
+
 	ip->ihl = 6;
+	ip->tot_len = htons(ntohs(ip->tot_len) + 4);
 	ip->check = 0;
-	ip->check = csum16(ip, sizeof(*ip), 0);
+	ip->check = csum16(ip, 6 * 4, 0);
 
 	before = stat_get(BFD_STAT_IP_OPTIONS);
 	v = run_frame(&f, NULL, NULL);
 
-	if (v != XDP_DROP) {
-		printf("     verdict %s, want DROP\n",
-		       v < 0 ? "syscall-error" : verdict_str(v));
+	if (v != want) {
+		printf("     verdict %s, want %s\n",
+		       v < 0 ? "syscall-error" : verdict_str(v),
+		       verdict_str(want));
 		bad = 1;
 	}
-	if (stat_get(BFD_STAT_IP_OPTIONS) != before + 1) {
-		printf("     ip-options counter did not increment\n");
+	if (stat_get(BFD_STAT_IP_OPTIONS) != before + want_counter) {
+		printf("     ip-options counter moved by %llu, want %d\n",
+		       stat_get(BFD_STAT_IP_OPTIONS) - before, want_counter);
 		bad = 1;
 	}
 
@@ -1733,8 +1755,71 @@ static void case_ip_options(const char *name, uint16_t dport)
 		printf("FAIL %-40s\n", name);
 		fails++;
 	} else {
-		printf("ok   %-40s DROP\n", name);
+		printf("ok   %-40s %s\n", name, verdict_str(want));
 	}
+	map_reset();
+}
+
+/* An `ihl` that claims options the frame does not carry.
+ *
+ * The parser reads the port where the header says the payload starts, and
+ * so does the stack, so both look at the same wrong bytes and neither
+ * delivers it to a BFD socket. Passing it is therefore not a bypass, and
+ * dropping it would mean dropping on a declared length alone, which is how
+ * unrelated traffic got caught before.
+ */
+static void case_ip_options_lying(void)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct frame f;
+	int v;
+
+	map_reset();
+	arm_session();
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+
+	struct iphdr *ip = (void *)(f.b + sizeof(struct ethhdr));
+
+	ip->ihl = 6;   /* the UDP header is still at twenty bytes */
+	ip->check = 0;
+	ip->check = csum16(ip, 6 * 4, 0);
+
+	v = run_frame(&f, NULL, NULL);
+	expect("ip-options-declared-not-present", v, XDP_PASS);
+	map_reset();
+}
+
+/* Traffic that is not BFD, at the TTLs real traffic arrives with.
+ *
+ * Every BFD rejection rule is about BFD. Before they were gated on the
+ * port, a DNS reply at TTL 57 was dropped in the driver whenever no
+ * multihop session existed, which is most deployments.
+ */
+static void case_not_bfd_ttl(uint8_t ttl)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	char name[64];
+	struct frame f;
+
+	map_reset();
+	arm_session();
+	build_v4(&f, ttl, 1234, &p, 0);
+	snprintf(name, sizeof(name), "non-bfd-v4-ttl-%u-passes", ttl);
+	expect(name, run_frame(&f, NULL, NULL), XDP_PASS);
+	map_reset();
+}
+
+static void case_not_bfd_v6_hlim(uint8_t hlim)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	char name[64];
+	struct frame f;
+
+	map_reset();
+	arm_session();
+	build_v6(&f, hlim, 1234, &p, 0);
+	snprintf(name, sizeof(name), "non-bfd-v6-hlim-%u-passes", hlim);
+	expect(name, run_frame(&f, NULL, NULL), XDP_PASS);
 	map_reset();
 }
 
@@ -2402,8 +2487,16 @@ int main(void)
 	run_frag_matrix();
 	run_echo_matrix();
 	run_echo_v6_matrix();
-	case_ip_options("ip-options-bfd-port", BFD_PORT_1HOP);
-	case_ip_options("ip-options-other-port", 1234);
+	case_ip_options("ip-options-bfd-port", BFD_PORT_1HOP, XDP_DROP, 1);
+	case_ip_options("ip-options-other-port", 1234, XDP_PASS, 0);
+	case_ip_options_lying();
+	case_not_bfd_ttl(1);
+	case_not_bfd_ttl(64);
+	case_not_bfd_ttl(128);
+	case_not_bfd_ttl(255);
+	case_not_bfd_v6_hlim(1);
+	case_not_bfd_v6_hlim(64);
+	case_not_bfd_v6_hlim(255);
 	run_sweep_matrix();
 
 	printf("\n%d failure(s)\n", fails);

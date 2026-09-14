@@ -21,6 +21,21 @@ static __always_inline int v6_self_addressed(const struct ipv6hdr *ip6)
 	       sa[2] == da[2] && sa[3] == da[3];
 }
 
+/* One of the three ports this program is about.
+ *
+ * Every BFD-specific rejection below is gated on this. The rules that
+ * follow - GTSM, the options drop, the fragment drop - are all statements
+ * about BFD, and applying them to a packet that is not BFD drops traffic
+ * this program has no business touching. A DNS reply arrives at whatever
+ * TTL the path left it with.
+ */
+static __always_inline int bfd_dport(__be16 dest)
+{
+	return dest == bpf_htons(BFD_PORT_1HOP) ||
+	       dest == bpf_htons(BFD_PORT_MHOP) ||
+	       dest == bpf_htons(BFD_ECHO_PORT);
+}
+
 struct l3ctx {
 	struct iphdr   *iph;
 	struct ipv6hdr *ip6;
@@ -45,19 +60,36 @@ static __always_inline int parse_l3(struct ethhdr *eth, void *data_end,
 			return XDP_PASS;
 		if (c->iph->protocol != IPPROTO_UDP)
 			return XDP_PASS;
-		/* IP options (ihl != 5) on a UDP packet: a single-hop BFD
-		 * control packet never carries them. Passing would skip the
-		 * GTSM/your_disc checks below (UDP header sits at a variable
-		 * offset with options) and leak the packet to the userspace
-		 * socket unvalidated - the same bypass class as an XDP_PASS
-		 * reject. Drop it. */
+		/* IP options (ihl != 5) on a UDP packet. A BFD control packet
+		 * never carries them, and with them the UDP header sits at a
+		 * variable offset, so every fixed-offset read below would be
+		 * looking at the wrong bytes.
+		 *
+		 * Locate the header once, at the offset the packet declares,
+		 * purely to read the port. Aimed at a BFD port it is dropped:
+		 * passing would skip GTSM and demux and leak it to the
+		 * userspace socket unvalidated, which is the bypass class an
+		 * XDP_PASS reject belongs to. Anything else is not ours and
+		 * goes to the stack with its options intact.
+		 *
+		 * Its own counter slot rather than REJECTED, because an
+		 * optioned packet is refused for what its header is, not for
+		 * anything about the BFD inside it. */
 		if (c->iph->ihl != 5) {
-			/* Its own slot, not REJECTED: this fires on any UDP
-			 * packet carrying options, including traffic that has
-			 * nothing to do with BFD, because the port cannot be
-			 * read until the header length is known to be 20.
-			 * Counting it as a BFD reject tells an operator the
-			 * wrong thing. */
+			__u32 ihl = c->iph->ihl;
+			struct udphdr *ou;
+
+			/* Below five the header is malformed and the length
+			 * is not usable as an offset; leave it to the stack. */
+			if (ihl < 5)
+				return XDP_PASS;
+
+			ou = (void *)c->iph + ihl * 4;
+			if ((void *)(ou + 1) > data_end)
+				return XDP_PASS;
+			if (!bfd_dport(ou->dest))
+				return XDP_PASS;
+
 			count(BFD_STAT_IP_OPTIONS);
 			return XDP_DROP;
 		}
@@ -79,14 +111,16 @@ static __always_inline int parse_l3(struct ethhdr *eth, void *data_end,
 		 * nexthdr != IPPROTO_UDP and falls out of the dispatch. */
 		if (c->iph->frag_off & bpf_htons(0x3fff)) {
 			if (!(c->iph->frag_off & bpf_htons(0x1fff)) &&
-			    (c->udp->dest == bpf_htons(BFD_PORT_1HOP) ||
-			     c->udp->dest == bpf_htons(BFD_PORT_MHOP) ||
-			     c->udp->dest == bpf_htons(BFD_ECHO_PORT))) {
+			    bfd_dport(c->udp->dest)) {
 				count(BFD_STAT_REJECTED);
 				return XDP_DROP;
 			}
 			return XDP_PASS;
 		}
+		/* Not aimed at us. No BFD rule applies to it, GTSM least of
+		 * all, so it reaches the stack exactly as it arrived. */
+		if (!bfd_dport(c->udp->dest))
+			return XDP_PASS;
 		/* GTSM (RFC 5881 s5): single-hop control packets MUST arrive
 		 * with TTL 255. Anything else is off-link or spoofed. The one
 		 * exception is our own echo coming back: the neighbour's
@@ -125,6 +159,9 @@ static __always_inline int parse_l3(struct ethhdr *eth, void *data_end,
 			return XDP_PASS;
 		c->udp = (void *)(c->ip6 + 1);
 		if ((void *)(c->udp + 1) > data_end)
+			return XDP_PASS;
+		/* Not aimed at us; see the v4 branch. */
+		if (!bfd_dport(c->udp->dest))
 			return XDP_PASS;
 		/* GTSM: hop_limit is the v6 TTL. Same narrow exception as the v4
 		 * branch for our own echo coming back: the neighbour's forwarding

@@ -235,7 +235,7 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 		blk[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF + i] = 0;
 	}
 	if (!hmac_sha1_blocks(sc->kpad, blk,
-			      BFD_MIN_LEN + BFD_AUTH_SHA1_LEN, dig))
+			      BFD_MIN_LEN + BFD_AUTH_SHA1_LEN, dig, sc->tmp))
 		return 0;
 
 	/* Compared in full rather than bailing on the first difference: an
@@ -348,7 +348,7 @@ static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 		blk[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF + i] = 0;
 
 	if (!hmac_sha1_blocks(cfg->auth_kpad, blk,
-			      BFD_MIN_LEN + BFD_AUTH_SHA1_LEN, dig))
+			      BFD_MIN_LEN + BFD_AUTH_SHA1_LEN, dig, sc->tmp))
 		return 0;
 	for (i = 0; i < SHA1_DIGEST_LEN; i++)
 		blk[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF + i] = dig[i];

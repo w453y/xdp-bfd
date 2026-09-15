@@ -116,6 +116,20 @@ jobs:
   # compare-and-swap, so sweep.h's __sync_val_compare_and_swap crashes the
   # compiler. Both sides are asserted: below the floor must fail, and fail
   # on that specific error rather than on some unrelated breakage.
+  # Every supported clang builds the object. It used to be a floor check:
+  # below clang 20 the BPF backend had no 32-bit atomic compare-and-swap
+  # and refused the object at compile. The CAS targets are __u64 now
+  # (session_state.alive, sweep.inited), so that build-time floor is gone
+  # and clang 14 up all compile.
+  #
+  # The real floor moved to load time and is codegen-dependent: clang 14
+  # produces an object the verifier refuses ("combined stack size 528, too
+  # large"), clang 19 produces one that loads. This hosted job has no BPF
+  # kernel and can only confirm the compile; the `kernel` job below builds
+  # with clang-21 and loads it under a real kernel, which is the load
+  # regression guard for the version we ship. The exact sub-floor boundary
+  # (which clang between 15 and 18 first loads) is a pending bisect in the
+  # packaging plan, not a regression gate, so it is not asserted anywhere.
   toolchain:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -123,18 +137,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # ubuntu-latest ships this one, and this arm's whole job is a
-          # build that must fail, so installing a compiler to prove it
-          # would cost longer than the proof.
           - llvm: 18
-            expect: fail
-            preinstalled: "true"
+            preinstalled: "true"   # ubuntu-latest ships clang-18
           - llvm: 19
-            expect: fail
           - llvm: 20
-            expect: pass
           - llvm: 21
-            expect: pass
     steps:
       - uses: actions/checkout@v4
 
@@ -143,33 +150,16 @@ jobs:
           version: ${{ matrix.llvm }}
           preinstalled: ${{ matrix.preinstalled || 'false' }}
 
-      - name: build with clang-${{ matrix.llvm }} (expect ${{ matrix.expect }})
+      - name: build with clang-${{ matrix.llvm }}
         run: |
-          if make CLANG=clang-${{ matrix.llvm }} >/tmp/b.log 2>&1; then
-            got=pass
-          else
-            got=fail
-          fi
-          echo "expected ${{ matrix.expect }}, got $got"
-          if [ "$got" != "${{ matrix.expect }}" ]; then
+          if ! make CLANG=clang-${{ matrix.llvm }} >/tmp/b.log 2>&1; then
             tail -30 /tmp/b.log
-            echo "the floor moved: update this matrix and the comment in"
-            echo "src/xdp/sweep.h if the CAS requirement changed"
-            exit 1
-          fi
-          if [ "$got" = fail ] && ! grep -q 'unsupported atomic operation' /tmp/b.log; then
-            tail -30 /tmp/b.log
-            echo "failed, but not on the atomic CAS - a different breakage"
+            echo "clang-${{ matrix.llvm }} no longer builds the object."
+            echo "If a 32-bit atomic came back, widen its target to __u64;"
+            echo "see session_state.alive in include/bfd_shared.h."
             exit 1
           fi
 
-  # The unit suites under a chosen kernel rather than the runner's own, so
-  # verifier sensitivity is testable. Add entries when a kernel series ships
-  # that differs by BPF feature generation.
-  #
-  # virtme-ng passes the host filesystem through: the build happens outside
-  # and only the test binaries run inside. The VM supplies a kernel, not a
-  # build environment.
   kernel:
     runs-on: [self-hosted, Linux, X64]
     if: github.event_name != 'push'

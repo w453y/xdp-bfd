@@ -29,15 +29,27 @@ static inline const char *bfd_obj_path(const char *override)
 	buf[n] = '\0';
 
 	slash = strrchr(buf, '/');
-	if (!slash)
-		return BFD_XDP_OBJ;
-	if ((size_t)(slash - buf) + sizeof("/" BFD_XDP_OBJ) > sizeof(buf))
-		return BFD_XDP_OBJ;
-	strcpy(slash, "/" BFD_XDP_OBJ);
+	if (slash &&
+	    (size_t)(slash - buf) + sizeof("/" BFD_XDP_OBJ) <= sizeof(buf)) {
+		strcpy(slash, "/" BFD_XDP_OBJ);
+		if (!access(buf, R_OK))
+			return buf;   /* beside the binary: the build tree */
+	}
 
-	if (access(buf, R_OK))
-		return BFD_XDP_OBJ;   /* fall back to the cwd as before */
-	return buf;
+	/* The install location, compiled in by the package build as
+	 * -DBFD_XDP_OBJDIR=\"/usr/lib/xdp-bfd\". An installed binary lives in
+	 * /usr/sbin and its object in /usr/lib/xdp-bfd, so the beside-the-
+	 * binary search above misses it and this is where it is found. Absent
+	 * in a plain `make` build, where beside-the-binary already works. */
+#ifdef BFD_XDP_OBJDIR
+	if (sizeof(BFD_XDP_OBJDIR "/" BFD_XDP_OBJ) <= sizeof(buf)) {
+		strcpy(buf, BFD_XDP_OBJDIR "/" BFD_XDP_OBJ);
+		if (!access(buf, R_OK))
+			return buf;
+	}
+#endif
+
+	return BFD_XDP_OBJ;   /* last resort: the cwd, as before */
 }
 
 #endif /* BFD_OBJPATH_H */

@@ -1,6 +1,16 @@
 CLANG     ?= clang
 CC        ?= gcc
 CFLAGS    := -O2 -g -Wall -Werror -Iinclude -Isrc/engine
+
+# Install layout, overridable by the package build. The object goes to
+# LIBDIR and the binary is told where with -DBFD_XDP_OBJDIR so it finds it
+# once installed away from its build directory. VERSION is stamped into
+# --version; the package build passes the real one.
+PREFIX  ?= /usr
+SBINDIR ?= $(PREFIX)/sbin
+LIBDIR  ?= $(PREFIX)/lib/xdp-bfd
+VERSION ?= 0.0.0-dev
+INSTALL ?= install
 # The BPF target has no multiarch include path of its own, so the system's
 # triple supplies it. Not $(CC) -dumpmachine: the directory is a property
 # of the system, not of the compiler, and clang and gcc name it
@@ -8,6 +18,10 @@ CFLAGS    := -O2 -g -Wall -Werror -Iinclude -Isrc/engine
 TRIPLE    := $(shell dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null \
 		     || gcc -dumpmachine)
 BPFFLAGS  := -O2 -g -Wall -target bpf -Iinclude -Isrc/xdp -I/usr/include/$(TRIPLE)
+
+# The object's install location and the version, compiled into the C side.
+# Harmless in a build-tree run: objpath tries beside-the-binary first.
+CFLAGS += -DBFD_XDP_OBJDIR='"$(LIBDIR)"' -DBFD_XDP_VERSION='"$(VERSION)"'
 
 # Every shared header, not one named by hand. include/ grew a digest and
 # an authentication layout that both planes compile, and a rule naming
@@ -18,6 +32,15 @@ SHARED_HDRS := $(wildcard include/*.h)
 ENGINE_OBJS := src/engine/log.o src/engine/main.o src/engine/session.o src/engine/dplane.o src/engine/ktx.o src/engine/echo_tx.o src/engine/fsm.o src/engine/stats.o
 
 all: abi-check bfd_xdp.o bfd_loader bfd_tx
+
+# The binary is installed as xdp-bfd and the loader as xdp-bfd-observe, the
+# names the package and the systemd unit use; bfd_tx / bfd_loader are the
+# build-tree names. DESTDIR for staged packaging, PREFIX for the prefix.
+install: all
+	$(INSTALL) -d $(DESTDIR)$(SBINDIR) $(DESTDIR)$(LIBDIR)
+	$(INSTALL) -m 0755 bfd_tx     $(DESTDIR)$(SBINDIR)/xdp-bfd
+	$(INSTALL) -m 0755 bfd_loader $(DESTDIR)$(SBINDIR)/xdp-bfd-observe
+	$(INSTALL) -m 0644 bfd_xdp.o  $(DESTDIR)$(LIBDIR)/bfd_xdp.o
 
 # Layout pins for the shared structs, checked by both compilers.
 # Syntax-only: a divergence is a build error, there is nothing to run.
@@ -139,4 +162,4 @@ test-hmac: tests/unit/hmac_run
 test-xdp: tests/unit/xdp_run bfd_xdp.o tests/unit/bfd_xdp_test.o
 	./tests/unit/xdp_run
 
-.PHONY: all clean abi-check check check-host test-xdp test-fsm test-dp test-hmac check-netns check-frr
+.PHONY: all install clean abi-check check check-host test-xdp test-fsm test-dp test-hmac check-netns check-frr

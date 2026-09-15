@@ -199,6 +199,10 @@ static void shutdown_on_signal(int sig)
 	shutdown_wanted = 1;
 }
 
+#ifndef BFD_XDP_VERSION
+#define BFD_XDP_VERSION "0.0.0-dev"
+#endif
+
 int main(int argc, char **argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);
@@ -208,7 +212,11 @@ int main(int argc, char **argv)
 	const char *static_local = NULL, *static_peer = NULL;
 
 	for (int i = 1; i < argc; i++) {
-		if (!strcmp(argv[i], "--dplane") && i + 1 < argc)
+		if (!strcmp(argv[i], "--version")) {
+			printf("xdp-bfd %s\n", BFD_XDP_VERSION);
+			return 0;
+		}
+		else if (!strcmp(argv[i], "--dplane") && i + 1 < argc)
 			dplane_path = argv[++i];
 		else if (!strcmp(argv[i], "--kernel-tx") && i + 1 < argc)
 			ktx_if = argv[++i];

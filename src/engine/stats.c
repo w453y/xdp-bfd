@@ -21,7 +21,12 @@
 #include "fsm.h"
 #include "stats.h"
 
-const char *stats_path = "/tmp/bfd_tx_stats.json";
+/* /run, not /tmp: the packaged unit sets RuntimeDirectory=xdp-bfd,
+ * which creates and owns /run/xdp-bfd, and PrivateTmp would hide a
+ * /tmp path from anything outside the unit. A plain ./bfd_tx run
+ * without that directory gets a rename error on SIGUSR1 and should
+ * pass --stats-dump, which every test already does. */
+const char *stats_path = "/run/xdp-bfd/stats.json";
 volatile sig_atomic_t stats_wanted;
 
 void stats_on_signal(int sig)

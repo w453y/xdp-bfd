@@ -1,6 +1,16 @@
 CLANG     ?= clang
 CC        ?= gcc
-CFLAGS    := -O2 -g -Wall -Werror -Iinclude -Isrc/engine
+WERROR    ?= -Werror
+# CFLAGS is the injectable slot: a distro package build layers its codegen
+# and hardening flags into it (dpkg-buildflags, Fedora %{optflags}) without
+# wiping our include paths and -D defines, which live in XDP_CFLAGS and are
+# always applied to the userspace build. $(LDFLAGS) is honoured on the two
+# userspace link lines for RELRO and PIE. None of this reaches the BPF
+# object: BPFFLAGS and the bfd_xdp.o rule are left untouched, so x86 codegen
+# hardening (meaningless or breaking under clang -target bpf) never lands on
+# it. WERROR is separated so a package build may pass WERROR= if a distro's
+# injected flags trip -Werror; it stays on for the normal build.
+XDP_CFLAGS := -O2 -g -Wall $(WERROR) -Iinclude -Isrc/engine
 
 # Install layout, overridable by the package build. The object goes to
 # LIBDIR and the binary is told where with -DBFD_XDP_OBJDIR so it finds it
@@ -26,7 +36,7 @@ BPFFLAGS  := -O2 -g -Wall -target bpf -Iinclude -Isrc/xdp -I/usr/include/$(TRIPL
 
 # The object's install location and the version, compiled into the C side.
 # Harmless in a build-tree run: objpath tries beside-the-binary first.
-CFLAGS += -DBFD_XDP_OBJDIR='"$(LIBDIR)"' -DBFD_XDP_VERSION='"$(VERSION)"'
+XDP_CFLAGS += -DBFD_XDP_OBJDIR='"$(LIBDIR)"' -DBFD_XDP_VERSION='"$(VERSION)"'
 
 # Every shared header, not one named by hand. include/ grew a digest and
 # an authentication layout that both planes compile, and a rule naming
@@ -60,20 +70,20 @@ install: all
 # Layout pins for the shared structs, checked by both compilers.
 # Syntax-only: a divergence is a build error, there is nothing to run.
 abi-check: tests/unit/abi_check.c $(SHARED_HDRS)
-	$(CC) $(CFLAGS) -fsyntax-only $<
+	$(CC) $(CFLAGS) $(XDP_CFLAGS) -fsyntax-only $<
 	$(CLANG) $(BPFFLAGS) -fsyntax-only $<
 
 bfd_xdp.o: src/xdp/bfd_xdp.c $(SHARED_HDRS) $(wildcard src/xdp/*.h)
 	$(CLANG) $(BPFFLAGS) -c $< -o $@
 
 bfd_loader: src/loader/bfd_loader.c $(SHARED_HDRS)
-	$(CC) $(CFLAGS) $< -o $@ -lbpf
+	$(CC) $(CFLAGS) $(XDP_CFLAGS) $< -o $@ $(LDFLAGS) -lbpf
 
 bfd_tx: $(ENGINE_OBJS)
-	$(CC) $(CFLAGS) $^ -o $@ -lbpf
+	$(CC) $(CFLAGS) $(XDP_CFLAGS) $^ -o $@ $(LDFLAGS) -lbpf
 
 %.o: %.c $(SHARED_HDRS) $(wildcard src/engine/*.h)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(XDP_CFLAGS) -c $< -o $@
 
 clean:
 	rm -f bfd_xdp.o bfd_loader bfd_tx $(ENGINE_OBJS) \
@@ -93,17 +103,17 @@ tests/unit/bfd_xdp_test.o: tests/unit/bfd_xdp_test.c $(SHARED_HDRS) \
 TEST_HDRS := $(wildcard tests/unit/*.h)
 
 tests/unit/xdp_run: tests/unit/xdp_run.c $(SHARED_HDRS) $(TEST_HDRS)
-	$(CC) $(CFLAGS) -Itests/unit $< -o $@ -lbpf
+	$(CC) $(CFLAGS) $(XDP_CFLAGS) -Itests/unit $< -o $@ -lbpf
 
 # Links against the real fsm.o with three stubs; no root, no BPF.
 tests/unit/fsm_run: tests/unit/fsm_run.c src/engine/fsm.o src/engine/log.o \
 		    $(wildcard src/engine/*.h) $(TEST_HDRS)
-	$(CC) $(CFLAGS) tests/unit/fsm_run.c src/engine/fsm.o src/engine/log.o -o $@
+	$(CC) $(CFLAGS) $(XDP_CFLAGS) tests/unit/fsm_run.c src/engine/fsm.o src/engine/log.o -o $@
 
 tests/unit/dp_run: tests/unit/dp_run.c src/engine/dplane.o src/engine/log.o \
 		   src/engine/session.o src/engine/fsm.o $(wildcard src/engine/*.h) \
 		   $(TEST_HDRS)
-	$(CC) $(CFLAGS) tests/unit/dp_run.c src/engine/dplane.o \
+	$(CC) $(CFLAGS) $(XDP_CFLAGS) tests/unit/dp_run.c src/engine/dplane.o \
 		src/engine/session.o src/engine/fsm.o src/engine/log.o -o $@
 
 # The bfddp parser under libFuzzer. Needs clang, not $(CC): gcc has no
@@ -161,7 +171,7 @@ test-fsm: tests/unit/fsm_run
 # The shared digest on the host. The same vectors go through the kernel
 # in test-xdp; this one needs neither root nor BPF.
 tests/unit/hmac_run: tests/unit/hmac_run.c $(SHARED_HDRS) $(TEST_HDRS)
-	$(CC) $(CFLAGS) -Itests/unit $< -o $@
+	$(CC) $(CFLAGS) $(XDP_CFLAGS) -Itests/unit $< -o $@
 
 test-hmac: tests/unit/hmac_run
 	./tests/unit/hmac_run

@@ -29,6 +29,9 @@ runs a single static session on its own.
 %autosetup
 
 %build
+# Export Fedora hardening flags (PIE, RELRO, FORTIFY) into the environment
+# so they reach the userspace build; the Makefile honours CFLAGS/LDFLAGS.
+%set_build_flags
 make CLANG="$(command -v clang-21 || command -v clang-20 || command -v clang)" VERSION=%{version} LIBDIR=%{_libdir}/xdp-bfd %{?_smp_mflags}
 
 %check

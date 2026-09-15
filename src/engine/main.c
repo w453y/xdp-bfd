@@ -1077,6 +1077,34 @@ int main(int argc, char **argv)
 				sess_teardown_one(cs, "hold expired");
 				continue;
 			}
+			/* An authenticated session whose keys never arrived.
+			 * bfdd set SESSION_AUTH on the ADD but sent no
+			 * DP_SESSION_AUTH, which is what a bfdd predating the
+			 * key extension does. Distinct from a key-chain
+			 * rollover gap (auth_nkeys > 0, none sendable now),
+			 * which tx_one already reports and which self-heals:
+			 * this is permanent, the session never comes up, and
+			 * the remedy is the opposite, act rather than wait.
+			 * auth_nkeys == 0 is the discriminator. A deadline,
+			 * not an ADD check, so the normal two-message
+			 * handshake (keys arrive within the same burst) does
+			 * not false-positive. */
+			if (cs->auth_present && cs->auth_nkeys == 0) {
+				if (!cs->auth_keys_deadline_us)
+					cs->auth_keys_deadline_us = t + 1000000;
+				else if (!cs->auth_nokeys_warned &&
+					 t >= cs->auth_keys_deadline_us) {
+					log_err("lid=%u: bfdd offloaded an authenticated session but sent no keys within 1s; this bfdd predates the DP_SESSION_AUTH key extension. Upgrade bfdd or keep authenticated sessions off the data plane.\n",
+						cs->lid);
+					cs->auth_nokeys_warned = 1;
+				}
+			} else {
+				/* keys arrived, or authentication withdrawn:
+				 * disarm, and re-arm for a future recurrence. */
+				cs->auth_keys_deadline_us = 0;
+				cs->auth_nokeys_warned = 0;
+			}
+
 			ktx_poll_map(cs, t);
 			fsm_detect(cs, t);
 			fsm_tx(cs, t);

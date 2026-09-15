@@ -196,6 +196,12 @@ struct session {
 	int      auth_rx_seen;        /* whether auth_rx_seq means anything
 	                               * yet - the first authenticated packet
 	                               * has nothing to be compared against */
+	uint64_t auth_keys_deadline_us; /* when to stop waiting for the keys of
+	                              * an offloaded SESSION_AUTH session; 0 =
+	                              * not waiting. The keys are a separate
+	                              * message just after the ADD, so this is
+	                              * a deadline, not an ADD-time check. */
+	uint8_t  auth_nokeys_warned;  /* the old-bfdd diagnosis, said once */
 	uint8_t  auth_gap_warned;     /* said once per entry into "must
 	                               * authenticate, nothing to send
 	                               * under". Cleared when a key becomes

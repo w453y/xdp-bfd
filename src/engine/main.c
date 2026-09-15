@@ -25,6 +25,7 @@
 #include <sys/stat.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/utsname.h>
 #include <sys/un.h>
 #include <netinet/in.h>
 #include <net/if.h>
@@ -140,6 +141,7 @@ uint64_t loop_passes;
  * whose detection is held and which therefore has to verify its own path -
  * reachable only from a full FRR testbed. */
 static int static_demand;
+static int check_only;
 uint64_t loop_rx_wakeups;
 
 /* Inter-pass gap histogram, log2 buckets in microseconds. The ten-second
@@ -265,6 +267,8 @@ int main(int argc, char **argv)
 		}
 		else if (!strcmp(argv[i], "--demand"))
 			static_demand = 1;
+		else if (!strcmp(argv[i], "--check"))
+			check_only = 1;
 		else if (!strcmp(argv[i], "--demand-poll-us") && i + 1 < argc) {
 			const char *a = argv[++i];
 			char *end;
@@ -393,6 +397,27 @@ int main(int argc, char **argv)
 			return 1;
 		}
 	}
+	/* --check: the matrix probe. Open the object, run the ABI check, and
+	 * hand it to the verifier by loading it, then report and exit without
+	 * attaching to anything or opening a socket. ktx_load does exactly
+	 * that and logs the specific failure (ABI size mismatch, or the
+	 * verifier's own line) on the way; this reports the verdict and the
+	 * kernel it was reached on, which is what a package's postinst or a
+	 * support-matrix arm wants to know. */
+	if (check_only) {
+		struct utsname un;
+		int rc = ktx_load();
+
+		uname(&un);
+		if (rc == 0)
+			printf("xdp-bfd %s: bfd_xdp.o loads and is ABI-matched on %s %s\n",
+			       BFD_XDP_VERSION, un.sysname, un.release);
+		else
+			printf("xdp-bfd %s: object did NOT load on %s %s (see above)\n",
+			       BFD_XDP_VERSION, un.sysname, un.release);
+		return rc ? 1 : 0;
+	}
+
 	/* One address without the other: the guard below only demands a
 	 * pair when --dplane is absent, so `--dplane <p> <one-address>`
 	 * would otherwise reach the static setup with a NULL peer. */

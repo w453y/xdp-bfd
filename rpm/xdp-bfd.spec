@@ -29,7 +29,7 @@ runs a single static session on its own.
 %autosetup
 
 %build
-make CLANG="$(command -v clang-21 || command -v clang-20 || command -v clang)" %{?_smp_mflags}
+make CLANG="$(command -v clang-21 || command -v clang-20 || command -v clang)" VERSION=%{version} %{?_smp_mflags}
 
 %check
 make check-host CLANG="$(command -v clang-21 || command -v clang-20 || command -v clang)"
@@ -37,7 +37,8 @@ make check-host CLANG="$(command -v clang-21 || command -v clang-20 || command -
 %install
 make install DESTDIR=%{buildroot} PREFIX=%{_prefix} SBINDIR=%{_sbindir} \
     LIBDIR=%{_libdir}/xdp-bfd UNITDIR=%{_unitdir} SYSCTLDIR=%{_sysctldir} \
-    SYSCONFDIR=%{_sysconfdir} MANDIR=%{_mandir}/man8 DOCDIR=%{_docdir}/%{name}
+    SYSCONFDIR=%{_sysconfdir} MANDIR=%{_mandir}/man8 DOCDIR=%{_docdir}/%{name} \
+    VERSION=%{version}
 
 %post
 %systemd_post xdp-bfd.service
@@ -57,7 +58,7 @@ fi
 
 %files
 %license LICENSE
-%doc README.md
+%doc %{_docdir}/%{name}/README.md
 %{_sbindir}/xdp-bfd
 %{_sbindir}/xdp-bfd-observe
 %dir %{_libdir}/xdp-bfd

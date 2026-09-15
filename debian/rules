@@ -6,17 +6,23 @@ export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 # back to the unversioned one only if that is all there is.
 CLANG := $(shell command -v clang-21 || command -v clang-20 || command -v clang)
 
+# The version the binary reports. Take it from the changelog and strip the
+# Debian revision (the trailing -N), so xdp-bfd --version matches the
+# upstream part of the package version rather than carrying the revision.
+DEB_VERSION := $(shell dpkg-parsechangelog -SVersion)
+VERSION := $(shell echo '$(DEB_VERSION)' | sed 's/-[^-]*$$//')
+
 %:
 	dh $@
 
 override_dh_auto_build:
-	$(MAKE) CLANG=$(CLANG)
+	$(MAKE) CLANG=$(CLANG) VERSION=$(VERSION)
 
 override_dh_auto_test:
 	$(MAKE) check-host CLANG=$(CLANG)
 
 override_dh_auto_install:
-	$(MAKE) install DESTDIR=debian/xdp-bfd CLANG=$(CLANG)
+	$(MAKE) install DESTDIR=debian/xdp-bfd CLANG=$(CLANG) VERSION=$(VERSION)
 
 override_dh_installsystemd:
 	dh_installsystemd --no-enable --no-start

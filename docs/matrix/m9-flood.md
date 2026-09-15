@@ -86,3 +86,24 @@ two labellings were wrong.
 
 After G2/G3 (XDP_DROP for both), the after-table must show RcvbufErrors
 flat on arms C and D and the mesh untouched.
+
+### CAVEAT on the G2/G3 split (unresolved)
+
+The +19168 vs +0 contrast above is not yet safe, for two reasons found
+while checking the proposed cause against the code:
+
+1. The frame used for the G3 witness carries state Up. main.c:830 gates
+   the address-pair fallback scan on BFD_STATE <= ST_DOWN, so an Up-state
+   packet with your_disc 0 has sess_by_wire(0) short-circuit to NULL and
+   the sess_by_addr scan is NEVER run. So the frame measured does not
+   exercise the linear-scan cost that would explain the eviction. The
+   attack that actually forces the scan is a DOWN-state unknown-pair
+   frame; that is what arm D must send.
+2. The two witness runs did not record pps. The malformed frame (30 bytes)
+   and the valid frame (60 bytes) differ in size, so at the virtio
+   descriptor ceiling they may have run at different pps, and an eviction
+   difference could be a rate artifact rather than a per-packet cost.
+
+So the split stands as an observation, not a mechanism, until arm D is
+re-run with state Down and both arms record measured pps. The witness
+instrument itself is sound; what is unproven is the attribution.

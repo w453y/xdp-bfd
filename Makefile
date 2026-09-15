@@ -9,6 +9,11 @@ CFLAGS    := -O2 -g -Wall -Werror -Iinclude -Isrc/engine
 PREFIX  ?= /usr
 SBINDIR ?= $(PREFIX)/sbin
 LIBDIR  ?= $(PREFIX)/lib/xdp-bfd
+UNITDIR ?= $(PREFIX)/lib/systemd/system
+SYSCTLDIR ?= $(PREFIX)/lib/sysctl.d
+SYSCONFDIR ?= /etc
+DOCDIR  ?= $(PREFIX)/share/doc/xdp-bfd
+MANDIR  ?= $(PREFIX)/share/man/man8
 VERSION ?= 0.0.0-dev
 INSTALL ?= install
 # The BPF target has no multiarch include path of its own, so the system's
@@ -41,6 +46,16 @@ install: all
 	$(INSTALL) -m 0755 bfd_tx     $(DESTDIR)$(SBINDIR)/xdp-bfd
 	$(INSTALL) -m 0755 bfd_loader $(DESTDIR)$(SBINDIR)/xdp-bfd-observe
 	$(INSTALL) -m 0644 bfd_xdp.o  $(DESTDIR)$(LIBDIR)/bfd_xdp.o
+	$(INSTALL) -d $(DESTDIR)$(UNITDIR) $(DESTDIR)$(SYSCTLDIR)
+	$(INSTALL) -m 0644 packaging/xdp-bfd.service $(DESTDIR)$(UNITDIR)/xdp-bfd.service
+	$(INSTALL) -m 0644 packaging/50-xdp-bfd.conf  $(DESTDIR)$(SYSCTLDIR)/50-xdp-bfd.conf
+	$(INSTALL) -d $(DESTDIR)$(SYSCONFDIR)/xdp-bfd
+	$(INSTALL) -m 0644 packaging/engine.conf $(DESTDIR)$(SYSCONFDIR)/xdp-bfd/engine.conf
+	$(INSTALL) -d $(DESTDIR)$(DOCDIR) $(DESTDIR)$(DOCDIR)/examples
+	$(INSTALL) -m 0644 README.md $(DESTDIR)$(DOCDIR)/README.md
+	$(INSTALL) -m 0644 packaging/frr-daemons.snippet $(DESTDIR)$(DOCDIR)/examples/frr-daemons.snippet
+	$(INSTALL) -d $(DESTDIR)$(MANDIR)
+	$(INSTALL) -m 0644 packaging/xdp-bfd.8 $(DESTDIR)$(MANDIR)/xdp-bfd.8
 
 # Layout pins for the shared structs, checked by both compilers.
 # Syntax-only: a divergence is a build error, there is nothing to run.

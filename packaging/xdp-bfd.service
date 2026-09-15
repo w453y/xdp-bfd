@@ -1,0 +1,37 @@
+[Unit]
+Description=XDP BFD data plane
+Documentation=man:xdp-bfd(8)
+After=network-online.target
+Wants=network-online.target
+Before=frr.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/xdp-bfd/engine.conf
+ExecStart=/usr/sbin/xdp-bfd $XDP_BFD_ARGS
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=5
+RuntimeDirectory=xdp-bfd
+
+# Hardening. The service runs as root for now: CAP_BPF and the rest are
+# not yet measured as sufficient (M5), so the non-root block below stays
+# commented until that measurement lands.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/run/xdp-bfd
+OOMScoreAdjust=-900
+LockPersonality=yes
+
+# Non-root, pending M5. When the capabilities measurement confirms this
+# set is sufficient, drop User=root by uncommenting the lines below and
+# the unit runs unprivileged. SCHED_FIFO transmit priority is pending M9.
+#User=xdp-bfd
+#AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_NET_RAW CAP_PERFMON
+#CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_NET_RAW CAP_PERFMON
+
+[Install]
+WantedBy=multi-user.target

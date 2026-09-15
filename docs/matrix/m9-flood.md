@@ -190,3 +190,34 @@ A and B leave the mesh intact; C and D evict. B proves an XDP drop costs the
 socket nothing at this rate, which is the after-state G2/G3 must reach.
 Arms E (demux fail on a real session), F (bad digest on an auth session,
 the G4 arm) and G (echo) remain and need a live session's discriminators.
+
+## Harsh scaling test (arm A spread, N injectors, user-authorised hot run)
+
+Eight injectors cloned on pve2 (10.66.0.3-.10; .10 excluded for an ssh-key
+quirk, 7 used). Arm A spread traffic from N injectors at once, aggregate
+reaching XDP, mesh, and pve2 load per step:
+
+| injectors | delivered to XDP | mesh dip | pve2 load |
+|---|---|---|---|
+| 2 | 1,015,621 pps | 63/64 | 4.6 |
+| 4 | 1,043,526 pps | 58/64 | 6.7 |
+| 7 | 1,079,141 pps | 56/64 | 9.0 |
+
+Two findings. Delivered pps plateaus at ~1.0-1.08M regardless of injector
+count: past two injectors the bottleneck is the DUT's own RX path into a
+4-vCPU guest, not the senders, so more injectors do not deliver more. And
+the mesh dips to 56/64 under it but recovers to 64/64 within 10s of the
+flood stopping, every time.
+
+The mesh damage is DUT-local softirq saturation on its four vCPUs, not a
+cluster effect: pve2 load stayed trivial (9 on a 128-core node) and the
+non-test VMs on the node were untouched throughout. So on this
+virtualised testbed the harsh ceiling is the DUT guest's RX, ~1M pps, and
+a bare-metal host with more RX queues and cores would take more before the
+engine's own cost dominates; the per-frame ns figures are the number that
+carries to such a host, not this pps ceiling.
+
+Arm A stands confirmed at the ceiling: ~1M pps of unrelated spread traffic
+dips the mesh to 56/64 and it self-recovers, with the dead-man gate never
+tripping. cbd30d6 leaving non-BFD traffic before counting is what keeps
+that a dip rather than a collapse.

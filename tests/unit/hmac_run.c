@@ -49,11 +49,12 @@ static void case_vec(const struct hmac_vec *v)
 static void case_blocks(const struct hmac_vec *v)
 {
 	__u8 kpad[SHA1_BLOCK_LEN] = {}, mblk[SHA1_BLOCK_LEN] = {};
+	__u8 tmp[SHA1_BLOCK_LEN];
 	unsigned char got[SHA1_DIGEST_LEN];
 
 	memcpy(kpad, v->key, v->keylen);
 	memcpy(mblk, v->msg, v->msglen);
-	if (!hmac_sha1_blocks(kpad, mblk, v->msglen, got) ||
+	if (!hmac_sha1_blocks(kpad, mblk, v->msglen, got, tmp) ||
 	    memcmp(v->want, got, SHA1_DIGEST_LEN)) {
 		printf("FAIL %-28s block API disagrees with the wrapper\n",
 		       v->name);
@@ -70,6 +71,7 @@ static void case_refusal(void)
 {
 	unsigned char key[16], msg[128], out[SHA1_DIGEST_LEN];
 	__u8 kpad[SHA1_BLOCK_LEN] = {}, mblk[SHA1_BLOCK_LEN] = {};
+	__u8 tmp[SHA1_BLOCK_LEN];
 	int bad = 0;
 
 	memset(key, 'k', sizeof(key));
@@ -84,7 +86,7 @@ static void case_refusal(void)
 		printf("     accepted a key longer than one block\n");
 		bad = 1;
 	}
-	if (hmac_sha1_blocks(kpad, mblk, HMAC_SHA1_MAX_MSG + 1, out)) {
+	if (hmac_sha1_blocks(kpad, mblk, HMAC_SHA1_MAX_MSG + 1, out, tmp)) {
 		printf("     block API accepted an oversized message\n");
 		bad = 1;
 	}

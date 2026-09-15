@@ -35,34 +35,7 @@
 
 /* ---------- stubs ---------- */
 
-int use_ktx;
-int sess_fd = -1;
-
-int ktx_covers(int ifindex) { (void)ifindex; return 0; }
-int ktx_attach_if(int ifindex, const char *ifname)
-{
-	(void)ifindex; (void)ifname;
-	return -1;
-}
-void ktx_clear(struct session *s) { (void)s; }
-void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local,
-		   uint32_t wire_disc)
-{
-	(void)peer; (void)local; (void)wire_disc;
-}
-void ktx_update_mhop_flag(void) { }
-void ktx_mirror(struct session *s) { (void)s; }
-/* No program, no sweep, no ring; fsm_detect keeps the whole budget. */
-int ktx_events_fd(void) { return -1; }
-void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip)
-{
-	(void)peer; (void)skip;
-}
-int bpf_map_lookup_elem(int fd, const void *key, void *value)
-{
-	(void)fd; (void)key; (void)value;
-	return -1;
-}
+#include "ktx_stubs.h"
 
 /* ---------- rig ---------- */
 

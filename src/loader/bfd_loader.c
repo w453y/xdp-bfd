@@ -192,13 +192,13 @@ int main(int argc, char **argv)
 				printf("%s state=%s alive=%u pkts=%llu age=%.1fms\n",
 				       peer,
 				       bfd_state_str(st.remote_state),
-				       st.alive,
+				       (unsigned)st.alive,
 				       (unsigned long long)st.rx_pkts, age);
 				if (log) {
 					fprintf(log, "%ld,%llu,%.1f,%u,%u\n",
 						time(NULL),
 						(unsigned long long)st.rx_pkts,
-						age, st.remote_state, st.alive);
+						age, st.remote_state, (unsigned)st.alive);
 					fflush(log);
 				}
 			}

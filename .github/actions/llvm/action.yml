@@ -1,0 +1,48 @@
+name: install llvm
+description: >
+  clang at a chosen major version from apt.llvm.org, with libbpf-dev and
+  whatever else the caller needs.
+
+  Seven job-arms installed this the same way, and it was 155 seconds of the
+  235 those arms spent in a green run, so it is the one step worth having in
+  a single place. The version is an input because the toolchain job asserts
+  the compiler floor from both sides and needs four of them.
+
+inputs:
+  version:
+    description: LLVM major version, for example 21.
+    required: true
+  packages:
+    description: Extra apt packages, space separated.
+    required: false
+    default: ""
+  preinstalled:
+    description: >
+      The runner image already ships this clang, so skip apt.llvm.org and
+      take what is there. ubuntu-latest carries clang-18, and the arm that
+      asserts 18 cannot build the object spends longer installing a
+      compiler than proving the point.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -e
+        sudo apt-get update
+        sudo apt-get install -y llvm libbpf-dev
+        if [ "${{ inputs.preinstalled }}" != "true" ]; then
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh ${{ inputs.version }}
+        fi
+        # After llvm.sh, not with the packages above: anything versioned to
+        # match this clang lives on apt.llvm.org, and that repository is not
+        # in the sources list until llvm.sh puts it there. Installed in the
+        # first apt call, clang-tools-21 is simply "unable to locate".
+        if [ -n "${{ inputs.packages }}" ]; then
+          sudo apt-get install -y ${{ inputs.packages }}
+        fi
+        clang-${{ inputs.version }} --version | head -1

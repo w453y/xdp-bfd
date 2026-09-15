@@ -1,0 +1,7 @@
+Tests: check-host
+Depends: @, build-essential, clang, libbpf-dev
+Restrictions: allow-stderr
+
+Tests: check-root
+Depends: @, build-essential, clang, libbpf-dev, python3-pytest, iproute2
+Restrictions: needs-root, isolation-machine, allow-stderr

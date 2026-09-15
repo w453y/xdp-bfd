@@ -261,9 +261,15 @@ struct session_state {
 	__u8  detect_mult;
 	__u8  remote_flags;  /* peer's last control packet flags,
 	                      * masked to the six non-state bits */
-	__u32 alive;          /* our sweep's verdict: 1 = hearing peer.
-	                       * 32-bit: BPF atomics need 32/64-bit; RX
-	                       * set and sweep clear race across CPUs. */
+	__u64 alive;          /* our sweep's verdict: 1 = hearing peer.
+	                       * 64-bit, not 32: the BPF backend below clang
+	                       * 20 has no 32-bit atomic compare-and-swap and
+	                       * refuses the object with "Unsupported atomic
+	                       * operations, please use 64 bit version". A
+	                       * 64-bit flag lowers the build-clang floor to
+	                       * where distro toolchains sit, at 4 bytes per
+	                       * session. RX set and sweep clear race across
+	                       * CPUs, which is why it is atomic at all. */
 	__u32 final_seq;      /* kernel ack of a Poll sequence: set to
 	                       * cfg->poll_seq on the peer's F */
 	__u8  peer_mac[6];    /* neighbour's source MAC, learned on every RX.
@@ -351,14 +357,29 @@ struct tx_cfg {
 	                      * the configured minimum-ttl for multihop, so
 	                      * one comparison covers both. 0 means unset
 	                      * and is treated as 255. */
-	__u8  auth_type;     /* BFD_AUTH_*, 0 when the session has no key.
-	                      * The fast path needs this before it validates
-	                      * a header, because whether the A bit is
-	                      * acceptable is a property of the session
-	                      * rather than of the packet. */
+	__u8  auth_type;     /* BFD_AUTH_* of the key this session currently
+	                      * TRANSMITS under, 0 when it has none it may
+	                      * send with right now. Says what to build, not
+	                      * what to accept. */
 	__u8  auth_keyid;
 	__u8  auth_keylen;
-	__u8  auth_pad;
+	__u8  auth_present;  /* the session is meant to authenticate at all.
+	                      *
+	                      * Separate from auth_type because they differ
+	                      * exactly when it matters. A key chain whose
+	                      * send lifetimes have a gap, or whose keys have
+	                      * arrived before DP_SESSION_AUTH does, leaves a
+	                      * session that must authenticate with nothing
+	                      * to sign with: auth_type is 0 and auth_present
+	                      * is 1.
+	                      *
+	                      * Whether the A bit belongs on a received packet
+	                      * is this, never auth_type. Keying it off the
+	                      * send key makes the program refuse exactly the
+	                      * packets the accept set exists to take, and it
+	                      * refuses them in the driver, so userspace never
+	                      * sees what it would have accepted. The engine
+	                      * spells the same rule in rx_auth_ok. */
 	__u8  auth_kpad[64]; /* the key in one HMAC block, zero padded.
 	                      * Padded by the engine rather than in the
 	                      * program: filling a block from a runtime

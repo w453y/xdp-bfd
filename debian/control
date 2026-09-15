@@ -1,0 +1,34 @@
+Source: xdp-bfd
+Section: net
+Priority: optional
+Maintainer: Abdul Wasey <awasey8905@gmail.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ clang (>= 1:20) | clang-20 | clang-21,
+ llvm,
+ libbpf-dev (>= 1.0),
+ linux-libc-dev,
+ dpkg-dev,
+ pkgconf
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://github.com/w453y/xdp-bfd
+Vcs-Browser: https://github.com/w453y/xdp-bfd
+Vcs-Git: https://github.com/w453y/xdp-bfd.git
+
+Package: xdp-bfd
+Architecture: linux-any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Recommends: frr (>= 8.4)
+Suggests: bpftool
+Description: XDP-based BFD data plane
+ xdp-bfd runs Bidirectional Forwarding Detection in the kernel with an XDP
+ program. It offloads the periodic transmit and the fast detection timers
+ from FRR's bfdd, so sub-second sessions scale without a userspace packet
+ for every tick.
+ .
+ In the usual deployment it attaches to FRR over the bfdd data-plane
+ socket; given a local and a peer address instead it runs a single static
+ session on its own. The XDP object is ABI-checked against the engine when
+ it loads, and the binary carries the object's install path, so it finds
+ the object with no argument.

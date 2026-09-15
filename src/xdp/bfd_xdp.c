@@ -124,7 +124,7 @@ int bfd_observer(struct xdp_md *ctx)
 	 * nothing in the BFD header is trusted to do it. */
 	struct tx_cfg *cfg = bpf_map_lookup_elem(&tx_config, &c.key);
 
-	int hv = bfd_hdr_verdict(bfd, udp, cfg ? cfg->auth_type : 0);
+	int hv = bfd_hdr_verdict(bfd, udp, cfg ? cfg->auth_present : 0);
 	if (hv >= 0)
 		return hv;
 
@@ -192,11 +192,21 @@ int bfd_observer(struct xdp_md *ctx)
 	 * packet having arrived. */
 	struct auth_scratch *asc = NULL;
 
-	if (cfg && cfg->auth_type) {
+	/* auth_present, not auth_type. Verification does not need a key we
+	 * may send under: xdp_auth_verify reads the type and key id the
+	 * PACKET names and matches them against auth_accept, which is the
+	 * set the engine left for exactly this. Gating on the send key meant
+	 * that a session in a rollover gap, with nothing to transmit under
+	 * and a perfectly good accept set, skipped verification entirely and
+	 * took the packet on trust. */
+	if (cfg && cfg->auth_present) {
 		__u32 azero = 0;
 
 		asc = bpf_map_lookup_elem(&auth_scratch, &azero);
-		if (!asc || !xdp_auth_fast(cfg) ||
+		/* The capability check belongs to the send key, because it
+		 * decides what we could BUILD. With no send key there is
+		 * nothing to build and the accept set still verifies. */
+		if (!asc || (cfg->auth_type && !xdp_auth_fast(cfg)) ||
 		    !xdp_auth_verify(ctx, iph ? BFD_OFF_V4 : BFD_OFF_V6,
 				     bfd, cfg, st, asc)) {
 			count(BFD_STAT_AUTH_BAD);
@@ -227,6 +237,13 @@ int bfd_observer(struct xdp_md *ctx)
 			st->detect_iv_us = cand;
 	}
 
+	/* Not atomic, and that rests on RSS: a 5-tuple hashes to one queue,
+	 * so one session's packets are handled by one CPU and these are
+	 * uncontended. Break that assumption - generic XDP with RPS
+	 * spreading a flow across CPUs - and two packets can pass the
+	 * replay check against the same window, or take the same
+	 * auth_tx_seq. One packet of replay tolerance, not a lost session,
+	 * but the assumption is worth stating where it is relied on. */
 	st->last_seen_ns = now;
 	st->rx_pkts++;
 	__builtin_memcpy(st->peer_mac, eth->h_source, 6);
@@ -245,6 +262,14 @@ int bfd_observer(struct xdp_md *ctx)
 	 * F. tx_cfg is userspace-owned, so ack via kernel-owned
 	 * final_seq instead of clearing cfg->poll in place (a racing
 	 * userspace mirror push could resurrect the finished poll). */
+	/* Whatever Poll is current, not the one this F answers: the packet
+	 * carries no sequence, so a Final that was in flight when a second
+	 * Poll began terminates the second one. It takes two Polls inside
+	 * one round trip to reach, which needs a parameter change landing
+	 * immediately after a demand verification poll, and the cost is one
+	 * poll ending early rather than a wrong value being applied. Noted
+	 * rather than fixed, because fixing it means a sequence on the wire
+	 * that RFC 5880 does not have. */
 	if (cfg && cfg->poll && (bfd->flags & BFD_F_FINAL))
 		st->final_seq = cfg->poll_seq;
 
@@ -255,7 +280,14 @@ int bfd_observer(struct xdp_md *ctx)
 	 * and bounce it. Peer's clock becomes our clock; runs in softirq.
 	 * Never echo Up at a peer that just said Down/AdminDown; let
 	 * userspace run the transition. */
-	if (cfg && cfg->enable && rstate >= 2) {
+	/* An authenticated session with no key to sign with cannot be
+	 * answered from here: the reply is built from auth_type, so it would
+	 * go out bare on a session whose peer must reject it. Userspace
+	 * declines to send in the same state (auth_fast_capable), and this
+	 * is the program's half of that agreement rather than a trust in
+	 * the mirror having set enable correctly. */
+	if (cfg && cfg->enable && rstate >= 2 &&
+	    !(cfg->auth_present && !xdp_auth_fast(cfg))) {
 	        /* Unless the engine has stopped saying it is there.
 	         *
 	         * Answering from softirq is what makes detection independent

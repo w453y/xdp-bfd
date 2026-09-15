@@ -22,7 +22,7 @@ _Static_assert(sizeof(struct bfd_addr) == 16,
 	       "sizeof(struct bfd_addr)");
 _Static_assert(sizeof(struct session_key) == 32,
 	       "sizeof(struct session_key)");
-_Static_assert(sizeof(struct session_state) == 120,
+_Static_assert(sizeof(struct session_state) == 128,
 	       "sizeof(struct session_state)");
 _Static_assert(sizeof(struct bfd_event) == 56,
 	       "sizeof(struct bfd_event)");
@@ -54,21 +54,21 @@ _Static_assert(offsetof(struct session_state, remote_flags) == 47,
 	       "offsetof(struct session_state, remote_flags)");
 _Static_assert(offsetof(struct session_state, alive) == 48,
 	       "offsetof(struct session_state, alive)");
-_Static_assert(offsetof(struct session_state, final_seq) == 52,
+_Static_assert(offsetof(struct session_state, final_seq) == 56,
 	       "offsetof(struct session_state, final_seq)");
-_Static_assert(offsetof(struct session_state, peer_mac) == 56,
+_Static_assert(offsetof(struct session_state, peer_mac) == 60,
 	       "offsetof(struct session_state, peer_mac)");
-_Static_assert(offsetof(struct session_state, mac_valid) == 62,
+_Static_assert(offsetof(struct session_state, mac_valid) == 66,
 	       "offsetof(struct session_state, mac_valid)");
-_Static_assert(offsetof(struct session_state, echo_rx_pkts) == 64,
+_Static_assert(offsetof(struct session_state, echo_rx_pkts) == 72,
 	       "offsetof(struct session_state, echo_rx_pkts)");
-_Static_assert(offsetof(struct session_state, echo_last_seen_ns) == 72,
+_Static_assert(offsetof(struct session_state, echo_last_seen_ns) == 80,
 	       "offsetof(struct session_state, echo_last_seen_ns)");
-_Static_assert(offsetof(struct session_state, echo_last_nonce) == 80,
+_Static_assert(offsetof(struct session_state, echo_last_nonce) == 88,
 	       "offsetof(struct session_state, echo_last_nonce)");
-_Static_assert(offsetof(struct session_state, echo_alive) == 88,
+_Static_assert(offsetof(struct session_state, echo_alive) == 96,
 	       "offsetof(struct session_state, echo_alive)");
-_Static_assert(offsetof(struct session_state, remote_min_echo_us) == 96,
+_Static_assert(offsetof(struct session_state, remote_min_echo_us) == 104,
 	       "offsetof(struct session_state, remote_min_echo_us)");
 _Static_assert(offsetof(struct tx_cfg, enable) == 0,
 	       "offsetof(struct tx_cfg, enable)");
@@ -108,9 +108,9 @@ _Static_assert(offsetof(struct tx_cfg, auth_kpad) == 52,
 	       "offsetof(struct tx_cfg, auth_kpad)");
 _Static_assert(sizeof(((struct tx_cfg *)0)->auth_kpad) == SHA1_BLOCK_LEN,
 	       "the mirrored key must be exactly one HMAC block");
-_Static_assert(offsetof(struct session_state, auth_tx_seq) == 100,
+_Static_assert(offsetof(struct session_state, auth_tx_seq) == 108,
 	       "offsetof(struct session_state, auth_tx_seq)");
-_Static_assert(offsetof(struct session_state, auth_rx_seq) == 104,
+_Static_assert(offsetof(struct session_state, auth_rx_seq) == 112,
 	       "offsetof(struct session_state, auth_rx_seq)");
 _Static_assert(offsetof(struct bfd_event, ts_ns) == 0,
 	       "offsetof(struct bfd_event, ts_ns)");

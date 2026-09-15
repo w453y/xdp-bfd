@@ -33,5 +33,7 @@ int ktx_events_fd(void);
 void ktx_drain_events(void);
 const char *ktx_poll_mode(void);
 void ktx_poll_map(struct session *s, uint64_t t);
+void ktx_session_counters(const struct session *s, uint64_t *rx,
+			  uint64_t *tx);
 
 #endif /* BFD_ENGINE_KTX_H */

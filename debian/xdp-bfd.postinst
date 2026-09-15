@@ -1,0 +1,22 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        # Advisory load-and-ABI probe. Never fails the install: a build
+        # host or a sub-floor kernel must still install cleanly so the
+        # operator can read the --check error and enable the unit later.
+        if xdp-bfd --check >/dev/null 2>&1; then
+            echo "xdp-bfd: the XDP object loads and is ABI-matched on this kernel ($(uname -r))."
+        else
+            echo "xdp-bfd: the XDP object did NOT load on this kernel ($(uname -r))." >&2
+            echo "xdp-bfd: this is advisory and did not fail the install; details follow:" >&2
+            xdp-bfd --check >&2 2>&1 || true
+        fi
+        echo "xdp-bfd: edit /etc/xdp-bfd/engine.conf, then: systemctl enable --now xdp-bfd"
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

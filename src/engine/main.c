@@ -25,6 +25,7 @@
 #include <sys/stat.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/utsname.h>
 #include <sys/un.h>
 #include <netinet/in.h>
 #include <net/if.h>
@@ -140,6 +141,7 @@ uint64_t loop_passes;
  * whose detection is held and which therefore has to verify its own path -
  * reachable only from a full FRR testbed. */
 static int static_demand;
+static int check_only;
 uint64_t loop_rx_wakeups;
 
 /* Inter-pass gap histogram, log2 buckets in microseconds. The ten-second
@@ -199,6 +201,10 @@ static void shutdown_on_signal(int sig)
 	shutdown_wanted = 1;
 }
 
+#ifndef BFD_XDP_VERSION
+#define BFD_XDP_VERSION "0.0.0-dev"
+#endif
+
 int main(int argc, char **argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);
@@ -208,7 +214,11 @@ int main(int argc, char **argv)
 	const char *static_local = NULL, *static_peer = NULL;
 
 	for (int i = 1; i < argc; i++) {
-		if (!strcmp(argv[i], "--dplane") && i + 1 < argc)
+		if (!strcmp(argv[i], "--version")) {
+			printf("xdp-bfd %s\n", BFD_XDP_VERSION);
+			return 0;
+		}
+		else if (!strcmp(argv[i], "--dplane") && i + 1 < argc)
 			dplane_path = argv[++i];
 		else if (!strcmp(argv[i], "--kernel-tx") && i + 1 < argc)
 			ktx_if = argv[++i];
@@ -257,6 +267,8 @@ int main(int argc, char **argv)
 		}
 		else if (!strcmp(argv[i], "--demand"))
 			static_demand = 1;
+		else if (!strcmp(argv[i], "--check"))
+			check_only = 1;
 		else if (!strcmp(argv[i], "--demand-poll-us") && i + 1 < argc) {
 			const char *a = argv[++i];
 			char *end;
@@ -364,11 +376,48 @@ int main(int argc, char **argv)
 				dp_set_peer_uid((uid_t)v);
 			}
 		}
+		/* Before the positional arguments, or a mistyped option lands
+		 * in one of them. `--dead-man-us 50000` reported "static: bad
+		 * IPv4 address", and an option whose value was left off was
+		 * dropped without a word, so the engine started on the
+		 * default having been told otherwise. Both are configuration
+		 * silently not taking effect, which is the failure this whole
+		 * program exists to avoid elsewhere. */
+		else if (argv[i][0] == '-') {
+			log_err("unrecognised option '%s', or an option"
+				" missing its value\n", argv[i]);
+			return 1;
+		}
 		else if (!static_local)
 			static_local = argv[i];
 		else if (!static_peer)
 			static_peer = argv[i];
+		else {
+			log_err("unexpected argument '%s'\n", argv[i]);
+			return 1;
+		}
 	}
+	/* --check: the matrix probe. Open the object, run the ABI check, and
+	 * hand it to the verifier by loading it, then report and exit without
+	 * attaching to anything or opening a socket. ktx_load does exactly
+	 * that and logs the specific failure (ABI size mismatch, or the
+	 * verifier's own line) on the way; this reports the verdict and the
+	 * kernel it was reached on, which is what a package's postinst or a
+	 * support-matrix arm wants to know. */
+	if (check_only) {
+		struct utsname un;
+		int rc = ktx_load();
+
+		uname(&un);
+		if (rc == 0)
+			printf("xdp-bfd %s: bfd_xdp.o loads and is ABI-matched on %s %s\n",
+			       BFD_XDP_VERSION, un.sysname, un.release);
+		else
+			printf("xdp-bfd %s: object did NOT load on %s %s (see above)\n",
+			       BFD_XDP_VERSION, un.sysname, un.release);
+		return rc ? 1 : 0;
+	}
+
 	/* One address without the other: the guard below only demands a
 	 * pair when --dplane is absent, so `--dplane <p> <one-address>`
 	 * would otherwise reach the static setup with a NULL peer. */
@@ -884,7 +933,12 @@ int main(int argc, char **argv)
 			if (ms && (mttl < 0 || mttl < (int)ms->min_ttl))
 				continue;
 			if (ms && rx_auth_ok(ms, pm_buf, pm.len))
-				fsm_rx(ms, &pm, now_us());
+				/* `t`, like the other three drains. This one
+				 * read the clock again, so packets taken in
+				 * one pass were stamped a few microseconds
+				 * apart from their siblings for no reason.
+				 * The drains are meant to be the same code. */
+				fsm_rx(ms, &pm, t);
 		}
 
 		/* rx6_sock >= 0 is redundant with rd6, which is only set from a
@@ -1023,6 +1077,34 @@ int main(int argc, char **argv)
 				sess_teardown_one(cs, "hold expired");
 				continue;
 			}
+			/* An authenticated session whose keys never arrived.
+			 * bfdd set SESSION_AUTH on the ADD but sent no
+			 * DP_SESSION_AUTH, which is what a bfdd predating the
+			 * key extension does. Distinct from a key-chain
+			 * rollover gap (auth_nkeys > 0, none sendable now),
+			 * which tx_one already reports and which self-heals:
+			 * this is permanent, the session never comes up, and
+			 * the remedy is the opposite, act rather than wait.
+			 * auth_nkeys == 0 is the discriminator. A deadline,
+			 * not an ADD check, so the normal two-message
+			 * handshake (keys arrive within the same burst) does
+			 * not false-positive. */
+			if (cs->auth_present && cs->auth_nkeys == 0) {
+				if (!cs->auth_keys_deadline_us)
+					cs->auth_keys_deadline_us = t + 1000000;
+				else if (!cs->auth_nokeys_warned &&
+					 t >= cs->auth_keys_deadline_us) {
+					log_err("lid=%u: bfdd offloaded an authenticated session but sent no keys within 1s; this bfdd predates the DP_SESSION_AUTH key extension. Upgrade bfdd or keep authenticated sessions off the data plane.\n",
+						cs->lid);
+					cs->auth_nokeys_warned = 1;
+				}
+			} else {
+				/* keys arrived, or authentication withdrawn:
+				 * disarm, and re-arm for a future recurrence. */
+				cs->auth_keys_deadline_us = 0;
+				cs->auth_nokeys_warned = 0;
+			}
+
 			ktx_poll_map(cs, t);
 			fsm_detect(cs, t);
 			fsm_tx(cs, t);

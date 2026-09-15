@@ -196,6 +196,21 @@ struct session {
 	int      auth_rx_seen;        /* whether auth_rx_seq means anything
 	                               * yet - the first authenticated packet
 	                               * has nothing to be compared against */
+	uint64_t auth_keys_deadline_us; /* when to stop waiting for the keys of
+	                              * an offloaded SESSION_AUTH session; 0 =
+	                              * not waiting. The keys are a separate
+	                              * message just after the ADD, so this is
+	                              * a deadline, not an ADD-time check. */
+	uint8_t  auth_nokeys_warned;  /* the old-bfdd diagnosis, said once */
+	uint8_t  auth_gap_warned;     /* said once per entry into "must
+	                               * authenticate, nothing to send
+	                               * under". Cleared when a key becomes
+	                               * sendable again, so a later gap is
+	                               * reported as its own event. Without
+	                               * it the refusal is one line per
+	                               * transmit interval for the length of
+	                               * the gap, plus three more per
+	                               * teardown from fsm_announce_down. */
 	uint8_t  iface_warned;        /* once per session, not once per ADD:
 	                               * bfdd re-sends one on every config
 	                               * touch */
@@ -299,6 +314,38 @@ static inline int demand_detect_held(const struct session *s)
 	       !s->polling;
 }
 
+/* What the sweep is told, which is the same hold WITHOUT the poll
+ * exemption, and the two differ on purpose.
+ *
+ * Re-arming detection during a Poll means measuring against the instant
+ * the Poll started, and only the engine knows that instant. The program
+ * measures against st->last_seen_ns, the peer's real last arrival, which
+ * on a demanding session is a poll interval old by construction: it hands
+ * the sweep a session that has been silent for a second against a budget
+ * of tens of milliseconds, so it calls the session down, every time, on
+ * every poll. Measured at exactly one DETECT-DOWN per poll against a
+ * control arm of zero.
+ *
+ * The engine discards that verdict, because fsm_start_poll moved
+ * last_rx_us forward and on_sweep_event drops an event older than it, so
+ * nothing observed the session flap. What did happen is that the map's
+ * `alive` flipped to 0 and back for every poll, the RX path took its
+ * !alive branch and reset the detect basis, and anything else reading the
+ * ring saw a DOWN and an ALIVE that never meant anything.
+ *
+ * So the sweep stays held for the whole poll and the bound moves entirely
+ * to fsm_detect, which is unheld while polling and measures from the
+ * timestamp it set itself. That is where the bound belonged: the Poll is
+ * the engine's, so timing it out is the engine's job. The mesh already
+ * demonstrated this, bringing a demanding session down 1.45s after its
+ * peer was silenced with the reason recorded as "detect timeout" rather
+ * than "detect timeout (sweep)".
+ */
+static inline int demand_sweep_held(const struct session *s)
+{
+	return s->demand && s->state == ST_UP && s->r_state == ST_UP;
+}
+
 /* Whether the fast path answers for this session.
  *
  * This is exactly what ktx_mirror pushes as tx_cfg.enable, and fsm_tx
@@ -323,6 +370,15 @@ static inline int demand_detect_held(const struct session *s)
  */
 static inline int auth_fast_capable(const struct session *s)
 {
+	/* A session that must authenticate and has nothing to sign with is
+	 * not a session the fast path can answer for: the program builds
+	 * its reply from auth_type, so it would bounce a bare packet on a
+	 * session whose peer must reject it. Userspace declines to send in
+	 * the same state, so the session simply goes quiet until a key
+	 * becomes sendable, which is the honest outcome. */
+	if (s->auth_present && !s->auth_type)
+		return 0;
+
 	return !s->auth_type || s->auth_type == BFD_AUTH_SIMPLE ||
 	       s->auth_type == BFD_AUTH_KEYED_SHA1 ||
 	       s->auth_type == BFD_AUTH_METICULOUS_SHA1;

@@ -19,8 +19,6 @@
 #include <sys/un.h>
 #include <netinet/in.h>
 #include <time.h>
-#include <bpf/libbpf.h>
-#include <bpf/bpf.h>
 
 #include "bfd_shared.h"
 #include "bfddp.h"
@@ -479,18 +477,9 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h,
 	m.h.length  = htons(sizeof(m));
 	m.c.lid     = htonl(lid);
 	if (s) {
-		uint64_t krx = 0, ktx = 0;
+		uint64_t krx, ktx;
 
-		if (use_ktx) {
-			struct session_key k = {};
-			k.peer  = s->peer;
-			k.local = s->local;
-			struct session_state ms;
-			if (!bpf_map_lookup_elem(sess_fd, &k, &ms)) {
-				krx = ms.rx_pkts;
-				ktx = ms.tx_pkts;
-			}
-		}
+		ktx_session_counters(s, &krx, &ktx);
 
 		/* Both halves of each direction: establishment runs in
 		 * userspace and the steady state in the kernel, so reporting
@@ -828,7 +817,20 @@ int dp_listen_init(const char *arg)
 		log_info("dplane: listening on %s (bfdd: unixc:%s)\n",
 		       arg, arg);
 	} else {
-		int port = atoi(arg);
+		/* strtol, not atoi, which reports nothing: `--dplane abc`
+		 * bound port 0 and announced it, and bfdd then connects to a
+		 * port nobody is listening on. Every other numeric option
+		 * here is range checked; this one was the exception. */
+		char *end;
+		long parsed = strtol(arg, &end, 10);
+		int port;
+
+		if (end == arg || *end || parsed < 1 || parsed > 65535) {
+			log_err("dplane: expected a port in 1-65535 or a socket path, got '%s'\n",
+				arg);
+			return -1;
+		}
+		port = (int)parsed;
 		dp_listen = socket(AF_INET, SOCK_STREAM, 0);
 		if (dp_listen < 0) {
 			perror("dplane socket (tcp)");

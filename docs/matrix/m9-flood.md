@@ -134,3 +134,31 @@ cost on that core is the measure there, not aggregate pps.
 earlier fixed-port arm A because drnd randomises the source port per packet
 and costs trafgen more to generate; it is the two-injector scaling that is
 the result, not the absolute per-injector number.)
+
+## G2/G3 before, matched size and recorded pps (corrects the earlier split)
+
+Arm D (valid BFD, state DOWN, your_disc 0, unconfigured pair, the frame
+that reaches the address-pair scan and is indistinguishable from a peer
+re-establishing) and arm C (the identical 66-byte frame, version 0 so
+bfd_ctrl_check counts it malformed) at gap 0. Counter dump confirmed the
+path first: D moved well-formed, C moved malformed.
+
+| arm | pps | RcvbufErrors | peer-downs | mesh | recover |
+|---|---|---|---|---|---|
+| D valid unknown pair (G3) | 632,250 | +9,208 | +29 | 63/64 | 1.0s |
+| C malformed, matched (G2) | 694,933 | +67,224 | +34 | 61/64 | 2.4s |
+
+Both paths reach the socket (XDP_PASS, confirmed by the counters) and both
+evict legitimate packets: RcvbufErrors climbs for both, and both flap real
+sessions. This CORRECTS the earlier witness run, which showed malformed
++0 and was measured with a 30-byte malformed frame against a 60-byte valid
+one at unrecorded pps; the size confound, not a real difference. At matched
+size both evict, and malformed evicts more.
+
+So G2 and G3 are the same class of risk: a frame the driver passes to a
+socket only the engine reads, at a rate that overflows the queue. Both need
+the XDP_DROP fix, and the after-table must show RcvbufErrors flat on both.
+Why malformed evicts more than a valid unknown pair at matched size is not
+established (the valid path does more userspace work per packet, which
+would predict the opposite); it is left as an open question, not a
+mechanism, and it is moot once both are dropped in the driver.

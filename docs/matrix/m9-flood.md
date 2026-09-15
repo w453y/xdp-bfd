@@ -162,3 +162,31 @@ Why malformed evicts more than a valid unknown pair at matched size is not
 established (the valid path does more userspace work per packet, which
 would predict the opposite); it is left as an open question, not a
 mechanism, and it is moot once both are dropped in the driver.
+
+## Arm B (GTSM drop) is the reference: what an XDP drop looks like
+
+Arm B, the same valid BFD frame at TTL 64, gap 0:
+
+  rejected +365409, RcvbufErrors +0, mesh 64/64, 667102 pps
+
+This is the control that makes C and D mean something. At the same ~660k
+pps, a frame dropped in XDP (B, GTSM) leaves the socket completely alone
+(RcvbufErrors +0) and does not flap a single session, while frames passed
+to the socket at the same rate (C malformed +67k, D unknown-pair +9k) evict
+and drop the mesh to 61-63/64. That contrast IS the G2/G3 argument: the fix
+is to make C and D behave like B, dropped in the driver, and the after-table
+target is RcvbufErrors +0 and mesh 64/64 for both, exactly as B reads now.
+
+## Before-table so far (two injectors, matched frames, recorded pps)
+
+| arm | path | XDP today | pps | RcvbufErrors | mesh | 
+|---|---|---|---|---|---|
+| A | non-BFD, spread | PASS (left) | 961,914 agg | n/a | 64/64 |
+| B | valid, TTL64 | DROP (GTSM) | 667,102 | +0 | 64/64 |
+| C | malformed | PASS | 694,933 | +67,224 | 61/64 |
+| D | valid, unknown pair | PASS | 632,250 | +9,208 | 63/64 |
+
+A and B leave the mesh intact; C and D evict. B proves an XDP drop costs the
+socket nothing at this rate, which is the after-state G2/G3 must reach.
+Arms E (demux fail on a real session), F (bad digest on an auth session,
+the G4 arm) and G (echo) remain and need a live session's discriminators.

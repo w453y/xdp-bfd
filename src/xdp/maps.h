@@ -122,7 +122,7 @@ struct {
 
 struct sweep {
 	struct bpf_timer timer;
-	__u32 inited;
+	__u64 inited;   /* 64-bit for the CAS: see alive in bfd_shared.h */
 	/* Negative errno from whichever arming call failed, so the value
 	 * says WHICH one rather than only that something did. Zero on a
 	 * healthy sweeper. */

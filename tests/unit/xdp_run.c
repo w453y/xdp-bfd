@@ -1171,8 +1171,8 @@ static void case_rx_state(void)
 		       (unsigned long long)after.rx_pkts);
 		bad = 1;
 	}
-	if (after.alive != 1) {
-		printf("     alive is %u, want 1\n", after.alive);
+	if ((unsigned)after.alive != 1) {
+		printf("     alive is %u, want 1\n", (unsigned)after.alive);
 		bad = 1;
 	}
 	if (after.remote_disc != 0x11111111) {
@@ -1185,7 +1185,7 @@ static void case_rx_state(void)
 		fails++;
 	} else {
 		printf("ok   %-40s rx %llu alive %u\n", "rx-updates-state",
-		       (unsigned long long)after.rx_pkts, after.alive);
+		       (unsigned long long)after.rx_pkts, (unsigned)after.alive);
 	}
 	map_reset();
 }
@@ -2051,12 +2051,12 @@ static void case_sweep(const char *name, unsigned int iv_us, unsigned int mult,
 		return;
 	}
 
-	if (after.alive != want_alive) {
-		printf("     alive is %u, want %u\n", after.alive, want_alive);
+	if ((unsigned)after.alive != want_alive) {
+		printf("     alive is %u, want %u\n", (unsigned)after.alive, want_alive);
 		printf("FAIL %-40s\n", name);
 		fails++;
 	} else {
-		printf("ok   %-40s alive %u\n", name, after.alive);
+		printf("ok   %-40s alive %u\n", name, (unsigned)after.alive);
 	}
 
 	bpf_map_delete_elem(sweep_sess_fd, &k);
@@ -2402,9 +2402,9 @@ static void case_sweep_demand(void)
 		return;
 	}
 
-	if (after.alive != 1) {
+	if ((unsigned)after.alive != 1) {
 		printf("     alive is %u, want 1 - the hold did not apply\n",
-		       after.alive);
+		       (unsigned)after.alive);
 		printf("FAIL %-40s\n", "sweep-demand-hold");
 		fails++;
 	} else {
@@ -2497,9 +2497,9 @@ static void case_sweep_negative(void)
 		return;
 	}
 
-	if (after.alive != 1) {
+	if ((unsigned)after.alive != 1) {
 		printf("     alive is %u, want 1 - the delta wrapped\n",
-		       after.alive);
+		       (unsigned)after.alive);
 		printf("FAIL %-40s\n", "sweep-negative-delta");
 		fails++;
 	} else {
@@ -2554,9 +2554,9 @@ static void case_echo_advisory(const char *name, unsigned int echo_iv_us,
 		       want_echo_alive);
 		bad = 1;
 	}
-	if (after.alive != 1) {
+	if ((unsigned)after.alive != 1) {
 		printf("     alive is %u - the echo verdict tore the session down\n",
-		       after.alive);
+		       (unsigned)after.alive);
 		bad = 1;
 	}
 

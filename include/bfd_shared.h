@@ -261,9 +261,15 @@ struct session_state {
 	__u8  detect_mult;
 	__u8  remote_flags;  /* peer's last control packet flags,
 	                      * masked to the six non-state bits */
-	__u32 alive;          /* our sweep's verdict: 1 = hearing peer.
-	                       * 32-bit: BPF atomics need 32/64-bit; RX
-	                       * set and sweep clear race across CPUs. */
+	__u64 alive;          /* our sweep's verdict: 1 = hearing peer.
+	                       * 64-bit, not 32: the BPF backend below clang
+	                       * 20 has no 32-bit atomic compare-and-swap and
+	                       * refuses the object with "Unsupported atomic
+	                       * operations, please use 64 bit version". A
+	                       * 64-bit flag lowers the build-clang floor to
+	                       * where distro toolchains sit, at 4 bytes per
+	                       * session. RX set and sweep clear race across
+	                       * CPUs, which is why it is atomic at all. */
 	__u32 final_seq;      /* kernel ack of a Poll sequence: set to
 	                       * cfg->poll_seq on the peer's F */
 	__u8  peer_mac[6];    /* neighbour's source MAC, learned on every RX.

@@ -107,3 +107,30 @@ while checking the proposed cause against the code:
 So the split stands as an observation, not a mechanism, until arm D is
 re-run with state Down and both arms record measured pps. The witness
 instrument itself is sound; what is unproven is the attribution.
+
+## Injector ceiling: per-guest, not per-bridge (measured)
+
+A second injector (bfd-chaos2, 10.66.0.4, 2 vCPU, virtio on vmbr3, the
+single-hop mesh bridge; NOT vmbr9, which is the pve1 matrix segment and
+does not reach the DUT) was built to test whether the ~700k ceiling is a
+property of one guest's virtio TX or of the bridge.
+
+Arm A (spread source ports, drnd) reaching XDP via seen, 6s each:
+  injector 1 alone   455,075 pps
+  injector 2 alone   439,225 pps
+  both together      961,914 pps
+
+Both-together is the sum of the singles, so the bridge is not the limit;
+the ~700k figure was one guest's virtio TX. The spread-traffic arms gain a
+~960k rung with two injectors, and the ladder would scale with more. The
+mesh held 64/64 with deadman-hold 0 throughout, so ~960k pps of unrelated
+traffic across queues still does not disrupt the fast path.
+
+Single-flow arms (B-G) do not benefit: one 5-tuple hashes to one RX queue
+and one core regardless of how many injectors send it, so the per-frame
+cost on that core is the measure there, not aggregate pps.
+
+(The spread-arm per-injector figure here, ~450k, is below the 787k of the
+earlier fixed-port arm A because drnd randomises the source port per packet
+and costs trafgen more to generate; it is the two-injector scaling that is
+the result, not the absolute per-injector number.)

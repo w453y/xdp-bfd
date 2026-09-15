@@ -62,3 +62,27 @@ of flaps through CPU starvation rather than socket eviction. That
 distinction is the point: malformed is already handled in the program;
 what G2 adds is dropping it for a BFD port specifically, and its cost is
 already paid here.
+
+## The socket-eviction witness (added after two mislabels)
+
+BPF counters cannot tell a flood that starves the socket from one that
+only saturates the core, because a malformed frame is XDP_PASS
+(validate.h:42) and reaches the socket too, where the engine rejects it
+with a counter-less `continue`. The witness is UdpRcvbufErrors from
+/proc/net/snmp: datagrams the kernel dropped because the socket queue was
+full, which is eviction by name. Every arm records its delta.
+
+Measured, same rate, 5s each:
+  malformed to 3784 (G2):        RcvbufErrors +0
+  valid BFD, unknown pair (G3):  RcvbufErrors +19168
+
+So the two are not the same risk. A malformed frame is passed to the
+socket but discarded so cheaply that the queue never backs up; a valid
+frame for an unknown pair costs a full session lookup before it is
+discarded, and at rate that backs the queue up and evicts real sessions'
+packets. G3 is the socket-eviction path; G2's cost is CPU, not eviction.
+That distinction was invisible until the witness, and it is why the first
+two labellings were wrong.
+
+After G2/G3 (XDP_DROP for both), the after-table must show RcvbufErrors
+flat on arms C and D and the mesh untouched.

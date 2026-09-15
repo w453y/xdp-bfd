@@ -1,0 +1,22 @@
+#!/usr/bin/make -f
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+# The BPF object must be built by a clang new enough to fit the verifier's
+# stack budget (>= 20). Pick the newest versioned clang present, falling
+# back to the unversioned one only if that is all there is.
+CLANG := $(shell command -v clang-21 || command -v clang-20 || command -v clang)
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	$(MAKE) CLANG=$(CLANG)
+
+override_dh_auto_test:
+	$(MAKE) check-host CLANG=$(CLANG)
+
+override_dh_auto_install:
+	$(MAKE) install DESTDIR=debian/xdp-bfd CLANG=$(CLANG)
+
+override_dh_installsystemd:
+	dh_installsystemd --no-enable --no-start

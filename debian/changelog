@@ -1,0 +1,6 @@
+xdp-bfd (0.0.0~dev-1) UNRELEASED; urgency=medium
+
+  * Placeholder entry. tools/build-packages.sh writes the real top entry
+    from the git tag with dch before it builds.
+
+ -- Abdul Wasey <awasey8905@gmail.com>  Mon, 15 Sep 2026 00:00:00 +0000

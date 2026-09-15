@@ -70,20 +70,20 @@ install: all
 # Layout pins for the shared structs, checked by both compilers.
 # Syntax-only: a divergence is a build error, there is nothing to run.
 abi-check: tests/unit/abi_check.c $(SHARED_HDRS)
-	$(CC) $(CFLAGS) $(XDP_CFLAGS) -fsyntax-only $<
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(XDP_CFLAGS) -fsyntax-only $<
 	$(CLANG) $(BPFFLAGS) -fsyntax-only $<
 
 bfd_xdp.o: src/xdp/bfd_xdp.c $(SHARED_HDRS) $(wildcard src/xdp/*.h)
 	$(CLANG) $(BPFFLAGS) -c $< -o $@
 
 bfd_loader: src/loader/bfd_loader.c $(SHARED_HDRS)
-	$(CC) $(CFLAGS) $(XDP_CFLAGS) $< -o $@ $(LDFLAGS) -lbpf
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(XDP_CFLAGS) $< -o $@ $(LDFLAGS) -lbpf
 
 bfd_tx: $(ENGINE_OBJS)
 	$(CC) $(CFLAGS) $(XDP_CFLAGS) $^ -o $@ $(LDFLAGS) -lbpf
 
 %.o: %.c $(SHARED_HDRS) $(wildcard src/engine/*.h)
-	$(CC) $(CFLAGS) $(XDP_CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(XDP_CFLAGS) -c $< -o $@
 
 clean:
 	rm -f bfd_xdp.o bfd_loader bfd_tx $(ENGINE_OBJS) \

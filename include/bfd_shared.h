@@ -102,7 +102,10 @@ struct bfd_ctrl_pkt {
 	X(UNKNOWN_SESSION,   "unknown-session")    /* well-formed control   \
 	                                            * packet for a pair no   \
 	                                            * session covers: G3     \
-	                                            * drops it in XDP        */
+	                                            * drops it in XDP        */    \
+	X(V6_EXTHDR,         "v6-exthdr")          /* UDP to a BFD port      \
+	                                            * behind a v6 extension  \
+	                                            * header: G1 drops it    */
 
 /* Load-time tunables, written by userspace between load and attach and
  * read-only to the program thereafter. Their own map rather than

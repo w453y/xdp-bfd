@@ -117,6 +117,45 @@ static struct bfd_ctrl_pkt ctrl_up(void)
 }
 
 /* A single-hop IPv6 BFD control packet. */
+/* A v6 frame with exactly one extension header (8 bytes, hdrlen 0) between
+ * the IPv6 header and UDP. `ext` is the ip6 next-header (e.g. HOPOPTS),
+ * `inner` is the extension header's own next-header. For G1. */
+static void build_v6_exthdr(struct frame *f, uint8_t ext, uint8_t inner,
+			    uint16_t dport, const struct bfd_ctrl_pkt *bfd)
+{
+	static const unsigned char dmac[6] = { 0x02, 0, 0, 0, 0, 1 };
+	static const unsigned char smac[6] = { 0x02, 0, 0, 0, 0, 2 };
+
+	memset(f, 0, sizeof(*f));
+
+	struct ethhdr *eth = (void *)f->b;
+	memcpy(eth->h_dest, dmac, 6);
+	memcpy(eth->h_source, smac, 6);
+	eth->h_proto = htons(ETH_P_IPV6);
+
+	struct ipv6hdr *ip6 = (void *)(eth + 1);
+	ip6->version     = 6;
+	ip6->payload_len = htons(8 + sizeof(struct udphdr) + sizeof(*bfd));
+	ip6->nexthdr     = ext;
+	ip6->hop_limit   = 255;
+	inet_pton(AF_INET6, "fd00::2", &ip6->saddr);
+	inet_pton(AF_INET6, "fd00::1", &ip6->daddr);
+
+	unsigned char *xh = (void *)(ip6 + 1);   /* 8-byte extension header */
+	xh[0] = inner;   /* next header */
+	xh[1] = 0;       /* hdrlen: (0 + 1) * 8 = 8 bytes */
+
+	struct udphdr *udp = (void *)(xh + 8);
+	udp->source = htons(49152);
+	udp->dest   = htons(dport);
+	udp->len    = htons(sizeof(*udp) + sizeof(*bfd));
+	udp->check  = 0xffff;
+
+	memcpy(udp + 1, bfd, sizeof(*bfd));
+
+	f->len = sizeof(*eth) + sizeof(*ip6) + 8 + sizeof(*udp) + sizeof(*bfd);
+}
+
 static void build_v6(struct frame *f, uint8_t hlim, uint16_t dport,
 		     const struct bfd_ctrl_pkt *bfd, unsigned int extra)
 {
@@ -2765,6 +2804,50 @@ static void case_unknown_session(void)
 	map_reset();
 }
 
+/* G1 (HARDENING_PLAN 3.3): UDP behind one v6 extension header aimed at a
+ * BFD port is dropped and counted; the same behind a non-BFD port, and a
+ * plain ICMPv6 packet (neighbour discovery), still pass. */
+static void case_v6_exthdr(void)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct frame f;
+	unsigned long long e0, e1;
+
+	map_reset_v6();
+
+	/* hop-by-hop then UDP to a BFD port: dropped and counted. */
+	e0 = stat_get(BFD_STAT_V6_EXTHDR);
+	build_v6_exthdr(&f, IPPROTO_HOPOPTS, IPPROTO_UDP, BFD_PORT_1HOP, &p);
+	expect("v6-exthdr-hopopts-bfd-drops", run_frame(&f, NULL, NULL),
+	       XDP_DROP);
+	e1 = stat_get(BFD_STAT_V6_EXTHDR);
+	if (e1 - e0 != 1) {
+		printf("FAIL %-40s v6-exthdr+%llu, want +1\n",
+		       "v6-exthdr-counter", e1 - e0);
+		fails++;
+	} else
+		printf("ok   %-40s v6-exthdr+1\n", "v6-exthdr-counter");
+
+	/* dest-opts then UDP to a non-BFD port: passes, not counted. */
+	e0 = stat_get(BFD_STAT_V6_EXTHDR);
+	build_v6_exthdr(&f, IPPROTO_DSTOPTS, IPPROTO_UDP, 1234, &p);
+	expect("v6-exthdr-nonbfd-passes", run_frame(&f, NULL, NULL), XDP_PASS);
+	e1 = stat_get(BFD_STAT_V6_EXTHDR);
+	if (e1 != e0) {
+		printf("FAIL %-40s counted a non-BFD-port pass\n",
+		       "v6-exthdr-nonbfd-counter");
+		fails++;
+	} else
+		printf("ok   %-40s not counted\n", "v6-exthdr-nonbfd-counter");
+
+	/* plain ICMPv6 (nexthdr 58, not an extension header): passes. This
+	 * is neighbour discovery, and G1 must never touch it. */
+	build_v6_exthdr(&f, IPPROTO_ICMPV6, 0, BFD_PORT_1HOP, &p);
+	expect("v6-icmp6-nd-passes", run_frame(&f, NULL, NULL), XDP_PASS);
+
+	map_reset_v6();
+}
+
 int main(void)
 {
 	const char *path = getenv("BFD_OBJ") ?: "bfd_xdp.o";
@@ -2826,6 +2909,7 @@ int main(void)
 	case_gtsm_v6();
 	case_deferred_gtsm();
 	case_unknown_session();
+	case_v6_exthdr();
 	case_bounce_v4();
 	case_bounce_v4_frame();
 	case_bounce_v6_frame();

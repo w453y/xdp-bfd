@@ -134,6 +134,15 @@ tests/unit/dp_fuzz: tests/unit/dp_fuzz.c $(wildcard src/engine/*.c) \
 		tests/unit/dp_fuzz.c src/engine/dplane.c src/engine/session.c \
 		src/engine/fsm.c src/engine/log.c -o $@
 
+# The XDP program under libFuzzer. Drives bfd_xdp.o with BPF_PROG_TEST_RUN,
+# so it needs libbpf and root; not part of `check`.
+#
+#     make FUZZ_CC=clang-21 tests/unit/xdp_fuzz
+#     sudo ./tests/unit/xdp_fuzz -runs=200000 corpus/
+tests/unit/xdp_fuzz: tests/unit/xdp_fuzz.c include/bfd_shared.h bfd_xdp.o
+	$(FUZZ_CC) $(FUZZ_FLAGS) -Iinclude -Isrc/xdp \
+		tests/unit/xdp_fuzz.c -o $@ -lbpf
+
 test-dp: tests/unit/dp_run
 	./tests/unit/dp_run
 

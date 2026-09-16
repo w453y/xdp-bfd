@@ -88,8 +88,14 @@ jobs:
       - name: fuzz regressions
         run: |
           make FUZZ_CC=clang-21 tests/unit/dp_fuzz
-          find tests/unit/fuzz-regress -type f ! -name '*.md' \
+          find tests/unit/fuzz-regress -maxdepth 1 -type f ! -name '*.md' \
             -exec ./tests/unit/dp_fuzz {} +
+
+      - name: xdp fuzz regressions
+        run: |
+          make FUZZ_CC=clang-21 tests/unit/xdp_fuzz
+          sudo find tests/unit/fuzz-regress/xdp_fuzz -type f ! -name '*.md' \
+            -exec ./tests/unit/xdp_fuzz {} +
 
       - name: netns end-to-end
         run: sudo make CLANG=clang-21 check-netns

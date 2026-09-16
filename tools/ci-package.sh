@@ -13,6 +13,9 @@ DIST="$PWD/dist"; mkdir -p "$DIST"
 
 RAW="$(git describe --tags --always --dirty 2>/dev/null || echo 0.0.0)"
 PKGVER="$(echo "${RAW#v}" | sed 's/-/~/')"
+# Debian upstream versions must start with a digit; a tagless describe
+# gives a bare commit hash, so turn that into a dev version.
+case "$PKGVER" in [0-9]*) ;; *) PKGVER="0.0.0~git${PKGVER}" ;; esac
 echo "building xdp-bfd $PKGVER ($KIND) from $RAW"
 
 if [ "$KIND" = deb ]; then

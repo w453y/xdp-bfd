@@ -1261,15 +1261,15 @@ static void mut_mp(struct bfd_ctrl_pkt *p)       { p->flags |= BFD_F_MP; }
 static void run_malformed_matrix(void)
 {
 	for (int v6 = 0; v6 < 2; v6++) {
-		case_malformed(v6, "malformed-version",   mut_version, XDP_PASS,
+		case_malformed(v6, "malformed-version",   mut_version, XDP_DROP,
 			       BFD_STAT_MALFORMED);
-		case_malformed(v6, "malformed-len-short", mut_len_short, XDP_PASS,
+		case_malformed(v6, "malformed-len-short", mut_len_short, XDP_DROP,
 			       BFD_STAT_MALFORMED);
-		case_malformed(v6, "malformed-len-long",  mut_len_long, XDP_PASS,
+		case_malformed(v6, "malformed-len-long",  mut_len_long, XDP_DROP,
 			       BFD_STAT_MALFORMED);
-		case_malformed(v6, "malformed-mult-zero", mut_mult_zero, XDP_PASS,
+		case_malformed(v6, "malformed-mult-zero", mut_mult_zero, XDP_DROP,
 			       BFD_STAT_MALFORMED);
-		case_malformed(v6, "malformed-disc-zero", mut_disc_zero, XDP_PASS,
+		case_malformed(v6, "malformed-disc-zero", mut_disc_zero, XDP_DROP,
 			       BFD_STAT_MALFORMED);
 		/* Still dropped, but attributed to the session rather than
 		 * to the flag: the A bit is only unacceptable because this
@@ -1768,9 +1768,9 @@ static void run_echo_v6_matrix(void)
  * out still claiming 208 - built by this engine, with a length its own
  * receive path would now refuse.
  *
- * MALFORMED and PASS rather than DROP, like a broken BFD header: a length
- * that does not match the frame is not evidence of an attack, and the
- * stack applies the same rule.
+ * MALFORMED, and now dropped (HARDENING_PLAN G2), like any broken BFD
+ * header on ports only our socket consumes. It still must not refresh
+ * liveness, and must not leave on the wire under our name.
  */
 static void case_bad_envelope(const char *name, int which)
 {
@@ -1799,8 +1799,8 @@ static void case_bad_envelope(const char *name, int which)
 	before = stat_get(BFD_STAT_MALFORMED);
 	v = run_frame(&f, NULL, NULL);
 
-	if (v != XDP_PASS) {
-		printf("     verdict %s, want PASS\n",
+	if (v != XDP_DROP) {
+		printf("     verdict %s, want DROP\n",
 		       v < 0 ? "syscall-error" : verdict_str(v));
 		bad = 1;
 	}
@@ -1818,7 +1818,7 @@ static void case_bad_envelope(const char *name, int which)
 		printf("FAIL %-40s\n", name);
 		fails++;
 	} else {
-		printf("ok   %-40s PASS, no state write\n", name);
+		printf("ok   %-40s DROP, no state write\n", name);
 	}
 	map_reset();
 }

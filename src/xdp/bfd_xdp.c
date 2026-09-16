@@ -69,7 +69,7 @@ int bfd_observer(struct xdp_md *ctx)
 	struct bfd_ctrl_pkt *bfd = (void *)(udp + 1);
 	if ((void *)(bfd + 1) > data_end) {
 		count(BFD_STAT_MALFORMED);
-		return XDP_PASS;
+		return XDP_DROP;
 	}
 	/* The envelope has to describe the frame that arrived.
 	 *
@@ -81,9 +81,10 @@ int bfd_observer(struct xdp_md *ctx)
 	 * refreshed liveness and could acknowledge a Poll on a packet that
 	 * is not what it says it is.
 	 *
-	 * MALFORMED and PASS, like a broken BFD header: a length that does
-	 * not match the frame is not evidence of an attack, and the stack
-	 * applies the same rule and will reject it too.
+	 * MALFORMED, and dropped (HARDENING_PLAN G2): the BFD ports have no
+	 * consumer here but our own socket, so a frame whose envelope lies
+	 * about its length has nowhere useful to go, and passing it only
+	 * costs a syscall and, at a flood, evicts real datagrams.
 	 */
 	{
 		__u32 have = (__u32)((long)data_end - (long)udp);
@@ -91,7 +92,7 @@ int bfd_observer(struct xdp_md *ctx)
 
 		if (ulen < sizeof(*udp) || (__u32)ulen > have) {
 			count(BFD_STAT_MALFORMED);
-			return XDP_PASS;
+			return XDP_DROP;
 		}
 		if (iph) {
 			__u32 ihave = (__u32)((long)data_end - (long)iph);
@@ -100,7 +101,7 @@ int bfd_observer(struct xdp_md *ctx)
 			if (tot < sizeof(*iph) + sizeof(*udp) ||
 			    (__u32)tot > ihave) {
 				count(BFD_STAT_MALFORMED);
-				return XDP_PASS;
+				return XDP_DROP;
 			}
 		} else if (ip6) {
 			__u32 phave = (__u32)((long)data_end - (long)(ip6 + 1));
@@ -108,7 +109,7 @@ int bfd_observer(struct xdp_md *ctx)
 
 			if (plen < sizeof(*udp) || (__u32)plen > phave) {
 				count(BFD_STAT_MALFORMED);
-				return XDP_PASS;
+				return XDP_DROP;
 			}
 		}
 	}

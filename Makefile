@@ -105,7 +105,7 @@ tests/unit/bfd_xdp_test.o: tests/unit/bfd_xdp_test.c $(SHARED_HDRS) \
 # run stale against the old expectations.
 TEST_HDRS := $(wildcard tests/unit/*.h)
 
-tests/unit/xdp_run: tests/unit/xdp_run.c $(SHARED_HDRS) $(TEST_HDRS)
+tests/unit/xdp_run: tests/unit/xdp_run.c $(wildcard tests/unit/xdp/*.c) $(SHARED_HDRS) $(TEST_HDRS)
 	$(CC) $(CFLAGS) $(XDP_CFLAGS) -Itests/unit $< -o $@ -lbpf
 
 # Links against the real fsm.o with three stubs; no root, no BPF.

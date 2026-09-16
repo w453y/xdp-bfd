@@ -213,6 +213,34 @@ int bfd_observer(struct xdp_md *ctx)
 	 * took the packet on trust. */
 	if (cfg && cfg->auth_present) {
 		__u32 azero = 0;
+		__u64 anow = bpf_ktime_get_ns();
+		__u64 awin = (__u64)(st->detect_iv_us ? st->detect_iv_us
+						      : cfg->min_rx_us) * 1000;
+
+		/* G4: bound the HMAC a forger can force. The digest runs after
+		 * the replay window, so a forger must supply an in-window
+		 * sequence - visible on the wire - and each one then costs a
+		 * full HMAC-SHA1 in softirq, per packet, per CPU. Count the
+		 * digest failures in a detect interval; once BFD_AUTH_FAIL_MAX
+		 * of them land, drop further A-bit packets for this session
+		 * BEFORE the copy and digest until the interval turns over. A
+		 * key rollover produces at most a handful, so the ceiling does
+		 * not catch a legitimate cause.
+		 *
+		 * The trade is stated plainly: under a sustained in-window
+		 * forgery flood this also drops the peer's real packets once
+		 * the bucket is spent, so that one session can go down. That is
+		 * the honest outcome of an on-link attack on a single session,
+		 * and it bounds the CPU either way; the other 63 are untouched
+		 * because the bucket is per-session. */
+		if (anow - st->auth_fail_ts > awin) {
+			st->auth_fail_ts = anow;
+			st->auth_fail_n = 0;
+		}
+		if (st->auth_fail_n >= BFD_AUTH_FAIL_MAX) {
+			count(BFD_STAT_AUTH_RATELIMITED);
+			return XDP_DROP;
+		}
 
 		asc = bpf_map_lookup_elem(&auth_scratch, &azero);
 		/* The capability check belongs to the send key, because it
@@ -221,6 +249,7 @@ int bfd_observer(struct xdp_md *ctx)
 		if (!asc || (cfg->auth_type && !xdp_auth_fast(cfg)) ||
 		    !xdp_auth_verify(ctx, iph ? BFD_OFF_V4 : BFD_OFF_V6,
 				     bfd, cfg, st, asc)) {
+			st->auth_fail_n++;
 			count(BFD_STAT_AUTH_BAD);
 			return XDP_DROP;
 		}

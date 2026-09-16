@@ -22,7 +22,7 @@ _Static_assert(sizeof(struct bfd_addr) == 16,
 	       "sizeof(struct bfd_addr)");
 _Static_assert(sizeof(struct session_key) == 32,
 	       "sizeof(struct session_key)");
-_Static_assert(sizeof(struct session_state) == 128,
+_Static_assert(sizeof(struct session_state) == 136,
 	       "sizeof(struct session_state)");
 _Static_assert(sizeof(struct bfd_event) == 56,
 	       "sizeof(struct bfd_event)");
@@ -112,6 +112,10 @@ _Static_assert(offsetof(struct session_state, auth_tx_seq) == 108,
 	       "offsetof(struct session_state, auth_tx_seq)");
 _Static_assert(offsetof(struct session_state, auth_rx_seq) == 112,
 	       "offsetof(struct session_state, auth_rx_seq)");
+_Static_assert(offsetof(struct session_state, auth_fail_n) == 120,
+	       "offsetof(struct session_state, auth_fail_n)");
+_Static_assert(offsetof(struct session_state, auth_fail_ts) == 128,
+	       "offsetof(struct session_state, auth_fail_ts)");
 _Static_assert(offsetof(struct bfd_event, ts_ns) == 0,
 	       "offsetof(struct bfd_event, ts_ns)");
 _Static_assert(offsetof(struct bfd_event, last_seen_ns) == 8,
@@ -166,6 +170,7 @@ _Static_assert(BFD_STAT_ECHO_TTL == 8, "BFD_STAT_ECHO_TTL");
 _Static_assert(BFD_STAT_UNSUPPORTED_FLAGS == 9, "BFD_STAT_UNSUPPORTED_FLAGS");
 _Static_assert(BFD_STAT_SWEEP_INIT_FAIL == 10, "BFD_STAT_SWEEP_INIT_FAIL");
 _Static_assert(BFD_STAT_IP_OPTIONS == 11, "BFD_STAT_IP_OPTIONS");
-_Static_assert(BFD_STAT_MAX == 17, "BFD_STAT_MAX");
+_Static_assert(BFD_STAT_MAX == 18, "BFD_STAT_MAX");
 _Static_assert(BFD_STAT_UNKNOWN_SESSION == 15, "BFD_STAT_UNKNOWN_SESSION");
 _Static_assert(BFD_STAT_V6_EXTHDR == 16, "BFD_STAT_V6_EXTHDR");
+_Static_assert(BFD_STAT_AUTH_RATELIMITED == 17, "BFD_STAT_AUTH_RATELIMITED");

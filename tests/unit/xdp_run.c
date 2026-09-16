@@ -2848,6 +2848,60 @@ static void case_v6_exthdr(void)
 	map_reset_v6();
 }
 
+/* G4: bound the forced HMAC. Feed a session more corrupt-digest packets
+ * than BFD_AUTH_FAIL_MAX inside one detect interval: the first
+ * BFD_AUTH_FAIL_MAX reach the digest and fail (auth-bad), the rest are
+ * dropped before it (auth-ratelimited). The interval is pinned wide so the
+ * test cannot straddle a window turnover. */
+static void case_auth_ratelimit(void)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct session_state st;
+	struct frame f;
+	unsigned long long b0, b1, r0, r1;
+	int bad = 0, v;
+
+	map_reset();
+	arm_session_auth(BFD_AUTH_KEYED_SHA1, 7, "topsecret");
+
+	/* Pin the window to a second so a dozen test-run syscalls stay
+	 * inside one interval. */
+	if (bpf_map_lookup_elem(sess_fd, &k, &st)) {
+		printf("FAIL auth-ratelimit (no state)\n"); fails++; return;
+	}
+	st.detect_iv_us = 1000000;
+	bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY);
+
+	b0 = stat_get(BFD_STAT_AUTH_BAD);
+	r0 = stat_get(BFD_STAT_AUTH_RATELIMITED);
+
+	for (int i = 0; i < BFD_AUTH_FAIL_MAX + 4; i++) {
+		build_sha1_auth(&f, "topsecret", 7, 100 + i, BFD_AUTH_KEYED_SHA1);
+		f.b[f.len - 1] ^= 0xff;                 /* corrupt the digest */
+		v = run_frame(&f, NULL, NULL);
+		if (v != XDP_DROP) {
+			printf("     packet %d verdict %s, want DROP\n", i,
+			       v < 0 ? "syscall-error" : verdict_str(v));
+			bad = 1;
+		}
+	}
+	b1 = stat_get(BFD_STAT_AUTH_BAD);
+	r1 = stat_get(BFD_STAT_AUTH_RATELIMITED);
+
+	if (b1 - b0 != BFD_AUTH_FAIL_MAX) {
+		printf("     auth-bad +%llu, want +%d\n", b1 - b0, BFD_AUTH_FAIL_MAX);
+		bad = 1;
+	}
+	if (r1 - r0 != 4) {
+		printf("     auth-ratelimited +%llu, want +4\n", r1 - r0);
+		bad = 1;
+	}
+	if (bad) { printf("FAIL auth-ratelimit-bounds-digest\n"); fails++; }
+	else printf("ok   %-40s %d digests then rate-limited\n",
+		    "auth-ratelimit-bounds-digest", BFD_AUTH_FAIL_MAX);
+	map_reset();
+}
+
 int main(void)
 {
 	const char *path = getenv("BFD_OBJ") ?: "bfd_xdp.o";
@@ -2910,6 +2964,7 @@ int main(void)
 	case_deferred_gtsm();
 	case_unknown_session();
 	case_v6_exthdr();
+	case_auth_ratelimit();
 	case_bounce_v4();
 	case_bounce_v4_frame();
 	case_bounce_v6_frame();

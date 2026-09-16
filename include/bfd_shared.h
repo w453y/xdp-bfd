@@ -105,7 +105,11 @@ struct bfd_ctrl_pkt {
 	                                            * drops it in XDP        */    \
 	X(V6_EXTHDR,         "v6-exthdr")          /* UDP to a BFD port      \
 	                                            * behind a v6 extension  \
-	                                            * header: G1 drops it    */
+	                                            * header: G1 drops it    */    \
+	X(AUTH_RATELIMITED,  "auth-ratelimited")   /* A-bit packet dropped   \
+	                                            * before the digest: too \
+	                                            * many failures this      \
+	                                            * interval already (G4)  */
 
 /* Load-time tunables, written by userspace between load and attach and
  * read-only to the program thereafter. Their own map rather than
@@ -177,6 +181,11 @@ enum bfd_stat {
 
 /* type, length, key id, reserved, 4-byte sequence, 20-byte digest. */
 #define BFD_AUTH_SHA1_LEN     28
+
+/* G4: digest failures a session tolerates per detect interval before it
+ * rate-limits A-bit packets before the digest. Generous: a key rollover
+ * costs at most a handful. */
+#define BFD_AUTH_FAIL_MAX     8
 #define BFD_AUTH_SHA1_SEQ_OFF 4
 #define BFD_AUTH_SHA1_DIG_OFF 8
 
@@ -301,7 +310,10 @@ struct session_state {
 	                       * reads it back when it takes over. */
 	__u32 auth_rx_seq;    /* highest sequence accepted from the peer */
 	__u32 auth_rx_seen;   /* whether auth_rx_seq means anything yet */
+	__u32 auth_fail_n;    /* G4: digest failures in the current interval.
+	                       * Kernel-owned, like the sequence numbers. */
 	__u32 pad5;
+	__u64 auth_fail_ts;   /* G4: when the current interval began, ns. */
 };
 
 /* Event pushed to userspace on liveness transitions. */

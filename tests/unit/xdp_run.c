@@ -2710,6 +2710,61 @@ static void run_sweep_matrix(void)
 	case_echo_advisory("echo-advisory-off", 0, 100000000ull, 1, 0);
 }
 
+/* G3 (HARDENING_PLAN 3.1): a well-formed control packet at TTL 255 for an
+ * address pair with no tx_config entry is dropped in XDP and counted, not
+ * passed to the socket. Our socket is the only consumer of the BFD ports,
+ * so passing it is the widest flood path to recvmsg. The promiscuous flag
+ * keeps XDP_PASS for the standalone observer, which does not count it. */
+static void case_unknown_session(void)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct frame f;
+	unsigned long long u0, u1;
+
+	map_reset();
+	u0 = stat_get(BFD_STAT_UNKNOWN_SESSION);
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+	expect("unknown-session-v4-drops", run_frame(&f, NULL, NULL), XDP_DROP);
+	u1 = stat_get(BFD_STAT_UNKNOWN_SESSION);
+	if (u1 - u0 != 1) {
+		printf("FAIL %-40s unknown-session+%llu, want +1\n",
+		       "unknown-session-v4-counter", u1 - u0);
+		fails++;
+	} else
+		printf("ok   %-40s unknown-session+1\n",
+		       "unknown-session-v4-counter");
+
+	map_reset_v6();
+	u0 = stat_get(BFD_STAT_UNKNOWN_SESSION);
+	build_v6(&f, 255, BFD_PORT_1HOP, &p, 0);
+	expect("unknown-session-v6-drops", run_frame(&f, NULL, NULL), XDP_DROP);
+	u1 = stat_get(BFD_STAT_UNKNOWN_SESSION);
+	if (u1 - u0 != 1) {
+		printf("FAIL %-40s unknown-session+%llu, want +1\n",
+		       "unknown-session-v6-counter", u1 - u0);
+		fails++;
+	} else
+		printf("ok   %-40s unknown-session+1\n",
+		       "unknown-session-v6-counter");
+
+	/* Promiscuous observer still passes it, and does not count it. */
+	map_reset();
+	set_flags(FLAG_PROMISC);
+	u0 = stat_get(BFD_STAT_UNKNOWN_SESSION);
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+	expect("unknown-session-promisc-passes", run_frame(&f, NULL, NULL),
+	       XDP_PASS);
+	u1 = stat_get(BFD_STAT_UNKNOWN_SESSION);
+	if (u1 - u0 != 0) {
+		printf("FAIL %-40s unknown-session+%llu under promisc, want +0\n",
+		       "unknown-session-promisc-counter", u1 - u0);
+		fails++;
+	} else
+		printf("ok   %-40s no unknown-session count under promisc\n",
+		       "unknown-session-promisc-counter");
+	map_reset();
+}
+
 int main(void)
 {
 	const char *path = getenv("BFD_OBJ") ?: "bfd_xdp.o";
@@ -2770,6 +2825,7 @@ int main(void)
 	case_detect_vectors();
 	case_gtsm_v6();
 	case_deferred_gtsm();
+	case_unknown_session();
 	case_bounce_v4();
 	case_bounce_v4_frame();
 	case_bounce_v6_frame();

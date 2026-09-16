@@ -154,8 +154,19 @@ int bfd_observer(struct xdp_md *ctx)
 	if (!cfg) {
 		__u32 zero = 0;
 		__u32 *fl = bpf_map_lookup_elem(&prog_flags, &zero);
-		if (!fl || !(*fl & 1))
-			return XDP_PASS;
+		/* G3: a well-formed control packet for an address pair with no
+		 * tx_config is unwanted. bfdd ADDs a session before any packet
+		 * for it is useful, and our socket is the only consumer of the
+		 * BFD ports on this host, so passing it to the stack is the
+		 * widest path from the wire to recvmsg: a forger filling that
+		 * shared socket queue evicts packets for sessions still coming
+		 * up (measured, mesh 64->61 under such a flood). Drop it. The
+		 * promiscuous flag keeps XDP_PASS for bfd_loader, a debugging
+		 * tool that must never run on a production interface. */
+		if (!fl || !(*fl & 1)) {
+			count(BFD_STAT_UNKNOWN_SESSION);
+			return XDP_DROP;
+		}
 	}
 
 	/* Demux validation (RFC 5880 s6.8.6): your_disc must name our

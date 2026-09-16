@@ -98,7 +98,11 @@ struct bfd_ctrl_pkt {
 	X(AUTH_BAD,          "auth-bad")           /* key, digest or seq */ \
 	X(DEADMAN_HOLD,      "deadman-hold")       /* reply withheld: the
 	                                            * engine has stopped
-	                                            * making progress */
+	                                            * making progress */    \
+	X(UNKNOWN_SESSION,   "unknown-session")    /* well-formed control   \
+	                                            * packet for a pair no   \
+	                                            * session covers: G3     \
+	                                            * drops it in XDP        */
 
 /* Load-time tunables, written by userspace between load and attach and
  * read-only to the program thereafter. Their own map rather than

@@ -21,34 +21,48 @@ Two separate floors matter:
 
 ## Measured
 
-| arm | distro / kernel | build | object loads | notes |
-|---|---|---|---|---|
-| M1 | Debian 12 / 6.1 | ok | **yes** | the floor; verified with `run-arm.sh` |
-| M1c | Debian 12 / 6.12 (backports) | ok | yes | current backports kernel |
-| M3b | Ubuntu 24.04 / 6.8 | ok | yes | HWE kernel |
-| — | Fedora / 6.14 | ok (rpm, mock) | yes | rpm build + load verified |
+Object load is the support question ("does the XDP program load and
+attach?"), so it is what each arm records. The build floor (clang >= 20)
+is separate and is a build-host property, not a runtime one.
 
-The XDP object is byte-identical across the packaging and hardening changes
-on a given toolchain; the load result is a function of the kernel, not the
-package.
+| arm | distro / kernel | object loads | notes |
+|---|---|---|---|
+| M1 | Debian 12 / 6.1 | **yes** | the floor; verified on the 6.1 kernel directly (VM booted into 6.1, not the backports 6.12) |
+| M1c | Debian 12 / 6.12 (backports) | yes | current backports kernel |
+| M3b | Ubuntu 24.04 / 6.8 | yes | HWE kernel |
+| M2 | AlmaLinux 9 / 5.14 | **yes** | RHEL's "5.14" carries a heavily backported BPF stack and clears the bar despite the version number |
+| M2b | AlmaLinux 10 / 6.12 | **yes** | |
+| — | Fedora / 6.14 | yes | rpm build + load verified |
+| M1b | Debian 11 / 5.10 | not captured | vanilla 5.10, below the feature bar; expected to refuse. Live capture was blocked by the bullseye archive being EOL, which is itself a reason to drop it |
 
-## Unsupported by policy
+The object is byte-identical across the packaging and hardening changes on
+a given toolchain (md5 confirmed equal on the DUT and each arm); the load
+result is a function of the kernel's BPF feature set, not the package or
+the version string.
 
-These releases ship a kernel below the floor and are **not supported**. Each
-is worth exactly one run to record an accurate "why not" line, then never
-again:
+**The version floor is a statement about vanilla kernels.** "No kernel
+below 6.1" holds for stock upstream kernels, where the verifier features
+and stack behaviour the object relies on first appear. An enterprise
+kernel that carries a low version number but backports the BPF stack -
+RHEL / AlmaLinux 9's 5.14 is the example - clears the bar and loads. EL is
+therefore judged by the load test, not by the 5.14 label, and both EL9 and
+EL10 pass.
 
-| release | kernel | reason |
-|---|---|---|
-| Debian 11 | 5.10 | below the 6.1 floor |
-| Ubuntu 22.04 (GA) | 5.15 | below the floor; the 6.8 HWE kernel is supported, the GA kernel is not |
-| EL 9 | 5.14 | below the floor |
-| EL 10 | 6.12 | at/above the floor: a support candidate, pending a confirming run |
+## Support tiers
 
-The confirming runs (M1b Debian 11, M2 EL 9, M2b EL 10) capture the exact
-refusal text `--check` produces on the sub-floor kernels; until they are
-recorded here the drop for Debian 11 / Ubuntu 22.04 GA / EL 9 is policy but
-not yet witnessed, and EL 10's inclusion is provisional.
+Measured to load, hence supportable: Debian 12 (6.1) and its 6.12
+backports, Ubuntu 24.04 (6.8), Fedora (6.14), AlmaLinux 9 (5.14 with the
+RHEL backports) and AlmaLinux 10 (6.12).
+
+Below the feature bar, unsupported: Debian 11 (vanilla 5.10), and Ubuntu
+22.04 on its GA 5.15 kernel (its 6.8 HWE kernel is supported).
+
+**Decision, open for the user:** whether to *commit to* supporting EL9. It
+loads, so it can be; the earlier "no kernel below 6.1" rule would have
+dropped it on the version number alone, which the measurement shows is the
+wrong criterion for a backported enterprise kernel. Recommendation:
+support EL9 and EL10 (both load), drop Debian 11 and Ubuntu 22.04-GA
+(vanilla sub-floor).
 
 ## Packaging
 

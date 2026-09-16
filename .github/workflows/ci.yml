@@ -298,3 +298,37 @@ jobs:
 
       - name: scan-build
         run: scan-build-21 --status-bugs -o /tmp/sb make bfd_tx bfd_loader
+
+  package:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: 'debian:12',    suite: debian-12,   kind: deb }
+          - { image: 'debian:13',    suite: debian-13,   kind: deb }
+          - { image: 'ubuntu:24.04', suite: ubuntu-2404, kind: deb }
+          - { image: 'fedora:42',    suite: fedora-42,   kind: rpm }
+    container: ${{ matrix.image }}
+    steps:
+      - name: git for checkout
+        run: |
+          if command -v apt-get >/dev/null; then
+            apt-get update -qq && apt-get install -y -qq git
+          else
+            dnf install -y -q git
+          fi
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: mark workspace safe
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: build ${{ matrix.kind }}
+        run: tools/ci-package.sh ${{ matrix.kind }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xdp-bfd-${{ matrix.suite }}
+          path: dist/**
+          if-no-files-found: error

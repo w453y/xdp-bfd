@@ -221,3 +221,32 @@ Arm A stands confirmed at the ceiling: ~1M pps of unrelated spread traffic
 dips the mesh to 56/64 and it self-recovers, with the dead-man gate never
 tripping. cbd30d6 leaving non-BFD traffic before counting is what keeps
 that a dip rather than a collapse.
+
+## After-table: G2 and G3 landed (branch at 8108d5d, live 64-session mesh)
+
+Re-run of arms C and D with the hardened object attached (G1/G2/G3), same
+injector, matched frames, recorded pps. The target set by arm B was
+RcvbufErrors +0 and 64/64; both arms now reach it.
+
+| arm | path | XDP after | pps | RcvbufErrors | mesh | recover | ns/frame |
+|---|---|---|---|---|---|---|---|
+| C | malformed | DROP (G2) | 585,962 | +0 | 64/64 | 1s | 42 |
+| D | valid, unknown pair | DROP (G3) | 580,431 | +0 | 64/64 | 1s | 80 |
+
+Both evicted before (C +67,224 at 61/64; D +9,208 at 63/64); both now
+evict nothing and hold 64/64, matching arm B. The drop is attributed, not
+inferred: after the two arms the live XDP `bfd_stats` read
+
+- `unknown-session` 3,663,640, against 3,662,999 arm-D frames sent, so
+  every G3 frame was counted and dropped in the driver;
+- `malformed` climbed by arm C's ~3.7M frames.
+
+The prog ran 3.6-3.7M times per arm (the flood reached XDP) while
+RcvbufErrors stayed flat and no peer saw a flap, which is only possible if
+the frames were dropped in XDP rather than delivered to the socket. G3 is
+the socket-eviction path the before-table isolated; it is closed. ns/frame
+is the cost of each drop path (42 malformed, 80 unknown-session), the
+figure that carries to any NIC: cost per frame times that NIC's line rate.
+
+Arms E, F (the G4 bad-digest arm) and G still need a live authenticated
+session and are run with G4.

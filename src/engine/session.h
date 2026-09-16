@@ -220,6 +220,15 @@ struct session {
 	                               * for a bounce nothing will make */
 	uint8_t  peer_mac[6];         /* synced from the map, learned by XDP */
 	int      mac_valid;
+	uint8_t  notify_pending;      /* a state change did not fit the dplane
+	                               * output queue; re-sent from the
+	                               * session's current state once the queue
+	                               * drains, so a flap storm coalesces to
+	                               * the latest state instead of tearing
+	                               * the connection down for all 64 (G5) */
+	uint64_t log_win_us;          /* start of this session's 1s log window */
+	uint16_t log_n;               /* transitions logged in the window */
+	uint16_t log_suppressed;      /* transitions suppressed in it */
 	uint64_t next_echo_tx_us;
 	uint32_t echo_nonce;          /* nonce of the outstanding echo */
 	uint64_t echo_sent_us;        /* 0 = none outstanding */

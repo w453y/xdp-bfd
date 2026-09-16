@@ -660,6 +660,10 @@ int main(int argc, char **argv)
 		 * the queue is empty, which is the normal case. */
 		dp_flush();
 
+		/* Room the flush just freed goes to sessions whose state
+		 * change was deferred rather than dropped (G5). */
+		dp_notify_flush_pending();
+
 		if (shutdown_wanted) {
 			/* Tell every peer before going, rather than leaving
 			 * each to time out. fsm_announce_down sends three

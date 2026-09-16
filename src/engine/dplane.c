@@ -197,6 +197,9 @@ void dp_notify_state(struct session *s)
 		struct bfddp_state_change   sc;
 	} __attribute__((packed)) m = {0};
 
+	if (dp_conn < 0)
+		return;
+
 	m.h.version = 1;
 	m.h.type    = htons(BFD_STATE_CHANGE);
 	m.h.id      = 0;                      /* async */
@@ -210,7 +213,37 @@ void dp_notify_state(struct session *s)
 	m.sc.state  = s->state;
 	m.sc.diagnostics = s->diag;
 	m.sc.detection_multiplier = s->r_mult;
-	dp_send(&m, sizeof(m));
+
+	/* A state change is not worth the whole connection. dp_send would
+	 * drop it on overflow, but a session flapping - which a forger on an
+	 * unauthenticated session can drive per packet - must not cost the
+	 * other 63 their control channel. If the message will not fit, mark
+	 * the session owing a notification and re-send its CURRENT state
+	 * from dp_notify_flush_pending once the queue drains, so a storm of
+	 * flaps collapses to one send of the final state (G5). Bounded: at
+	 * most one deferred notification per session, resolved in loop
+	 * order, so a full queue can never orphan the connection. */
+	if (sizeof(m) > sizeof(dp_out) - dp_out_len) {
+		s->notify_pending = 1;
+		return;
+	}
+	s->notify_pending = 0;
+	memcpy(dp_out + dp_out_len, &m, sizeof(m));
+	dp_out_len += sizeof(m);
+	dp_flush();
+}
+
+/* Re-send the state of every session that could not be notified last time
+ * the queue was full. Called after dp_flush has drained room. dp_notify_state
+ * reads the session's current state, so a session that flapped several
+ * times while deferred is reported once, at where it ended up. */
+void dp_notify_flush_pending(void)
+{
+	if (dp_conn < 0)
+		return;
+	for (int i = 0; i < MAX_SESSIONS; i++)
+		if (sessions[i].used && sessions[i].notify_pending)
+			dp_notify_state(&sessions[i]);
 }
 
 

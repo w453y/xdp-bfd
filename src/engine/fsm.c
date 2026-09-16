@@ -106,13 +106,36 @@ static int slot_sock(int slot, const struct session *s)
 }
 
 /* ---------- FSM ---------- */
+/* Transition log lines per session per second before summarising (G5). */
+#define BFD_LOG_BURST 5
+
 void state_transition(struct session *s, int newstate, int diag,
 			     uint64_t t, const char *why)
 {
 	if (s->state == newstate)
 		return;
-	log_info("[%llu] lid=%u %s -> %s (%s)\n", (unsigned long long)t,
-	       s->lid, bfd_state_str(s->state), bfd_state_str(newstate), why);
+
+	/* Rate-limit the log per session. A forger accepted on an
+	 * unauthenticated session can flap it per packet, and one INFO line
+	 * per flap is a log flood in its own right. Log the first few each
+	 * second, then count the rest and summarise when the window closes
+	 * (G5). The transition itself, and the dplane notify, still happen. */
+	if (t - s->log_win_us >= 1000000ull) {
+		if (s->log_suppressed)
+			log_info("[%llu] lid=%u %u more transition(s) suppressed in the last second\n",
+			       (unsigned long long)t, s->lid, s->log_suppressed);
+		s->log_win_us = t;
+		s->log_n = 0;
+		s->log_suppressed = 0;
+	}
+	if (s->log_n < BFD_LOG_BURST) {
+		log_info("[%llu] lid=%u %s -> %s (%s)\n", (unsigned long long)t,
+		       s->lid, bfd_state_str(s->state), bfd_state_str(newstate),
+		       why);
+		s->log_n++;
+	} else {
+		s->log_suppressed++;
+	}
 	s->state = newstate;
 	s->diag  = diag;
 	if (newstate == ST_UP)

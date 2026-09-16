@@ -12,6 +12,7 @@ extern uint64_t dp_hold_us;
 extern uint64_t dp_reconcile_us;
 
 void dp_notify_state(struct session *s);
+void dp_notify_flush_pending(void);
 void sess_teardown_one(struct session *s, const char *why);
 void dp_read(void);
 /* Test seam: when set, dp_read takes bytes from here instead of

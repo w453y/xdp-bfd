@@ -26,9 +26,30 @@ ReadWritePaths=/run/xdp-bfd
 OOMScoreAdjust=-900
 LockPersonality=yes
 
+# Scheduling. Replies come from softirq, but detection and the heartbeat
+# run in the userspace loop, so under a softirq flood the loop must stay
+# schedulable or the dead-man gate trips and the fast path stops answering
+# (security.md, G6). SCHED_FIFO keeps it above ksoftirqd, which runs at
+# normal priority once softirq work is threaded. The priority is a
+# conservative default: any real-time priority beats ksoftirqd; raise it
+# only if higher-priority RT threads share the core. On the testbed the
+# gate never tripped even at the ~1M pps RX ceiling without this, so it is
+# headroom for busier hosts rather than a fix for an observed failure.
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=10
+IOSchedulingClass=realtime
+# Pin the engine off the CPUs serving the RX queues where the operator has
+# spare cores. Left to the operator, not a default.
+#CPUAffinity=
+
+# The engine allocates nothing per packet or per session after start;
+# measured RSS is about 2 MB (the BPF maps are separate kernel memory).
+# Keep it from being reclaimed under host memory pressure.
+MemoryMin=8M
+
 # Non-root, pending M5. When the capabilities measurement confirms this
 # set is sufficient, drop User=root by uncommenting the lines below and
-# the unit runs unprivileged. SCHED_FIFO transmit priority is pending M9.
+# the unit runs unprivileged.
 #User=xdp-bfd
 #AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_NET_RAW CAP_PERFMON
 #CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_NET_RAW CAP_PERFMON

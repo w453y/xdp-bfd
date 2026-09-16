@@ -12,8 +12,8 @@ KIND="${1:?deb or rpm}"
 DIST="$PWD/dist"; mkdir -p "$DIST"
 
 RAW="$(git describe --tags --always --dirty 2>/dev/null || echo 0.0.0)"
-VERSION="$(echo "${RAW#v}" | sed 's/-/~/')"
-echo "building xdp-bfd $VERSION ($KIND) from $RAW"
+PKGVER="$(echo "${RAW#v}" | sed 's/-/~/')"
+echo "building xdp-bfd $PKGVER ($KIND) from $RAW"
 
 if [ "$KIND" = deb ]; then
 	export DEBIAN_FRONTEND=noninteractive
@@ -33,9 +33,9 @@ if [ "$KIND" = deb ]; then
 	apt-get update -qq
 	apt-get install -y -qq --no-install-recommends clang-21 >/dev/null
 
-	dch --create --package xdp-bfd -v "${VERSION}-1" --distribution unstable \
-		"CI build ${VERSION}." 2>/dev/null || \
-	  dch -b -v "${VERSION}-1" --distribution unstable "CI build ${VERSION}."
+	dch --create --package xdp-bfd -v "${PKGVER}-1" --distribution unstable \
+		"CI build ${PKGVER}." 2>/dev/null || \
+	  dch -b -v "${PKGVER}-1" --distribution unstable "CI build ${PKGVER}."
 	dpkg-buildpackage -b -us -uc
 	cp ../xdp-bfd_*.deb "$DIST"/
 	echo "=== lintian (informational) ==="
@@ -46,7 +46,7 @@ elif [ "$KIND" = rpm ]; then
 	dnf -y -q install rpm-build rpmdevtools make gcc clang llvm \
 		libbpf-devel kernel-headers systemd-rpm-macros \
 		pkgconf-pkg-config rpmlint git >/dev/null
-	rpmver="${VERSION//\~/_}"
+	rpmver="${PKGVER//\~/_}"
 	rpmdev-setuptree
 	git archive --format=tar.gz --prefix="xdp-bfd-${rpmver}/" HEAD \
 		-o ~/rpmbuild/SOURCES/xdp-bfd-${rpmver}.tar.gz

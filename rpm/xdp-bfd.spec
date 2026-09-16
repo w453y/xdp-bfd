@@ -62,6 +62,9 @@ fi
 %files
 %license LICENSE
 %doc %{_docdir}/%{name}/README.md
+%doc %{_docdir}/%{name}/security.md
+%doc %{_docdir}/%{name}/rfc-conformance.md
+%doc %{_docdir}/%{name}/support-matrix.md
 %{_sbindir}/xdp-bfd
 %{_sbindir}/xdp-bfd-observe
 %dir %{_libdir}/xdp-bfd

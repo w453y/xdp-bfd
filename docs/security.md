@@ -87,6 +87,23 @@ The drops are attributed, not inferred: under the unknown-pair flood the
 `unknown-session` counter took every one of 3.66M frames while
 `RcvbufErrors` stayed flat.
 
+**Floods that name a real session.** Three more arms forge frames for an
+address pair the fast path actually serves, so they reach the demux, the
+authentication path and the echo reflector that a G3 unknown-session drop
+would otherwise hide. Measured live against individual sessions of the
+64-session mesh:
+
+| flood (aimed at a real session) | result |
+|---|---|
+| well-formed, wrong `your_disc`, ~513k frames | every frame dropped by the demux rule, `rejected` 1:1, **195 ns/frame**; the named session did not flap and the mesh held 64/64. A forger who knows the address pair but not the discriminator still cannot disturb the session (RFC 5880 s6.8.6). |
+| A bit set, bad digest, at an authenticated session, ~554k frames | the per-session auth bucket (G4) let the expensive verify run **248 times** and rate-limited the other **553,497** before the digest; the targeted session went down by design (its real packets share the spent bucket) while the other 63 were untouched, recovering to 64/64 in ~1s. A bad-auth flood costs a bounded amount of CPU and cannot spread past the single session it targets. |
+| self-addressed echo from a known echo peer, ~253k frames | reflected one-for-one (`XDP_TX`), **204 ns/frame**, mesh 64/64; UDP/3785 from any source that is not a peer of an echo-active session is counted `declined` and never reflected, which closes the reflection off as an amplification vector. |
+
+The auth arm is the sharpest of the three: without the bucket every one of
+those 554k frames would have cost a sequence check and, in window, a full
+HMAC-SHA1 in softirq; with it the costly path ran 0.04% as often, and the
+blast radius is one session rather than the host.
+
 **Unrelated line-rate traffic.** Spread-port traffic (not aimed at a BFD
 port) is left alone before it is even counted; ~1M pps of it dips the mesh
 to 56/64 by softirq saturation and it self-recovers within 10s, with the

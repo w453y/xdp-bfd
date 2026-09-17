@@ -128,6 +128,30 @@ def frame(dport, ttl, payload, sport="const16(12345)", spread=False):
                sp, dport, 8 + n, payload))
 
 
+# your_disc = 0xDEADBEEF (wrong), state Up: reaches a configured session and
+# is dropped by the demux rule, never touching its liveness.
+BFD_CTRL_WRONGDISC = ("0x20, 0xc0, 0x03, 0x18, 0x11, 0x22, 0x33, 0x44, "
+                      "0xde, 0xad, 0xbe, 0xef, 0x00, 0x00, 0xc3, 0x50, "
+                      "0x00, 0x00, 0xc3, 0x50, 0x00, 0x00, 0x00, 0x00")
+
+
+def frame_ip(dport, ttl, payload, src, dst, sport="const16(12345)"):
+    """Like frame() but with explicit src/dst IPv4 (dotted quad strings), so
+    an arm can name a real configured session's address pair."""
+    n = len([x for x in payload.split(",") if x.strip()])
+    total = 20 + 8 + n
+    s = ", ".join(src.split("."))
+    d = ", ".join(dst.split("."))
+    return ("{\n"
+            "  %s,\n  %s,\n  0x08, 0x00,\n"
+            "  0x45, 0x00, %s, 0x00, 0x00, 0x40, 0x00, 0x%02x, 0x11,\n"
+            "  csumip(14, 33),\n  %s,\n  %s,\n"
+            "  %s, const16(%d), const16(%d), 0x00, 0x00,\n"
+            "  %s,\n}\n"
+            % (_b(DUT_MAC), _b(INJ_MAC), _w16(total), ttl,
+               s, d, sport, dport, 8 + n, payload))
+
+
 ARMS = {
     # A: unrelated UDP, non-BFD port, source ports spread across queues.
     # Only `seen` moves (cbd30d6 leaves it before counting). Question:
@@ -144,7 +168,47 @@ ARMS = {
     # socket today; expect `well-formed` to climb and nothing to drop it.
     "D": ("valid BFD, unknown pair (G3)", frame(3784, 0xff, BFD_CTRL),
           "well-formed"),
+    # E: well-formed BFD naming a REAL configured session but with the
+    # wrong your_disc, at TTL 255. Passes G1/G2/G3 (configured pair) and is
+    # dropped by the demux rule (RFC 5880 s6.8.6). Expect `rejected` to
+    # climb and the named session NOT to flap: a forger who knows the pair
+    # still cannot disturb it without our discriminator.
+    "E": ("real session, wrong your_disc (demux)",
+          frame_ip(3784, 0xff, BFD_CTRL_WRONGDISC,
+                   src="10.66.0.12", dst="10.66.0.112"), "rejected"),
+    # F: bad-auth flood at an authenticated session (10.66.0.22). Reaches
+    # the auth path and trips the per-session token bucket (G4): a few
+    # verifies per interval, the rest rate-limited before the digest. The
+    # targeted session goes down by design; the rest of the mesh does not.
+    "F": ("bad-auth flood, authenticated session (G4)",
+          frame_ip(3784, 0xff, BFD_AUTH_BAD,
+                   src="10.66.0.22", dst="10.66.0.122"), "auth-ratelimited"),
+    # G: self-addressed UDP/3785 from a known echo peer (10.66.0.18) at TTL
+    # 255. Reflected (XDP_TX); measures reflected pps. 3785 from a non-peer
+    # is `declined`, never reflected (no amplification).
+    "G": ("self-addressed echo, known peer (reflector)",
+          frame_ip(3785, 0xff, ECHO_SELF,
+                   src="10.66.0.18", dst="10.66.0.18"), "reflected"),
 }
+
+
+# F: A bit set (0x44 = state Down + A), your_disc 0 so the demux "peer
+# restarting" exception lets it reach the auth path; auth section keyed-SHA1
+# (type 4), len 28, key id 3, an out-of-window seq and a garbage 20-byte
+# digest. Every such frame fails the verify and, past 8 in a detect
+# interval, is rate-limited by the per-session bucket (G4).
+BFD_AUTH_BAD = ("0x20, 0x44, 0x03, 0x34, 0x11, 0x22, 0x33, 0x44, "
+                "0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc3, 0x50, "
+                "0x00, 0x00, 0xc3, 0x50, 0x00, 0x00, 0x00, 0x00, "
+                "0x04, 0x1c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01, "
+                "0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, "
+                "0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41")
+
+# G: a self-addressed echo body; the reflector does not parse it on the
+# forward path, so a plain 24-byte control-shaped payload suffices.
+ECHO_SELF = ("0x20, 0xc0, 0x03, 0x18, 0x11, 0x22, 0x33, 0x44, "
+             "0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc3, 0x50, "
+             "0x00, 0x00, 0xc3, 0x50, 0x00, 0x00, 0x00, 0x00")
 
 
 def run_arm(arm, rate):

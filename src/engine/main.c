@@ -1113,6 +1113,7 @@ int main(int argc, char **argv)
 			fsm_detect(cs, t);
 			fsm_tx(cs, t);
 			echo_tx_maybe(cs, t);
+			dp_reresolve_wildcard(cs, t);
 			ktx_mirror(cs);
 		}
 	}

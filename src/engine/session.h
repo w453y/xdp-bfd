@@ -70,6 +70,11 @@ struct session {
 	uint32_t lid;
 	struct bfd_addr local, peer;  /* v4 stored v4-mapped */
 	int      family;              /* AF_INET / AF_INET6 */
+	uint8_t  local_wildcard;      /* bfdd offered no local address, so
+	                               * `local` above was resolved from the
+	                               * route to the peer and must be
+	                               * re-resolved if that route moves */
+	uint64_t last_reresolve_us;   /* rate-limits the re-resolve probe */
 	uint32_t min_tx_us, min_rx_us;
 	uint8_t  detect_mult;
 	int      passive;

@@ -299,6 +299,39 @@ static void dp_resolve_local(struct session *s)
 	close(fd);
 }
 
+/* A wildcard-origin session (bfdd offered no local address) had its
+ * source resolved once, at ADD. If the route to the peer later moves -
+ * an interface flaps, a source address is withdrawn - that source goes
+ * stale: the peer's replies then arrive with a destination the fast
+ * path keys elsewhere, G3 drops them, and the session cannot recover on
+ * its own. While such a session is not Up, re-resolve at a slow cadence
+ * and, if the source moved, drop the old key so ktx_mirror re-pushes
+ * under the new one. Bounded to non-Up wildcard sessions at one probe a
+ * second, so a healthy host pays nothing; connect() on a datagram
+ * socket sends no packet, it only re-runs the route lookup. */
+void dp_reresolve_wildcard(struct session *s, uint64_t now)
+{
+	struct bfd_addr old;
+
+	if (!s->local_wildcard || s->state == ST_UP)
+		return;
+	if (s->last_reresolve_us && now - s->last_reresolve_us < 1000000)
+		return;
+	s->last_reresolve_us = now;
+
+	old = s->local;
+	dp_resolve_local(s);
+	if (!addr_unspecified(&s->local, s->family) &&
+	    memcmp(&old, &s->local, sizeof(old)) != 0) {
+		log_info("dplane: lid=%u wildcard local moved to a new source; re-keying the fast path\n",
+			 s->lid);
+		ktx_clear_key(&s->peer, &old, s->wire_disc);
+		echo_peer_refresh(&s->peer, s);
+		s->echo_disc_done = 0;
+		s->pushed_valid = 0;
+	}
+}
+
 static void dp_handle_add(const struct bfddp_message_header *h,
 			  const struct bfddp_session_msg *sm, uint64_t t,
 			  size_t plen)
@@ -352,7 +385,8 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	struct bfd_addr old_peer = s->peer, old_local = s->local;
 
 	sm_addrs(sm, &s->local, &s->peer, &s->family);
-	if (addr_unspecified(&s->local, s->family)) {
+	s->local_wildcard = addr_unspecified(&s->local, s->family);
+	if (s->local_wildcard) {
 		dp_resolve_local(s);
 		if (addr_unspecified(&s->local, s->family))
 			log_err("dplane: lid=%u has no local address and none could be resolved to reach its peer; the fast path cannot key it\n",

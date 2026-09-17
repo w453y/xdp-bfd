@@ -963,6 +963,49 @@ static void case_local_resolve_v6(void)
 	rig_down();
 }
 
+/* A multihop session (SESSION_MULTIHOP, ttl < 255, peer off-link) with a
+ * wildcard local must resolve too: the source is a property of the route
+ * to the peer, which connect()+getsockname reads regardless of hop count
+ * or the control port the probe socket uses. A loopback peer resolves to a
+ * loopback source in any environment, so this is deterministic. */
+static void case_local_resolve_mhop(void)
+{
+	unsigned char buf[256];
+	size_t n = build_add(buf, 0x5003, "0.0.0.0", "127.0.0.2");
+	struct bfddp_message_header *h = (void *)buf;
+	struct bfddp_session_msg *sm = (void *)(h + 1);
+	struct session *s;
+	uint32_t local4 = 0;
+	int bad = 0;
+
+	sm->flags = htonl(SESSION_MULTIHOP);
+	sm->ttl = 250;
+
+	if (!rig_up()) { report("local-resolve-mhop", 1, "rig up"); rig_down(); return; }
+	sessions_clear();
+	feed(buf, n);
+	dp_read();
+
+	s = sess_by_lid(0x5003);
+	if (!s || !s->is_mhop) {
+		printf("     no multihop session for the lid\n");
+		bad = 1;
+	} else if (!s->local_wildcard) {
+		printf("     local_wildcard not set on a wildcard ADD\n");
+		bad = 1;
+	} else {
+		memcpy(&local4, &s->local.b[12], 4);
+		if (local4 != inet_addr("127.0.0.1")) {
+			char a[32];
+			inet_ntop(AF_INET, &local4, a, sizeof(a));
+			printf("     resolved local %s, want 127.0.0.1\n", a);
+			bad = 1;
+		}
+	}
+	report("local-resolve-mhop", bad, "multihop 0.0.0.0 -> 127.0.0.1");
+	rig_down();
+}
+
 int main(void)
 {
 	if (!rig_up()) {
@@ -987,6 +1030,7 @@ int main(void)
 	case_notify_coalesce();
 	case_local_resolve();
 	case_local_resolve_v6();
+	case_local_resolve_mhop();
 
 	/* Below the header, and above the buffer. */
 	case_bad_length(sizeof(struct bfddp_message_header) - 1,

@@ -14,6 +14,7 @@ extern uint64_t dp_reconcile_us;
 void dp_notify_state(struct session *s);
 void dp_notify_flush_pending(void);
 void sess_teardown_one(struct session *s, const char *why);
+void dp_reresolve_wildcard(struct session *s, uint64_t now);
 void dp_read(void);
 /* Test seam: when set, dp_read takes bytes from here instead of
  * recv(2). NULL in production. Return 0 for EOF, -1 with errno

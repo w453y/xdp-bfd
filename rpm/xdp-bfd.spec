@@ -86,5 +86,5 @@ fi
 %{_docdir}/%{name}/examples/frr-daemons.snippet
 
 %changelog
-* Tue Sep 15 2026 Abdul Wasey <awasey8905@gmail.com> - 0.0.0-1
+* Tue Sep 15 2026 Abdul Wasey <w453y.me@gmail.com> - 0.0.0-1
 - Placeholder entry. tools/build-packages.sh writes the real entries from the git tag.

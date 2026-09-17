@@ -1,7 +1,7 @@
 Source: xdp-bfd
 Section: net
 Priority: optional
-Maintainer: Abdul Wasey <awasey8905@gmail.com>
+Maintainer: Abdul Wasey <w453y.me@gmail.com>
 Build-Depends:
  debhelper-compat (= 13),
  clang (>= 1:17) | clang-17 | clang-18 | clang-19 | clang-20 | clang-21,

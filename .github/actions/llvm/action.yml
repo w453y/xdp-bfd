@@ -6,7 +6,7 @@ description: >
   Seven job-arms installed this the same way, and it was 155 seconds of the
   235 those arms spent in a green run, so it is the one step worth having in
   a single place. The version is an input because the toolchain job asserts
-  the compiler floor from both sides and needs four of them.
+  the compiler floor from both sides and needs five of them.
 
 inputs:
   version:

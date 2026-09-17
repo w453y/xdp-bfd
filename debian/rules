@@ -2,9 +2,11 @@
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
 # The BPF object must be built by a clang new enough to fit the verifier's
-# stack budget (>= 20). Pick the newest versioned clang present, falling
+# stack budget. The measured floor is 17 (it compiles the object, which
+# loads and passes the XDP suite; the 64-bit-CAS widening is what lets a
+# sub-20 clang build it). Pick the newest versioned clang present, falling
 # back to the unversioned one only if that is all there is.
-CLANG := $(shell command -v clang-21 || command -v clang-20 || command -v clang)
+CLANG := $(shell command -v clang-21 || command -v clang-20 || command -v clang-19 || command -v clang-18 || command -v clang-17 || command -v clang)
 
 # The version the binary reports. Take it from the changelog and strip the
 # Debian revision (the trailing -N), so xdp-bfd --version matches the

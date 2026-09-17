@@ -7,7 +7,7 @@ License:        GPL-2.0-only AND MIT
 URL:            https://github.com/w453y/xdp-bfd
 Source0:        %{name}-%{version}.tar.gz
 
-BuildRequires:  clang >= 20
+BuildRequires:  clang >= 17
 BuildRequires:  llvm
 BuildRequires:  libbpf-devel
 BuildRequires:  kernel-headers
@@ -32,16 +32,24 @@ runs a single static session on its own.
 # Export Fedora hardening flags (PIE, RELRO, FORTIFY) into the environment
 # so they reach the userspace build; the Makefile honours CFLAGS/LDFLAGS.
 %set_build_flags
-make CLANG="$(command -v clang-21 || command -v clang-20 || command -v clang)" VERSION=%{version} LIBDIR=%{_libdir}/xdp-bfd %{?_smp_mflags}
+make CLANG="$(command -v clang-21 || command -v clang-20 || command -v clang-19 || command -v clang-18 || command -v clang-17 || command -v clang)" VERSION=%{version} LIBDIR=%{_libdir}/xdp-bfd %{?_smp_mflags}
 
 %check
-make check-host CLANG="$(command -v clang-21 || command -v clang-20 || command -v clang)"
+make check-host CLANG="$(command -v clang-21 || command -v clang-20 || command -v clang-19 || command -v clang-18 || command -v clang-17 || command -v clang)"
 
 %install
 make install DESTDIR=%{buildroot} PREFIX=%{_prefix} SBINDIR=%{_sbindir} \
     LIBDIR=%{_libdir}/xdp-bfd UNITDIR=%{_unitdir} SYSCTLDIR=%{_sysctldir} \
     SYSCONFDIR=%{_sysconfdir} MANDIR=%{_mandir}/man8 DOCDIR=%{_docdir}/%{name} \
     VERSION=%{version}
+
+%pre
+# The unit runs as this unprivileged system user (see xdp-bfd.service).
+getent passwd xdp-bfd >/dev/null || \
+    useradd --system --no-create-home --home-dir /nonexistent \
+        --shell /sbin/nologin --user-group \
+        --comment "XDP BFD engine" xdp-bfd
+exit 0
 
 %post
 %systemd_post xdp-bfd.service

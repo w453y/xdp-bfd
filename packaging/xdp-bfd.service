@@ -15,9 +15,16 @@ KillSignal=SIGTERM
 TimeoutStopSec=5
 RuntimeDirectory=xdp-bfd
 
-# Hardening. The service runs as root for now: CAP_BPF and the rest are
-# not yet measured as sufficient (M5), so the non-root block below stays
-# commented until that measurement lands.
+# Hardening. Runs as a dedicated unprivileged user with only the four
+# capabilities the engine needs, measured sufficient (M5) on kernel 6.12:
+# CAP_BPF + CAP_PERFMON load the XDP object, CAP_NET_ADMIN attaches it,
+# CAP_NET_RAW opens the AF_PACKET socket the echo path transmits from. The
+# user is created by the package (post-install); it needs no home, no
+# shell, and nothing writable but the runtime directory below.
+User=xdp-bfd
+Group=xdp-bfd
+AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_NET_ADMIN CAP_NET_RAW
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -46,13 +53,6 @@ IOSchedulingClass=realtime
 # measured RSS is about 2 MB (the BPF maps are separate kernel memory).
 # Keep it from being reclaimed under host memory pressure.
 MemoryMin=8M
-
-# Non-root, pending M5. When the capabilities measurement confirms this
-# set is sufficient, drop User=root by uncommenting the lines below and
-# the unit runs unprivileged.
-#User=xdp-bfd
-#AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_NET_RAW CAP_PERFMON
-#CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_NET_RAW CAP_PERFMON
 
 [Install]
 WantedBy=multi-user.target

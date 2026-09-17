@@ -4,7 +4,7 @@ Priority: optional
 Maintainer: Abdul Wasey <awasey8905@gmail.com>
 Build-Depends:
  debhelper-compat (= 13),
- clang (>= 1:20) | clang-20 | clang-21,
+ clang (>= 1:17) | clang-17 | clang-18 | clang-19 | clang-20 | clang-21,
  llvm,
  libbpf-dev (>= 1.0),
  linux-libc-dev,

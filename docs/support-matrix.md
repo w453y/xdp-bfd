@@ -12,17 +12,19 @@ Two separate floors matter:
 - **Runtime (kernel).** 6.1. This is where the XDP object's verifier
   requirements are met; it is also the Debian 12 kernel and the VyOS 1.4
   base, which is why 6.1 is the line.
-- **Build (toolchain).** clang **>= 20**. Below it the BPF backend has no
-  32-bit atomic compare-and-swap and, on some objects, emits code the
-  kernel then refuses to load; the widening to 64-bit CAS lowered this as
-  far as it goes without dropping features. This is a property of the build
-  host only, not of where the package runs. `--check` on the target reports
-  whether the shipped object loads on the running kernel.
+- **Build (toolchain).** clang **>= 17**. The original blocker was that
+  the BPF backend below clang 20 had no 32-bit atomic compare-and-swap;
+  widening those atomics to 64-bit removed it, and clang 17 now compiles
+  the object, which loads and passes the XDP test suite (17 is the lowest
+  measured, and the CI toolchain matrix gates 17 through 21). This is a
+  property of the build host only, not of where the package runs.
+  `--check` on the target reports whether the shipped object loads on the
+  running kernel.
 
 ## Measured
 
 Object load is the support question ("does the XDP program load and
-attach?"), so it is what each arm records. The build floor (clang >= 20)
+attach?"), so it is what each arm records. The build floor (clang >= 17)
 is separate and is a build-host property, not a runtime one.
 
 | arm | distro / kernel | object loads | notes |
@@ -70,6 +72,6 @@ supported).
 Debian and RPM packages build and install across Debian 12/13, Ubuntu 24.04
 and Fedora, with the unit present and disabled, the binaries hardened
 (PIE, RELRO, BIND_NOW, FORTIFY) and the BPF object left unhardened by
-design. The build host must carry clang >= 20 regardless of the target
+design. The build host must carry clang >= 17 regardless of the target
 distro's own toolchain; the Debian `Build-Depends` and the RPM `BuildRequires`
 hold that floor.

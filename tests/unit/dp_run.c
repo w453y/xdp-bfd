@@ -893,6 +893,76 @@ static void case_notify_coalesce(void)
 }
 
 
+/* A peer configured without a local-address makes bfdd register the
+ * offloaded session with local 0.0.0.0 (v4) or :: (v6). The engine must
+ * resolve the concrete source the kernel would use to reach the peer, so
+ * the fast path can key the session and the unknown-session drop (G3) does
+ * not strand it. A loopback peer resolves to a loopback source in any
+ * environment, so the expected result is deterministic. */
+static void case_local_resolve(void)
+{
+	unsigned char buf[256];
+	size_t n = build_add(buf, 0x5001, "0.0.0.0", "127.0.0.2");
+	struct session *s;
+	uint32_t local4 = 0;
+	int bad = 0;
+
+	if (!rig_up()) { report("local-resolve-v4", 1, "rig up"); rig_down(); return; }
+	sessions_clear();
+	feed(buf, n);
+	dp_read();
+
+	s = sess_by_lid(0x5001);
+	if (!s) {
+		printf("     no session for the lid\n");
+		bad = 1;
+	} else {
+		memcpy(&local4, &s->local.b[12], 4);
+		if (local4 == 0) {
+			printf("     local still 0.0.0.0, not resolved\n");
+			bad = 1;
+		} else if (local4 != inet_addr("127.0.0.1")) {
+			char a[32];
+			inet_ntop(AF_INET, &local4, a, sizeof(a));
+			printf("     resolved local %s, want 127.0.0.1\n", a);
+			bad = 1;
+		}
+	}
+	report("local-resolve-v4", bad, "0.0.0.0 -> 127.0.0.1");
+	rig_down();
+}
+
+static void case_local_resolve_v6(void)
+{
+	unsigned char buf[256];
+	size_t n = build_add6(buf, 0x5002, "::", "::1");
+	struct session *s;
+	int bad = 0;
+
+	if (!rig_up()) { report("local-resolve-v6", 1, "rig up"); rig_down(); return; }
+	sessions_clear();
+	feed(buf, n);
+	dp_read();
+
+	s = sess_by_lid(0x5002);
+	if (!s) {
+		printf("     no session for the lid\n");
+		bad = 1;
+	} else {
+		struct in6_addr want, got;
+		inet_pton(AF_INET6, "::1", &want);
+		memcpy(&got, s->local.b, 16);
+		if (memcmp(&got, &want, 16) != 0) {
+			char a[64];
+			inet_ntop(AF_INET6, &got, a, sizeof(a));
+			printf("     resolved local %s, want ::1\n", a);
+			bad = 1;
+		}
+	}
+	report("local-resolve-v6", bad, ":: -> ::1");
+	rig_down();
+}
+
 int main(void)
 {
 	if (!rig_up()) {
@@ -915,6 +985,8 @@ int main(void)
 	case_address_move();
 	case_flags();
 	case_notify_coalesce();
+	case_local_resolve();
+	case_local_resolve_v6();
 
 	/* Below the header, and above the buffer. */
 	case_bad_length(sizeof(struct bfddp_message_header) - 1,

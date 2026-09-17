@@ -248,6 +248,57 @@ void dp_notify_flush_pending(void)
 
 
 /* ---------- dplane socket: inbound handlers ---------- */
+/* bfdd registers a session with an unspecified local address (0.0.0.0 or
+ * ::) when its peer was configured without a local-address: bfdd resolves a
+ * source only when it transmits, and hands the data plane a wildcard. The
+ * fast path keys a session on (peer, local), so a wildcard local never
+ * lands in tx_config, and the unknown-session drop then eats the peer's
+ * inbound packets - the session can never come up. Resolve the concrete
+ * source the kernel would use to reach the peer (the same one bfdd
+ * transmits from) so the key is complete. connect() on a datagram socket
+ * sends nothing; it runs the route lookup that getsockname reads back. */
+static int addr_unspecified(const struct bfd_addr *a, int family)
+{
+	if (family == AF_INET6) {
+		for (int i = 0; i < 16; i++)
+			if (a->b[i])
+				return 0;
+		return 1;
+	}
+	return a->b[12] == 0 && a->b[13] == 0 &&
+	       a->b[14] == 0 && a->b[15] == 0;
+}
+
+static void dp_resolve_local(struct session *s)
+{
+	int fd = socket(s->family, SOCK_DGRAM, 0);
+
+	if (fd < 0)
+		return;
+	if (s->family == AF_INET6) {
+		struct sockaddr_in6 pa = { .sin6_family = AF_INET6,
+					   .sin6_port = htons(PORT_CTRL) };
+		struct sockaddr_in6 la = {0};
+		socklen_t ll = sizeof(la);
+
+		memcpy(&pa.sin6_addr, s->peer.b, 16);
+		if (!connect(fd, (void *)&pa, sizeof(pa)) &&
+		    !getsockname(fd, (void *)&la, &ll))
+			key_set_v6(&s->local, &la.sin6_addr);
+	} else {
+		struct sockaddr_in pa = { .sin_family = AF_INET,
+					  .sin_port = htons(PORT_CTRL) };
+		struct sockaddr_in la = {0};
+		socklen_t ll = sizeof(la);
+
+		memcpy(&pa.sin_addr.s_addr, &s->peer.b[12], 4);
+		if (!connect(fd, (void *)&pa, sizeof(pa)) &&
+		    !getsockname(fd, (void *)&la, &ll))
+			key_set_v4(&s->local, la.sin_addr.s_addr);
+	}
+	close(fd);
+}
+
 static void dp_handle_add(const struct bfddp_message_header *h,
 			  const struct bfddp_session_msg *sm, uint64_t t,
 			  size_t plen)
@@ -301,6 +352,12 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	struct bfd_addr old_peer = s->peer, old_local = s->local;
 
 	sm_addrs(sm, &s->local, &s->peer, &s->family);
+	if (addr_unspecified(&s->local, s->family)) {
+		dp_resolve_local(s);
+		if (addr_unspecified(&s->local, s->family))
+			log_err("dplane: lid=%u has no local address and none could be resolved to reach its peer; the fast path cannot key it\n",
+			       lid);
+	}
 	if (!fresh && (memcmp(&old_peer, &s->peer, sizeof(old_peer)) ||
 		       memcmp(&old_local, &s->local, sizeof(old_local)))) {
 		log_info("dplane: ADD lid=%u moved address pair, clearing the old\n",

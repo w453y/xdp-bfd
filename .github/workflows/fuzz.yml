@@ -44,9 +44,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: corpus
-          key: dp_fuzz-corpus-${{ hashFiles('tests/unit/dp_fuzz.c', 'src/engine/dplane.c') }}-${{ github.run_id }}
+          key: dp_fuzz-corpus-${{ hashFiles('tests/unit/dp_fuzz.c', 'src/engine/*.c') }}-${{ github.run_id }}
           restore-keys: |
-            dp_fuzz-corpus-${{ hashFiles('tests/unit/dp_fuzz.c', 'src/engine/dplane.c') }}-
+            dp_fuzz-corpus-${{ hashFiles('tests/unit/dp_fuzz.c', 'src/engine/*.c') }}-
 
       # -max_total_time rather than -runs: the budget is wall clock, and
       # runs/second varies with the runner.
@@ -88,9 +88,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: xcorpus
-          key: xdp_fuzz-corpus-${{ hashFiles('tests/unit/xdp_fuzz.c', 'src/xdp/bfd_xdp.c') }}-${{ github.run_id }}
+          key: xdp_fuzz-corpus-${{ hashFiles('tests/unit/xdp_fuzz.c', 'src/xdp/*') }}-${{ github.run_id }}
           restore-keys: |
-            xdp_fuzz-corpus-${{ hashFiles('tests/unit/xdp_fuzz.c', 'src/xdp/bfd_xdp.c') }}-
+            xdp_fuzz-corpus-${{ hashFiles('tests/unit/xdp_fuzz.c', 'src/xdp/*') }}-
 
       - name: search
         run: |

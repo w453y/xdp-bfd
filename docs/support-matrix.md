@@ -57,12 +57,13 @@ RHEL backports) and AlmaLinux 10 (6.12).
 Below the feature bar, unsupported: Debian 11 (vanilla 5.10), and Ubuntu
 22.04 on its GA 5.15 kernel (its 6.8 HWE kernel is supported).
 
-**Decision, open for the user:** whether to *commit to* supporting EL9. It
-loads, so it can be; the earlier "no kernel below 6.1" rule would have
-dropped it on the version number alone, which the measurement shows is the
-wrong criterion for a backported enterprise kernel. Recommendation:
-support EL9 and EL10 (both load), drop Debian 11 and Ubuntu 22.04-GA
-(vanilla sub-floor).
+**EL9 and EL10 are both supported.** They load and function (build,
+`--check` ABI-match, and live XDP attach all pass), so the enterprise arm
+is judged by the load test, not by the "5.14" version string. The
+"no kernel below 6.1" rule stands only for *vanilla* upstream kernels;
+Debian 11 (vanilla 5.10) and Ubuntu 22.04 on its GA 5.15 kernel are below
+the feature bar and remain unsupported (Ubuntu 22.04's 6.8 HWE kernel is
+supported).
 
 ## Packaging
 

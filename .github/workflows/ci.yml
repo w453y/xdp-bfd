@@ -284,6 +284,26 @@ jobs:
       - name: unit suites
         run: sudo make CC=${{ matrix.cc }} CLANG=clang-21 check
 
+  # A --coverage build of the two host suites, reported not gated: it shows
+  # which fsm.c and dplane.c lines and branches the unit tables miss, which
+  # is where the last round's authentication bugs sat. The summary goes to
+  # the job summary, one click from the checks page. Not a gate: it carries
+  # no --fail-under, so a coverage number never fails the build; only a
+  # broken build or a failing suite does.
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcovr libbpf-dev
+      - name: build and run fsm_run and dp_run instrumented
+        run: make CFLAGS="--coverage -O0 -g" test-fsm test-dp
+      - name: report line and branch coverage
+        run: gcovr -s --filter 'src/engine/(fsm|dplane)\.c' | tee -a "$GITHUB_STEP_SUMMARY"
+
   # Its own job rather than a step on the end of the compiler matrix, where
   # a finding was reported as "portability (cc) failed" and said nothing
   # about what had been found. It also ran twice over one codebase, since

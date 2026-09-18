@@ -44,7 +44,7 @@ XDP_CFLAGS += -DBFD_XDP_OBJDIR='"$(LIBDIR)"' -DBFD_XDP_VERSION='"$(VERSION)"'
 # disagrees with the source that produced it, silently.
 SHARED_HDRS := $(wildcard include/*.h)
 
-ENGINE_OBJS := src/engine/log.o src/engine/main.o src/engine/session.o src/engine/dplane.o src/engine/ktx.o src/engine/echo_tx.o src/engine/fsm.o src/engine/stats.o
+ENGINE_OBJS := src/engine/log.o src/engine/main.o src/engine/session.o src/engine/dplane.o src/engine/ktx.o src/engine/echo_tx.o src/engine/fsm.o src/engine/stats.o src/engine/rx.o
 
 all: abi-check bfd_xdp.o bfd_loader bfd_tx
 
@@ -92,6 +92,7 @@ clean:
 	rm -f bfd_xdp.o bfd_loader bfd_tx $(ENGINE_OBJS) \
 	      tests/unit/bfd_xdp_test.o tests/unit/hmac_run \
 	      tests/unit/xdp_run tests/unit/fsm_run tests/unit/dp_run \
+	      tests/unit/rx_run \
 	      tests/unit/dp_fuzz
 
 # Same flags and headers as bfd_xdp.o. Test-only: never shipped, never
@@ -112,6 +113,14 @@ tests/unit/xdp_run: tests/unit/xdp_run.c $(wildcard tests/unit/xdp/*.c) $(SHARED
 tests/unit/fsm_run: tests/unit/fsm_run.c src/engine/fsm.o src/engine/log.o \
 		    $(wildcard src/engine/*.h) $(TEST_HDRS)
 	$(CC) $(CFLAGS) $(XDP_CFLAGS) tests/unit/fsm_run.c src/engine/fsm.o src/engine/log.o -o $@
+
+# The receive decision, driven directly: no sockets, no cmsgs, no root.
+# rx.o refers only to the session table and the shared predicates, so this
+# links the real object the four drains call.
+tests/unit/rx_run: tests/unit/rx_run.c src/engine/rx.o src/engine/session.o \
+		   src/engine/log.o $(wildcard src/engine/*.h) $(TEST_HDRS)
+	$(CC) $(CFLAGS) $(XDP_CFLAGS) tests/unit/rx_run.c src/engine/rx.o \
+		src/engine/session.o src/engine/log.o -o $@
 
 tests/unit/dp_run: tests/unit/dp_run.c src/engine/dplane.o src/engine/log.o \
 		   src/engine/session.o src/engine/fsm.o $(wildcard src/engine/*.h) \
@@ -146,6 +155,9 @@ tests/unit/xdp_fuzz: tests/unit/xdp_fuzz.c include/bfd_shared.h bfd_xdp.o
 test-dp: tests/unit/dp_run
 	./tests/unit/dp_run
 
+test-rx: tests/unit/rx_run
+	./tests/unit/rx_run
+
 # What a contributor with nothing installed can run: no libbpf, no clang
 # beyond the one abi-check needs for its syntax pass, no root, no NIC.
 #
@@ -154,7 +166,7 @@ test-dp: tests/unit/dp_run
 # libbpf-dev got none of it - not even the digest vectors or the state
 # machine table, which need neither. The whole of check-host runs in about
 # three seconds from cold.
-check-host: abi-check test-hmac test-fsm test-dp
+check-host: abi-check test-hmac test-fsm test-dp test-rx
 	@echo "host suites passed"
 
 # Everything that runs without a testbed, which is the above plus the XDP
@@ -199,4 +211,4 @@ test-hmac: tests/unit/hmac_run
 test-xdp: tests/unit/xdp_run bfd_xdp.o tests/unit/bfd_xdp_test.o
 	./tests/unit/xdp_run
 
-.PHONY: all install clean abi-check check check-host test-xdp test-fsm test-dp test-hmac check-netns check-frr
+.PHONY: all install clean abi-check check check-host test-xdp test-fsm test-dp test-hmac check-netns check-frr test-rx

@@ -41,6 +41,7 @@
 #include <pwd.h>
 
 #include "dplane.h"
+#include "rx.h"
 #include "ktx.h"
 #include "fsm.h"
 #include "stats.h"
@@ -67,59 +68,6 @@ static int tick_fd = -1;
 
 
 
-/* The half of acceptance that needs the session.
- *
- * bfd_ctrl_check settles everything a packet can be judged on alone, but
- * whether the A bit belongs there is a property of the session, and the
- * session is not known until the demux has run. So the rule from RFC
- * 5880 s6.8.6 is enforced here instead: an authenticated packet on a
- * session with no key is discarded, and so is a bare packet on a session
- * that has one. The second is the one an attacker would reach for.
- *
- * `len` is the packet's own length field, already checked against what
- * actually arrived, because that is the span the digest covers.
- */
-static int rx_auth_ok(struct session *s, const __u8 *buf, __u8 len)
-{
-	const struct bfd_ctrl_pkt *h = (const struct bfd_ctrl_pkt *)buf;
-	const struct auth_key *k;
-	int v;
-
-	/* Whether the session authenticates is a property of the session,
-	 * not of whichever key happens to be usable now: a session with no
-	 * key it may currently send under still expects authenticated
-	 * packets, and must not silently accept bare ones. */
-	if (!!(h->flags & BFD_F_AUTH) != !!s->auth_present)
-		return 0;
-	if (!s->auth_present)
-		return 1;
-
-	if (len < BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR)
-		return 0;
-
-	/* The peer names the key it signed with, and any key still inside
-	 * its accept period is a valid answer. Comparing against the key we
-	 * transmit under instead would refuse the peer for the whole of a
-	 * rollover, which is the breakage the accept period exists to
-	 * prevent. */
-	k = session_auth_key_for(s, buf[BFD_MIN_LEN + 2], (int64_t)time(NULL));
-	if (!k) {
-		log_debug("lid=%u no key %u is currently accepted\n", s->lid,
-			  buf[BFD_MIN_LEN + 2]);
-		return 0;
-	}
-
-	v = bfd_auth_check(buf, len, k->type, k->key_id,
-			   k->kpad, k->keylen, k->kpad,
-			   &s->auth_rx_seq, &s->auth_rx_seen,
-			   h->detect_mult);
-	if (v != BFD_AUTH_OK) {
-		log_debug("lid=%u authentication rejected a packet (%d)\n",
-			  s->lid, v);
-		return 0;
-	}
-	return 1;
-}
 
 /* ---------- main ---------- */
 /* Main loop tick in microseconds: the interval of the timerfd the
@@ -847,31 +795,14 @@ int main(int argc, char **argv)
 					       sizeof(rttl));
 			}
 
-			if (rttl != 255 ||
-			    bfd_ctrl_check(p.vers_diag, p.flags, p.detect_mult,
-					   p.len, p.my_disc, (__u32)n,
-					   !!(p.flags & BFD_F_AUTH)) !=
-				    BFD_CTRL_ACCEPT)
-				continue;
+			struct bfd_addr fp, fl;
+			enum rx_verdict why;
+			struct session *rs;
 
-			/* Demux (RFC 5880 s6.8.6), the same rule XDP applies:
-			 * your_disc must name our session, or be zero with the
-			 * peer in Down or AdminDown - it has lost state, or is
-			 * starting. Falling back to the address pair on any
-			 * miss accepted packets naming a discriminator we
-			 * never issued, which is the divergence
-			 * tests/netns_userspace.py found. */
-			uint32_t ydisc = ntohl(p.your_disc);
-			struct session *rs = sess_by_wire(ydisc);
-
-			if (!rs && ydisc == 0 && BFD_STATE(&p) <= ST_DOWN) {
-				struct bfd_addr fp, fl;
-
-				key_set_v4(&fp, from.sin_addr.s_addr);
-				key_set_v4(&fl, dst_ip);
-				rs = sess_by_addr(&fp, &fl);
-			}
-			if (rs && rx_auth_ok(rs, p_buf, p.len))
+			key_set_v4(&fp, from.sin_addr.s_addr);
+			key_set_v4(&fl, dst_ip);
+			rs = rx_accept(p_buf, (size_t)n, rttl, &fp, &fl, 0, &why);
+			if (rs)
 				fsm_rx(rs, &p, t);
 		}
 
@@ -899,11 +830,6 @@ int main(int argc, char **argv)
 		
 			if (nm < 0)
 				break;
-			if (bfd_ctrl_check(pm.vers_diag, pm.flags,
-					   pm.detect_mult, pm.len, pm.my_disc,
-					   (__u32)nm,
-					   !!(pm.flags & BFD_F_AUTH)) != BFD_CTRL_ACCEPT)
-				continue;
 		
 			uint32_t mdst = 0;
 			int mttl = -1;
@@ -918,30 +844,17 @@ int main(int argc, char **argv)
 					memcpy(&mttl, CMSG_DATA(c), sizeof(mttl));
 			}
 		
-			/* Same demux rule as the single-hop path above. */
-			uint32_t mydisc = ntohl(pm.your_disc);
-			struct session *ms = sess_by_wire(mydisc);
+			struct bfd_addr mp, ml;
+			enum rx_verdict mwhy;
+			struct session *ms;
 
-			if (!ms && mydisc == 0 && BFD_STATE(&pm) <= ST_DOWN) {
-				struct bfd_addr mp, ml;
-
-				key_set_v4(&mp, fromm.sin_addr.s_addr);
-				key_set_v4(&ml, mdst);
-				ms = sess_by_addr(&mp, &ml);
-			}
-			/* GTSM against this session's own minimum, the same rule
-			 * the kernel applies against cfg->min_ttl. Enforced after
-			 * demux because that is when the minimum is known. A
-			 * missing cmsg (mttl < 0) means the setsockopt did not
-			 * take, so drop rather than silently accept anything. */
-			if (ms && (mttl < 0 || mttl < (int)ms->min_ttl))
-				continue;
-			if (ms && rx_auth_ok(ms, pm_buf, pm.len))
-				/* `t`, like the other three drains. This one
-				 * read the clock again, so packets taken in
-				 * one pass were stamped a few microseconds
-				 * apart from their siblings for no reason.
-				 * The drains are meant to be the same code. */
+			key_set_v4(&mp, fromm.sin_addr.s_addr);
+			key_set_v4(&ml, mdst);
+			ms = rx_accept(pm_buf, (size_t)nm, mttl, &mp, &ml, 1, &mwhy);
+			/* `t`, like the other three drains: packets taken in one
+			 * pass are stamped together rather than a few microseconds
+			 * apart for no reason. */
+			if (ms)
 				fsm_rx(ms, &pm, t);
 		}
 
@@ -968,11 +881,6 @@ int main(int argc, char **argv)
 			memcpy(&p6, p6_buf, sizeof(p6));
 			if (n6 < 0)
 				break;
-			if (bfd_ctrl_check(p6.vers_diag, p6.flags,
-					   p6.detect_mult, p6.len, p6.my_disc,
-					   (__u32)n6,
-					   !!(p6.flags & BFD_F_AUTH)) != BFD_CTRL_ACCEPT)
-				continue;
 			struct bfd_addr fp6 = {0}, fl6 = {0};
 			int rhl6 = -1;
 
@@ -988,16 +896,11 @@ int main(int argc, char **argv)
 					       &((struct in6_pktinfo *)
 						CMSG_DATA(c))->ipi6_addr, 16);
 			}
-			/* Single-hop: exactly 255, same rule as v4 above. */
-			if (rhl6 != 255)
-				continue;
-			/* Same demux rule as the v4 single-hop path above. */
-			uint32_t ydisc6 = ntohl(p6.your_disc);
-			struct session *rs6 = sess_by_wire(ydisc6);
+			enum rx_verdict why6;
+			struct session *rs6 = rx_accept(p6_buf, (size_t)n6, rhl6,
+							       &fp6, &fl6, 0, &why6);
 
-			if (!rs6 && ydisc6 == 0 && BFD_STATE(&p6) <= ST_DOWN)
-				rs6 = sess_by_addr(&fp6, &fl6);
-			if (rs6 && rx_auth_ok(rs6, p6_buf, p6.len))
+			if (rs6)
 				fsm_rx(rs6, &p6, t);
 		}
 
@@ -1022,11 +925,6 @@ int main(int argc, char **argv)
 		
 			if (nm6 < 0)
 				break;
-			if (bfd_ctrl_check(pm6.vers_diag, pm6.flags,
-					   pm6.detect_mult, pm6.len, pm6.my_disc,
-					   (__u32)nm6,
-					   !!(pm6.flags & BFD_F_AUTH)) != BFD_CTRL_ACCEPT)
-				continue;
 		
 			struct bfd_addr mp6 = {0}, ml6 = {0};
 			memcpy(mp6.b, &fromm6.sin6_addr, 16);
@@ -1043,16 +941,11 @@ int main(int argc, char **argv)
 						CMSG_DATA(c))->ipi6_addr, 16);
 			}
 		
-			/* Same demux rule as the v4 single-hop path above. */
-			uint32_t mydisc6 = ntohl(pm6.your_disc);
-			struct session *ms6 = sess_by_wire(mydisc6);
+			enum rx_verdict mwhy6;
+			struct session *ms6 = rx_accept(pm6_buf, (size_t)nm6, mhl6,
+							       &mp6, &ml6, 1, &mwhy6);
 
-			if (!ms6 && mydisc6 == 0 && BFD_STATE(&pm6) <= ST_DOWN)
-				ms6 = sess_by_addr(&mp6, &ml6);
-			/* Same per-session GTSM as the v4 multihop path. */
-			if (ms6 && (mhl6 < 0 || mhl6 < (int)ms6->min_ttl))
-				continue;
-			if (ms6 && rx_auth_ok(ms6, pm6_buf, pm6.len))
+			if (ms6)
 				fsm_rx(ms6, &pm6, t);
 		}
 

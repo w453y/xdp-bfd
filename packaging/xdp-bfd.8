@@ -63,6 +63,14 @@ Dead-man interval; 0 turns it off.
 .BR --demand ", " --demand-poll-us " " \fI0|10000-600000000\fR
 Demand mode and its poll interval; 0 turns the poll off.
 .TP
+.BI --auth " type:keyid:key"
+Authenticate the static session. \fItype\fR is \fBsimple\fR,
+\fBkeyed-sha1\fR or \fBmeticulous-sha1\fR; \fIkeyid\fR is 0-255 and
+\fIkey\fR is the shared secret, with no lifetimes, so it is always
+current. Static mode only: a session driven by bfdd takes its keys over
+the data-plane socket instead. Intended for testing an authenticated
+session end to end, which bfdd cannot ask this data plane to do.
+.TP
 .BI --log-level " error|info|debug"
 Logging verbosity.
 .TP

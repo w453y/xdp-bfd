@@ -8,6 +8,8 @@
  *
  * Modes:
  *   ./bfd_tx <local-ip> <peer-ip> [--kernel-tx <if>]    static session
+ *     --auth <type>:<keyid>:<key>   authenticate that static session
+ *                                   (simple, keyed-sha1, meticulous-sha1)
  *   ./bfd_tx --dplane <port|sock-path> [--kernel-tx <if>]  bfdd-driven
  */
 #define _GNU_SOURCE
@@ -89,6 +91,7 @@ uint64_t loop_passes;
  * whose detection is held and which therefore has to verify its own path -
  * reachable only from a full FRR testbed. */
 static int static_demand;
+const char *static_auth = NULL;
 static int check_only;
 uint64_t loop_rx_wakeups;
 
@@ -153,6 +156,76 @@ static void shutdown_on_signal(int sig)
 #define BFD_XDP_VERSION "0.0.0-dev"
 #endif
 
+/* --auth <type>:<keyid>:<key> for static mode.
+ *
+ * bfdd cannot offload an authenticated session to a data plane it did not
+ * write, so the only way to exercise one end to end - the transmit
+ * sequence, the accept set, and the kernel handover of the replay window -
+ * is two static engines facing each other. The key has no lifetimes,
+ * which is how a key chain configured without them is spelled: zero means
+ * always.
+ */
+static int static_auth_apply(struct session *s, const char *spec)
+{
+	const char *c1 = strchr(spec, ':');
+	const char *c2 = c1 ? strchr(c1 + 1, ':') : NULL;
+	struct auth_key *k = &s->auth_keys[0];
+	char type[24];
+	unsigned long keyid;
+	size_t tlen, klen;
+
+	if (!c1 || !c2 || c1 == spec) {
+		log_err("--auth wants <type>:<keyid>:<key>\n");
+		return -1;
+	}
+	tlen = (size_t)(c1 - spec);
+	if (tlen >= sizeof(type)) {
+		log_err("--auth: unknown type\n");
+		return -1;
+	}
+	memcpy(type, spec, tlen);
+	type[tlen] = 0;
+
+	memset(s->auth_keys, 0, sizeof(s->auth_keys));
+	if (!strcmp(type, "simple"))
+		k->type = BFD_AUTH_SIMPLE;
+	else if (!strcmp(type, "keyed-sha1"))
+		k->type = BFD_AUTH_KEYED_SHA1;
+	else if (!strcmp(type, "meticulous-sha1"))
+		k->type = BFD_AUTH_METICULOUS_SHA1;
+	else {
+		log_err("--auth: type must be simple, keyed-sha1 or meticulous-sha1\n");
+		return -1;
+	}
+
+	keyid = strtoul(c1 + 1, NULL, 0);
+	if (keyid > 255) {
+		log_err("--auth: key id %lu is out of range\n", keyid);
+		return -1;
+	}
+	klen = strlen(c2 + 1);
+	if (!klen || klen > sizeof(k->kpad) ||
+	    (k->type == BFD_AUTH_SIMPLE && klen > BFD_AUTH_SIMPLE_MAXKEY)) {
+		log_err("--auth: key length %zu is unusable for this type\n", klen);
+		return -1;
+	}
+
+	k->key_id = (uint8_t)keyid;
+	k->keylen = (uint8_t)klen;
+	memcpy(k->kpad, c2 + 1, klen);
+
+	s->auth_present = 1;
+	s->auth_nkeys = 1;
+	/* Picks the send key and fills auth_type, auth_keyid and the pads,
+	 * the same call the dplane path makes when keys arrive. */
+	session_auth_evaluate(s, (int64_t)time(NULL));
+	if (!s->auth_type) {
+		log_err("--auth: no key is sendable, nothing would go out\n");
+		return -1;
+	}
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);
@@ -213,6 +286,8 @@ int main(int argc, char **argv)
 			}
 			ktx_deadman_ns = v * 1000ull;
 		}
+		else if (!strcmp(argv[i], "--auth") && i + 1 < argc)
+			static_auth = argv[++i];
 		else if (!strcmp(argv[i], "--demand"))
 			static_demand = 1;
 		else if (!strcmp(argv[i], "--check"))
@@ -596,6 +671,8 @@ int main(int argc, char **argv)
 		s->demand      = static_demand;
 		s->pushed_valid = 0;
 		s->next_tx_us  = now_us();
+		if (static_auth && static_auth_apply(s, static_auth))
+			return 1;
 		log_info("bfd_tx: static session lid=%u %s -> %s%s\n",
 		       s->lid, static_local, static_peer,
 		       use_ktx ? " (kernel-tx)" : "");

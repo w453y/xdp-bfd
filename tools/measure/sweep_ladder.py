@@ -25,22 +25,18 @@ import argparse
 import json
 import statistics
 import subprocess
+import os
 import sys
 import time
 
-PEER_HOST = "w453y@10.66.0.2"
-ENGINE = "/home/w453y/xdp-bfd/bfd_tx"
-IFACE = "ens19"
-DPLANE = "50700"
-STATS = "/tmp/bfd_tx_stats.json"
-FRRINIT = "/opt/frr-master/sbin/frrinit.sh"
-# frrinit.sh needs the stack's own libfrr; sudo drops the ambient
-# environment, so it is passed as an assignment instead.
-FRR_ENV = "LD_LIBRARY_PATH=/opt/frr-master/lib"
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "tests", "lib"))
+from lab import (PEER_HOST, ENGINE, IFACE, DPLANE, STATS,   # noqa: E402,F401
+                 FRRINIT, FRR_ENV, VTYSH)
+
 # Must match mode_b_opt.sh exactly, or these arms are not comparable
 # with any other result taken on this testbed.
 ENGINE_ARGS = "--dp-hold 60"
-VTYSH = "/opt/frr-master/bin/vtysh"
 
 # Which engine flag the arms vary. --sweep-us was the original
 # question; the sweep ladder answered it by falsifying the sweep,

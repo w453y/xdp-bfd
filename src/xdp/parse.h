@@ -149,14 +149,51 @@ static __always_inline int parse_l3(struct ethhdr *eth, void *data_end,
 		c->ip6 = (void *)(eth + 1);
 		if ((void *)(c->ip6 + 1) > data_end)
 			return XDP_PASS;
-		/* Non-UDP first header: ICMPv6 (ND/MLD/RA), or UDP hidden
-		 * behind extension headers we deliberately don't walk. PASS to
-		 * the stack either way - this mirrors the v4 non-UDP PASS.
-		 * DROPping here kills v6 neighbour discovery. A UDP-behind-
-		 * extheaders packet to the BFD port is left to userspace GTSM
-		 * (IPV6_MINHOPCOUNT) and demux; single-hop BFD never sends one. */
-		if (c->ip6->nexthdr != IPPROTO_UDP)
-			return XDP_PASS;
+		/* First header is not UDP: ICMPv6 (ND/MLD/RA), or UDP hidden
+		 * behind extension headers. ICMPv6 and any chain we do not
+		 * resolve to UDP still PASS to the stack, so v6 neighbour
+		 * discovery is untouched. But UDP behind one extension header
+		 * aimed at a BFD port is not something single-hop BFD ever
+		 * sends, and passing it is the same flood path to our socket
+		 * that G3 closed for the plain case (HARDENING_PLAN G1). Walk
+		 * exactly one extension header - hop-by-hop, routing,
+		 * dest-opts or fragment - and if UDP to a BFD port sits behind
+		 * it, drop and count. Deeper chains, and any header whose
+		 * length runs past the frame, still PASS: they are malformed
+		 * and the stack rejects them anyway. */
+		if (c->ip6->nexthdr != IPPROTO_UDP) {
+			__u8 nh = c->ip6->nexthdr;
+			struct exthdr2 { __u8 nexthdr; __u8 hdrlen; } *eh;
+			struct udphdr *ou;
+			__u32 ehlen;
+
+			if (nh != IPPROTO_HOPOPTS && nh != IPPROTO_ROUTING &&
+			    nh != IPPROTO_DSTOPTS && nh != IPPROTO_FRAGMENT)
+				return XDP_PASS;
+
+			eh = (void *)(c->ip6 + 1);
+			if ((void *)(eh + 1) > data_end)
+				return XDP_PASS;
+			if (eh->nexthdr != IPPROTO_UDP)
+				return XDP_PASS;
+
+			/* Fragment header is a fixed eight bytes; the others
+			 * count length in 8-octet units past the first eight.
+			 * Bounded so the variable offset stays provable. */
+			ehlen = nh == IPPROTO_FRAGMENT
+				? 8u : (((__u32)eh->hdrlen + 1u) * 8u);
+			if (ehlen > 64u)
+				return XDP_PASS;
+
+			ou = (void *)eh + ehlen;
+			if ((void *)(ou + 1) > data_end)
+				return XDP_PASS;
+			if (!bfd_dport(ou->dest))
+				return XDP_PASS;
+
+			count(BFD_STAT_V6_EXTHDR);
+			return XDP_DROP;
+		}
 		c->udp = (void *)(c->ip6 + 1);
 		if ((void *)(c->udp + 1) > data_end)
 			return XDP_PASS;

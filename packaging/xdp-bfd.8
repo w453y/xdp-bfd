@@ -1,0 +1,105 @@
+.TH XDP-BFD 8 "2026-09-15" "xdp-bfd" "System Administration"
+.SH NAME
+xdp-bfd \- XDP-based BFD data plane
+.SH SYNOPSIS
+.B xdp-bfd
+.I local-ip peer-ip
+.RI [ options ]
+.br
+.B xdp-bfd --dplane
+.IR port | sock-path
+.RI [ options ]
+.br
+.B xdp-bfd --check
+.br
+.B xdp-bfd --version
+.SH DESCRIPTION
+.B xdp-bfd
+runs Bidirectional Forwarding Detection in the kernel with an XDP program.
+It offloads the periodic transmit and the fast detection timers from FRR's
+bfdd, so sub-second sessions scale without a userspace packet for every
+tick.
+.PP
+In the usual deployment it attaches to FRR over the bfdd data-plane socket
+with
+.BR --dplane .
+Given a local and a peer address instead, it runs a single static session
+on its own. The XDP object is ABI-checked against the engine when it loads,
+and the binary carries the object's install path, so it finds
+.I /usr/lib/xdp-bfd/bfd_xdp.o
+with no argument.
+.SH OPTIONS
+.TP
+.BI --dplane " port|sock-path"
+Attach to FRR bfdd on the given data-plane port or Unix socket path.
+.TP
+.BI --dp-peer " user|uid"
+The account bfdd runs as, for socket ownership.
+.TP
+.BI --dp-hold " sec"
+Hold sessions this many seconds after bfdd disconnects (0-86400).
+.TP
+.BI --kernel-tx " if"
+Transmit from the kernel on this interface.
+.TP
+.BI --bpf-obj " path"
+Load the XDP object from this path instead of the compiled-in one.
+.TP
+.BI --xdp-mode " drv|generic"
+Attach in native driver mode or generic (SKB) mode.
+.TP
+.BI --stats-dump " path"
+Path a SIGUSR1 writes the stats snapshot to.
+.TP
+.BI --sweep-us " 500-100000"
+Session sweep interval in microseconds.
+.TP
+.BI --tick-us " 200-100000"
+Poll-loop tick in microseconds.
+.TP
+.BI --deadman-us " 0|50000-60000000"
+Dead-man interval; 0 turns it off.
+.TP
+.BR --demand ", " --demand-poll-us " " \fI0|10000-600000000\fR
+Demand mode and its poll interval; 0 turns the poll off.
+.TP
+.BI --auth " type:keyid:key"
+Authenticate the static session. \fItype\fR is \fBsimple\fR,
+\fBkeyed-sha1\fR or \fBmeticulous-sha1\fR; \fIkeyid\fR is 0-255 and
+\fIkey\fR is the shared secret, with no lifetimes, so it is always
+current. Static mode only: a session driven by bfdd takes its keys over
+the data-plane socket instead. Intended for testing an authenticated
+session end to end, which bfdd cannot ask this data plane to do.
+.TP
+.BI --log-level " error|info|debug"
+Logging verbosity.
+.TP
+.B --check
+Open the XDP object, run the ABI check, load it through the verifier,
+report whether it loads and is ABI-matched on the running kernel, and
+exit. Used by the package postinst and the support matrix.
+.TP
+.B --version
+Print the version and exit.
+.SH FILES
+.TP
+.I /etc/xdp-bfd/engine.conf
+Environment file read by the systemd unit; sets XDP_BFD_ARGS.
+.TP
+.I /usr/lib/xdp-bfd/bfd_xdp.o
+The XDP object, found by the binary with no argument.
+.TP
+.I /run/xdp-bfd/stats.json
+Default stats output path.
+.SH SEE ALSO
+.BR bfdd (8),
+.BR systemctl (1)
+.PP
+Full deployment and limitations notes are in
+.IR /usr/share/doc/xdp-bfd/README.md .
+The threat model and flood measurements are in
+.IR /usr/share/doc/xdp-bfd/security.md ,
+RFC coverage in
+.IR /usr/share/doc/xdp-bfd/rfc-conformance.md ,
+and the supported kernels in
+.IR /usr/share/doc/xdp-bfd/support-matrix.md .

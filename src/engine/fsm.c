@@ -106,13 +106,36 @@ static int slot_sock(int slot, const struct session *s)
 }
 
 /* ---------- FSM ---------- */
+/* Transition log lines per session per second before summarising (G5). */
+#define BFD_LOG_BURST 5
+
 void state_transition(struct session *s, int newstate, int diag,
 			     uint64_t t, const char *why)
 {
 	if (s->state == newstate)
 		return;
-	log_info("[%llu] lid=%u %s -> %s (%s)\n", (unsigned long long)t,
-	       s->lid, bfd_state_str(s->state), bfd_state_str(newstate), why);
+
+	/* Rate-limit the log per session. A forger accepted on an
+	 * unauthenticated session can flap it per packet, and one INFO line
+	 * per flap is a log flood in its own right. Log the first few each
+	 * second, then count the rest and summarise when the window closes
+	 * (G5). The transition itself, and the dplane notify, still happen. */
+	if (t - s->log_win_us >= 1000000ull) {
+		if (s->log_suppressed)
+			log_info("[%llu] lid=%u %u more transition(s) suppressed in the last second\n",
+			       (unsigned long long)t, s->lid, s->log_suppressed);
+		s->log_win_us = t;
+		s->log_n = 0;
+		s->log_suppressed = 0;
+	}
+	if (s->log_n < BFD_LOG_BURST) {
+		log_info("[%llu] lid=%u %s -> %s (%s)\n", (unsigned long long)t,
+		       s->lid, bfd_state_str(s->state), bfd_state_str(newstate),
+		       why);
+		s->log_n++;
+	} else {
+		s->log_suppressed++;
+	}
 	s->state = newstate;
 	s->diag  = diag;
 	if (newstate == ST_UP)
@@ -400,7 +423,25 @@ static void tx_one(struct session *s)
 	 * A session that cannot build its section sends nothing at all. An
 	 * unauthenticated packet on an authenticated session is not a
 	 * degraded packet, it is the one thing the peer must reject. */
-	if (s->auth_type) {
+	if (s->auth_present) {
+		/* auth_present, not auth_type: a session that must
+		 * authenticate and has no key it may send under right now
+		 * has to send nothing, which is what the comment above has
+		 * always claimed. Branching on auth_type instead put a bare
+		 * 24 byte packet on the wire for it, counted as sent. The
+		 * peer rejects it, so this was never an authentication
+		 * bypass, but it is a packet that could only ever be
+		 * refused. */
+		if (!s->auth_type) {
+			if (!s->auth_gap_warned) {
+				s->auth_gap_warned = 1;
+				log_err("lid=%u must authenticate and has no key to send under; nothing sent until one becomes sendable\n",
+					s->lid);
+			}
+			s->send_final = 0;
+			s->just_up = 0;
+			return;
+		}
 		o.flags |= BFD_F_AUTH;
 		o.len = bfd_auth_pkt_len(s->auth_type, s->auth_keylen);
 		memcpy(buf, &o, BFD_MIN_LEN);

@@ -19,8 +19,6 @@
 #include <sys/un.h>
 #include <netinet/in.h>
 #include <time.h>
-#include <bpf/libbpf.h>
-#include <bpf/bpf.h>
 
 #include "bfd_shared.h"
 #include "bfddp.h"
@@ -199,6 +197,9 @@ void dp_notify_state(struct session *s)
 		struct bfddp_state_change   sc;
 	} __attribute__((packed)) m = {0};
 
+	if (dp_conn < 0)
+		return;
+
 	m.h.version = 1;
 	m.h.type    = htons(BFD_STATE_CHANGE);
 	m.h.id      = 0;                      /* async */
@@ -212,11 +213,125 @@ void dp_notify_state(struct session *s)
 	m.sc.state  = s->state;
 	m.sc.diagnostics = s->diag;
 	m.sc.detection_multiplier = s->r_mult;
-	dp_send(&m, sizeof(m));
+
+	/* A state change is not worth the whole connection. dp_send would
+	 * drop it on overflow, but a session flapping - which a forger on an
+	 * unauthenticated session can drive per packet - must not cost the
+	 * other 63 their control channel. If the message will not fit, mark
+	 * the session owing a notification and re-send its CURRENT state
+	 * from dp_notify_flush_pending once the queue drains, so a storm of
+	 * flaps collapses to one send of the final state (G5). Bounded: at
+	 * most one deferred notification per session, resolved in loop
+	 * order, so a full queue can never orphan the connection. */
+	if (sizeof(m) > sizeof(dp_out) - dp_out_len) {
+		s->notify_pending = 1;
+		return;
+	}
+	s->notify_pending = 0;
+	memcpy(dp_out + dp_out_len, &m, sizeof(m));
+	dp_out_len += sizeof(m);
+	dp_flush();
+}
+
+/* Re-send the state of every session that could not be notified last time
+ * the queue was full. Called after dp_flush has drained room. dp_notify_state
+ * reads the session's current state, so a session that flapped several
+ * times while deferred is reported once, at where it ended up. */
+void dp_notify_flush_pending(void)
+{
+	if (dp_conn < 0)
+		return;
+	for (int i = 0; i < MAX_SESSIONS; i++)
+		if (sessions[i].used && sessions[i].notify_pending)
+			dp_notify_state(&sessions[i]);
 }
 
 
 /* ---------- dplane socket: inbound handlers ---------- */
+/* bfdd registers a session with an unspecified local address (0.0.0.0 or
+ * ::) when its peer was configured without a local-address: bfdd resolves a
+ * source only when it transmits, and hands the data plane a wildcard. The
+ * fast path keys a session on (peer, local), so a wildcard local never
+ * lands in tx_config, and the unknown-session drop then eats the peer's
+ * inbound packets - the session can never come up. Resolve the concrete
+ * source the kernel would use to reach the peer (the same one bfdd
+ * transmits from) so the key is complete. connect() on a datagram socket
+ * sends nothing; it runs the route lookup that getsockname reads back. */
+static int addr_unspecified(const struct bfd_addr *a, int family)
+{
+	if (family == AF_INET6) {
+		for (int i = 0; i < 16; i++)
+			if (a->b[i])
+				return 0;
+		return 1;
+	}
+	return a->b[12] == 0 && a->b[13] == 0 &&
+	       a->b[14] == 0 && a->b[15] == 0;
+}
+
+static void dp_resolve_local(struct session *s)
+{
+	int fd = socket(s->family, SOCK_DGRAM, 0);
+
+	if (fd < 0)
+		return;
+	if (s->family == AF_INET6) {
+		struct sockaddr_in6 pa = { .sin6_family = AF_INET6,
+					   .sin6_port = htons(PORT_CTRL) };
+		struct sockaddr_in6 la = {0};
+		socklen_t ll = sizeof(la);
+
+		memcpy(&pa.sin6_addr, s->peer.b, 16);
+		if (!connect(fd, (void *)&pa, sizeof(pa)) &&
+		    !getsockname(fd, (void *)&la, &ll))
+			key_set_v6(&s->local, &la.sin6_addr);
+	} else {
+		struct sockaddr_in pa = { .sin_family = AF_INET,
+					  .sin_port = htons(PORT_CTRL) };
+		struct sockaddr_in la = {0};
+		socklen_t ll = sizeof(la);
+
+		memcpy(&pa.sin_addr.s_addr, &s->peer.b[12], 4);
+		if (!connect(fd, (void *)&pa, sizeof(pa)) &&
+		    !getsockname(fd, (void *)&la, &ll))
+			key_set_v4(&s->local, la.sin_addr.s_addr);
+	}
+	close(fd);
+}
+
+/* A wildcard-origin session (bfdd offered no local address) had its
+ * source resolved once, at ADD. If the route to the peer later moves -
+ * an interface flaps, a source address is withdrawn - that source goes
+ * stale: the peer's replies then arrive with a destination the fast
+ * path keys elsewhere, G3 drops them, and the session cannot recover on
+ * its own. While such a session is not Up, re-resolve at a slow cadence
+ * and, if the source moved, drop the old key so ktx_mirror re-pushes
+ * under the new one. Bounded to non-Up wildcard sessions at one probe a
+ * second, so a healthy host pays nothing; connect() on a datagram
+ * socket sends no packet, it only re-runs the route lookup. */
+void dp_reresolve_wildcard(struct session *s, uint64_t now)
+{
+	struct bfd_addr old;
+
+	if (!s->local_wildcard || s->state == ST_UP)
+		return;
+	if (s->last_reresolve_us && now - s->last_reresolve_us < 1000000)
+		return;
+	s->last_reresolve_us = now;
+
+	old = s->local;
+	dp_resolve_local(s);
+	if (!addr_unspecified(&s->local, s->family) &&
+	    memcmp(&old, &s->local, sizeof(old)) != 0) {
+		log_info("dplane: lid=%u wildcard local moved to a new source; re-keying the fast path\n",
+			 s->lid);
+		ktx_clear_key(&s->peer, &old, s->wire_disc);
+		echo_peer_refresh(&s->peer, s);
+		s->echo_disc_done = 0;
+		s->pushed_valid = 0;
+	}
+}
+
 static void dp_handle_add(const struct bfddp_message_header *h,
 			  const struct bfddp_session_msg *sm, uint64_t t,
 			  size_t plen)
@@ -270,6 +385,13 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	struct bfd_addr old_peer = s->peer, old_local = s->local;
 
 	sm_addrs(sm, &s->local, &s->peer, &s->family);
+	s->local_wildcard = addr_unspecified(&s->local, s->family);
+	if (s->local_wildcard) {
+		dp_resolve_local(s);
+		if (addr_unspecified(&s->local, s->family))
+			log_err("dplane: lid=%u has no local address and none could be resolved to reach its peer; the fast path cannot key it\n",
+			       lid);
+	}
 	if (!fresh && (memcmp(&old_peer, &s->peer, sizeof(old_peer)) ||
 		       memcmp(&old_local, &s->local, sizeof(old_local)))) {
 		log_info("dplane: ADD lid=%u moved address pair, clearing the old\n",
@@ -479,18 +601,9 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h,
 	m.h.length  = htons(sizeof(m));
 	m.c.lid     = htonl(lid);
 	if (s) {
-		uint64_t krx = 0, ktx = 0;
+		uint64_t krx, ktx;
 
-		if (use_ktx) {
-			struct session_key k = {};
-			k.peer  = s->peer;
-			k.local = s->local;
-			struct session_state ms;
-			if (!bpf_map_lookup_elem(sess_fd, &k, &ms)) {
-				krx = ms.rx_pkts;
-				ktx = ms.tx_pkts;
-			}
-		}
+		ktx_session_counters(s, &krx, &ktx);
 
 		/* Both halves of each direction: establishment runs in
 		 * userspace and the steady state in the kernel, so reporting
@@ -828,7 +941,20 @@ int dp_listen_init(const char *arg)
 		log_info("dplane: listening on %s (bfdd: unixc:%s)\n",
 		       arg, arg);
 	} else {
-		int port = atoi(arg);
+		/* strtol, not atoi, which reports nothing: `--dplane abc`
+		 * bound port 0 and announced it, and bfdd then connects to a
+		 * port nobody is listening on. Every other numeric option
+		 * here is range checked; this one was the exception. */
+		char *end;
+		long parsed = strtol(arg, &end, 10);
+		int port;
+
+		if (end == arg || *end || parsed < 1 || parsed > 65535) {
+			log_err("dplane: expected a port in 1-65535 or a socket path, got '%s'\n",
+				arg);
+			return -1;
+		}
+		port = (int)parsed;
 		dp_listen = socket(AF_INET, SOCK_STREAM, 0);
 		if (dp_listen < 0) {
 			perror("dplane socket (tcp)");

@@ -35,34 +35,7 @@
 
 /* ---------- stubs ---------- */
 
-int use_ktx;
-int sess_fd = -1;
-
-int ktx_covers(int ifindex) { (void)ifindex; return 0; }
-int ktx_attach_if(int ifindex, const char *ifname)
-{
-	(void)ifindex; (void)ifname;
-	return -1;
-}
-void ktx_clear(struct session *s) { (void)s; }
-void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local,
-		   uint32_t wire_disc)
-{
-	(void)peer; (void)local; (void)wire_disc;
-}
-void ktx_update_mhop_flag(void) { }
-void ktx_mirror(struct session *s) { (void)s; }
-/* No program, no sweep, no ring; fsm_detect keeps the whole budget. */
-int ktx_events_fd(void) { return -1; }
-void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip)
-{
-	(void)peer; (void)skip;
-}
-int bpf_map_lookup_elem(int fd, const void *key, void *value)
-{
-	(void)fd; (void)key; (void)value;
-	return -1;
-}
+#include "ktx_stubs.h"
 
 /* ---------- rig ---------- */
 
@@ -850,6 +823,189 @@ static void case_auth_short(void)
 	report("auth-short-message", bad, "refused");
 }
 
+/* G5: a notification storm on one session overflows the output queue. The
+ * old behaviour tore the connection down, taking every other session's
+ * control channel with it. Now it coalesces: the connection survives, and
+ * once bfdd reads again the session's CURRENT (final) state is delivered.
+ *
+ * The bfdd end is deliberately not drained during the flood, so the socket
+ * buffer fills and then dp_out does. */
+static void case_notify_coalesce(void)
+{
+	struct msg {
+		struct bfddp_message_header h;
+		struct bfddp_state_change   sc;
+	} __attribute__((packed));
+	static char buf[1 << 20];
+	int alive, hit_overflow = 0, last_state = -1, bad = 0;
+	size_t carry = 0;
+	ssize_t n;
+
+	if (!rig_up()) { printf("FAIL notify-coalesce (rig)\n"); fails++; rig_down(); return; }
+	sessions_clear();
+
+	struct session *s = &sessions[0];
+	s->used = 1;
+	s->lid = 0xABCD;
+	s->state = ST_DOWN;
+
+	for (int i = 0; i < 20000; i++) {
+		s->state = (i & 1) ? ST_UP : ST_DOWN;
+		dp_notify_state(s);
+		if (s->notify_pending)
+			hit_overflow = 1;
+	}
+	s->state = ST_UP;              /* the state that must win */
+	dp_notify_state(s);
+
+	alive = conn_alive();
+
+	/* Drain bfdd's end and flush the deferred notification, tracking the
+	 * last fully-received state_change. */
+	for (int round = 0; round < 400; round++) {
+		n = recv(cli, buf + carry, sizeof(buf) - carry, MSG_DONTWAIT);
+		if (n > 0) {
+			size_t total = carry + (size_t)n, off = 0;
+			while (total - off >= sizeof(struct msg)) {
+				struct msg *mm = (void *)(buf + off);
+				last_state = mm->sc.state;
+				off += sizeof(struct msg);
+			}
+			carry = total - off;
+			memmove(buf, buf + off, carry);
+		}
+		dp_flush();
+		dp_notify_flush_pending();
+		if (n <= 0 && !s->notify_pending)
+			break;
+	}
+
+	if (!hit_overflow) { printf("     never overflowed (test ineffective)\n"); bad = 1; }
+	if (!alive)        { printf("     connection dropped on overflow (G5 regression)\n"); bad = 1; }
+	if (s->notify_pending) { printf("     deferred notification never delivered\n"); bad = 1; }
+	if (last_state != ST_UP) { printf("     last delivered state %d, want UP %d\n", last_state, ST_UP); bad = 1; }
+
+	if (bad) { printf("FAIL notify-coalesce-survives-overflow\n"); fails++; }
+	else printf("ok   %-40s conn alive, final state UP\n", "notify-coalesce-survives-overflow");
+
+	rig_down();
+	sessions_clear();
+}
+
+
+/* A peer configured without a local-address makes bfdd register the
+ * offloaded session with local 0.0.0.0 (v4) or :: (v6). The engine must
+ * resolve the concrete source the kernel would use to reach the peer, so
+ * the fast path can key the session and the unknown-session drop (G3) does
+ * not strand it. A loopback peer resolves to a loopback source in any
+ * environment, so the expected result is deterministic. */
+static void case_local_resolve(void)
+{
+	unsigned char buf[256];
+	size_t n = build_add(buf, 0x5001, "0.0.0.0", "127.0.0.2");
+	struct session *s;
+	uint32_t local4 = 0;
+	int bad = 0;
+
+	if (!rig_up()) { report("local-resolve-v4", 1, "rig up"); rig_down(); return; }
+	sessions_clear();
+	feed(buf, n);
+	dp_read();
+
+	s = sess_by_lid(0x5001);
+	if (!s) {
+		printf("     no session for the lid\n");
+		bad = 1;
+	} else {
+		memcpy(&local4, &s->local.b[12], 4);
+		if (local4 == 0) {
+			printf("     local still 0.0.0.0, not resolved\n");
+			bad = 1;
+		} else if (local4 != inet_addr("127.0.0.1")) {
+			char a[32];
+			inet_ntop(AF_INET, &local4, a, sizeof(a));
+			printf("     resolved local %s, want 127.0.0.1\n", a);
+			bad = 1;
+		}
+	}
+	report("local-resolve-v4", bad, "0.0.0.0 -> 127.0.0.1");
+	rig_down();
+}
+
+static void case_local_resolve_v6(void)
+{
+	unsigned char buf[256];
+	size_t n = build_add6(buf, 0x5002, "::", "::1");
+	struct session *s;
+	int bad = 0;
+
+	if (!rig_up()) { report("local-resolve-v6", 1, "rig up"); rig_down(); return; }
+	sessions_clear();
+	feed(buf, n);
+	dp_read();
+
+	s = sess_by_lid(0x5002);
+	if (!s) {
+		printf("     no session for the lid\n");
+		bad = 1;
+	} else {
+		struct in6_addr want, got;
+		inet_pton(AF_INET6, "::1", &want);
+		memcpy(&got, s->local.b, 16);
+		if (memcmp(&got, &want, 16) != 0) {
+			char a[64];
+			inet_ntop(AF_INET6, &got, a, sizeof(a));
+			printf("     resolved local %s, want ::1\n", a);
+			bad = 1;
+		}
+	}
+	report("local-resolve-v6", bad, ":: -> ::1");
+	rig_down();
+}
+
+/* A multihop session (SESSION_MULTIHOP, ttl < 255, peer off-link) with a
+ * wildcard local must resolve too: the source is a property of the route
+ * to the peer, which connect()+getsockname reads regardless of hop count
+ * or the control port the probe socket uses. A loopback peer resolves to a
+ * loopback source in any environment, so this is deterministic. */
+static void case_local_resolve_mhop(void)
+{
+	unsigned char buf[256];
+	size_t n = build_add(buf, 0x5003, "0.0.0.0", "127.0.0.2");
+	struct bfddp_message_header *h = (void *)buf;
+	struct bfddp_session_msg *sm = (void *)(h + 1);
+	struct session *s;
+	uint32_t local4 = 0;
+	int bad = 0;
+
+	sm->flags = htonl(SESSION_MULTIHOP);
+	sm->ttl = 250;
+
+	if (!rig_up()) { report("local-resolve-mhop", 1, "rig up"); rig_down(); return; }
+	sessions_clear();
+	feed(buf, n);
+	dp_read();
+
+	s = sess_by_lid(0x5003);
+	if (!s || !s->is_mhop) {
+		printf("     no multihop session for the lid\n");
+		bad = 1;
+	} else if (!s->local_wildcard) {
+		printf("     local_wildcard not set on a wildcard ADD\n");
+		bad = 1;
+	} else {
+		memcpy(&local4, &s->local.b[12], 4);
+		if (local4 != inet_addr("127.0.0.1")) {
+			char a[32];
+			inet_ntop(AF_INET, &local4, a, sizeof(a));
+			printf("     resolved local %s, want 127.0.0.1\n", a);
+			bad = 1;
+		}
+	}
+	report("local-resolve-mhop", bad, "multihop 0.0.0.0 -> 127.0.0.1");
+	rig_down();
+}
+
 int main(void)
 {
 	if (!rig_up()) {
@@ -871,6 +1027,10 @@ int main(void)
 	case_repeated_add_during_poll();
 	case_address_move();
 	case_flags();
+	case_notify_coalesce();
+	case_local_resolve();
+	case_local_resolve_v6();
+	case_local_resolve_mhop();
 
 	/* Below the header, and above the buffer. */
 	case_bad_length(sizeof(struct bfddp_message_header) - 1,

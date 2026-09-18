@@ -363,6 +363,12 @@ int ktx_load(void)
 	if (!bpf_obj || ktx_abi_check(bpf_obj, obj) ||
 	    bpf_object__load(bpf_obj)) {
 		log_err("%s load failed\n", obj);
+		/* Opened and then refused still has to be closed. The engine
+		 * exits on this path today, so nothing leaked for long, but
+		 * ktx_load returning -1 is not by itself a promise that it
+		 * will not be called again. */
+		if (bpf_obj)
+			bpf_object__close(bpf_obj);
 		bpf_obj = NULL;
 		return -1;
 	}
@@ -382,32 +388,20 @@ int ktx_load(void)
 		}
 	}
 
-	/* The dead-man bound, written before attach for the same reason as
-	 * the sweep interval: the first packet through must not be judged
-	 * against a value we are still in the middle of setting.
+	/* Map the heartbeat cell, BEFORE the bound goes into the map.
 	 *
-	 * Failing to write it disarms the gate rather than leaving it at the
-	 * program's default of zero and pretending otherwise, so what the
-	 * engine reports is what is actually in force. */
-	if (ktx_deadman_ns) {
-		int tune_fd = bpf_object__find_map_fd_by_name(bpf_obj,
-							      "tunables");
-		__u32 k = BFD_TUNE_DEADMAN_NS;
-
-		if (tune_fd < 0 ||
-		    bpf_map_update_elem(tune_fd, &k, &ktx_deadman_ns, 0)) {
-			log_err(
-				"kernel-tx: dead-man bound NOT applied, the "
-				"fast path will answer for a wedged engine\n");
-			ktx_deadman_ns = 0;
-		}
-	}
-
-	/* Map the heartbeat cell. Must come before attach too: the first
-	 * packet can arrive the instant the program is on the interface, and
-	 * a cell nobody has written yet reads as zero, which the program
-	 * treats as healthy - so the ordering is a safety margin rather than
-	 * a correctness requirement, and the store below closes it. */
+	 * Either half failing disarms the gate, and doing them in this order
+	 * is what makes the map agree with that. Written the other way
+	 * round, a failed mmap left the bound sitting in the map with
+	 * ktx_deadman_ns zeroed and the log saying disarmed: true in effect,
+	 * but only because a heartbeat nobody ever writes reads as zero and
+	 * the program treats that as healthy. The gate was then disarmed by
+	 * a fail-open rule rather than by being switched off, which is a
+	 * thin thing to rest on and reads as a contradiction to anyone
+	 * dumping the map.
+	 *
+	 * Both still land before attach: the first packet can arrive the
+	 * instant the program is on the interface. */
 	if (ktx_deadman_ns) {
 		int hb_fd = bpf_object__find_map_fd_by_name(bpf_obj,
 							    "heartbeat");
@@ -428,6 +422,24 @@ int ktx_load(void)
 			 * and that is the one stretch where the cell being
 			 * zero and the cell being fresh look the same. */
 			ktx_heartbeat(now_us());
+		}
+	}
+
+	/* The bound itself, now that there is a heartbeat to judge against
+	 * it. Failing to write it disarms the gate rather than leaving it at
+	 * the program's default of zero and pretending otherwise, so what
+	 * the engine reports is what is actually in force. */
+	if (ktx_deadman_ns) {
+		int tune_fd = bpf_object__find_map_fd_by_name(bpf_obj,
+							      "tunables");
+		__u32 k = BFD_TUNE_DEADMAN_NS;
+
+		if (tune_fd < 0 ||
+		    bpf_map_update_elem(tune_fd, &k, &ktx_deadman_ns, 0)) {
+			log_err(
+				"kernel-tx: dead-man bound NOT applied, the "
+				"fast path will answer for a wedged engine\n");
+			ktx_deadman_ns = 0;
 		}
 	}
 
@@ -583,63 +595,10 @@ void ktx_mirror(struct session *s)
 {
 	if (!use_ktx)
 		return;
-	/* RX-clocked TX answers every accepted packet, so leaving it armed
-	 * while the peer is demanding would transmit at exactly the pace
-	 * s6.8.7 says to stop - the peer's. Disarming hands those frames to
-	 * userspace instead, which still answers a Poll with a Final and
-	 * stays silent otherwise. Polls are rare and the session is idle by
-	 * construction, so the slow path is the right place for them. */
-	struct tx_cfg c = {
-		.echo_iv_us = s->echo_tx_us,
-		.min_echo_rx_us = s->min_echo_rx_us,
-		.min_ttl   = s->min_ttl,
-		.auth_type = auth_fast_capable(s) ? s->auth_type : 0,
-		.auth_keyid = s->auth_keyid,
-		.auth_keylen = s->auth_keylen,
-		.enable    = ktx_answers(s),
-		.demand      = demand_bit_out(s),
-		.demand_hold = demand_detect_held(s),
-		.my_disc   = s->wire_disc,
-		.your_disc = s->rdisc,
-		.min_tx_us = s->min_tx_us,
-		.min_rx_us = s->min_rx_us,
-		.src_port  = (__u16)(SRC_PORT + (s - sessions)),
-		.state     = s->state,
-		.diag      = s->diag,
-		.mult      = s->detect_mult,
-		.poll      = (s->polling && s->state == ST_UP) ? 1 : 0,
-		.poll_seq  = s->poll_seq,
-	};
-	memcpy(c.auth_kpad, s->auth_kpad, sizeof(c.auth_kpad));
+	struct tx_cfg c;
+	struct session_key k;
 
-	/* Leave the program every key a packet may currently be signed
-	 * with, not just the one we transmit under. The lifetimes are
-	 * evaluated here because the program has no clock: it can compare
-	 * a key id, it cannot decide whether a period has passed. */
-	{
-		int64_t now = (int64_t)time(NULL);
-		unsigned i;
-
-		for (i = 0; i < s->auth_nkeys && c.auth_nkeys < BFD_AUTH_ACCEPT_MAX;
-		     i++) {
-			const struct auth_key *k = &s->auth_keys[i];
-
-			if (!s->auth_present || !auth_key_acceptable(k, now))
-				continue;
-
-			c.auth_accept[c.auth_nkeys].type = k->type;
-			c.auth_accept[c.auth_nkeys].key_id = k->key_id;
-			c.auth_accept[c.auth_nkeys].keylen = k->keylen;
-			memcpy(c.auth_accept[c.auth_nkeys].kpad, k->kpad,
-			       sizeof(c.auth_accept[0].kpad));
-			c.auth_nkeys++;
-		}
-	}
-
-	struct session_key k = {};
-
-	k.peer  = s->peer;
-	k.local = s->local;
+	ktx_cfg_for(s, (int64_t)time(NULL), &c, &k);
 
 	if (!ktx_push_needed(s, &c, &k))
 		return;
@@ -648,12 +607,25 @@ void ktx_mirror(struct session *s)
 	 * answer, never after. The kernel owns it from that moment - two
 	 * writers would hand the peer a sequence that goes backwards, and
 	 * a meticulous peer rejects everything after that until the
-	 * session resets. Ordering is what makes this safe rather than a
-	 * lock: enable is still 0 in the map, so nothing is transmitting
-	 * from the fast path while the value is written.
+	 * session resets. Ordering is what makes the SEQUENCE safe rather
+	 * than a lock: enable is still 0 in the map, so nothing is
+	 * transmitting from the fast path while the value is written.
 	 *
 	 * Read-modify-write because the rest of session_state is the
-	 * kernel's and must survive. */
+	 * kernel's and must survive. The ordering above does not extend to
+	 * that rest, and the honest description is a race: the observer
+	 * path runs whether or not enable is set, so between this lookup
+	 * and this update another CPU can advance rx_pkts, last_seen_ns,
+	 * alive, peer_mac, final_seq or detect_iv_us, and the write-back
+	 * puts the old values there again.
+	 *
+	 * Left as it is, deliberately. The window is two syscalls wide and
+	 * this runs once per session per seed. Reverting `alive` costs one
+	 * ring event that on_sweep_event discards; reverting final_seq
+	 * costs one Poll ack, re-acked by the peer's next F. Removing the
+	 * race means moving the three sequence fields into a map of their
+	 * own, which changes the shared ABI, and that is not a trade worth
+	 * making for this. */
 	if (c.enable && s->auth_type && !s->auth_seeded) {
 		struct session_key sk = {};
 		struct session_state ms;
@@ -744,6 +716,33 @@ void ktx_clear(struct session *s)
 	ktx_update_mhop_flag();
 }
 
+
+/* The kernel's packet counters for one session, 0 when there are none.
+ *
+ * Here rather than in dplane.c, which is the only reason that file
+ * included libbpf at all: one lookup pulled the whole library into the
+ * bfddp parser, so dp_run had to link -lbpf and then hand-stub
+ * bpf_map_lookup_elem to shadow the real symbol, dp_fuzz needed its own
+ * copy of the ktx stub group, and a contributor without libbpf-dev could
+ * run neither. Map access belongs on this side of the wall.
+ */
+void ktx_session_counters(const struct session *s, uint64_t *rx, uint64_t *tx)
+{
+	struct session_key k = {};
+	struct session_state ms;
+
+	*rx = 0;
+	*tx = 0;
+	if (!use_ktx || sess_fd < 0)
+		return;
+
+	k.peer = s->peer;
+	k.local = s->local;
+	if (!bpf_map_lookup_elem(sess_fd, &k, &ms)) {
+		*rx = ms.rx_pkts;
+		*tx = ms.tx_pkts;
+	}
+}
 
 void ktx_poll_map(struct session *s, uint64_t t)
 {

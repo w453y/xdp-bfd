@@ -1,0 +1,4 @@
+# bfd_xdp.o is an eBPF object compiled with clang -target bpf. It is
+# deliberately not the host architecture: the kernel loads it as BPF
+# bytecode, nothing executes it as a native binary.
+xdp-bfd: binary-from-other-architecture [usr/lib/xdp-bfd/bfd_xdp.o]

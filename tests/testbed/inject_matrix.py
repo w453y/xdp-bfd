@@ -319,8 +319,8 @@ MALFORMED = (
 )
 
 
-# Well-formed headers carrying a flag we cannot honour. Unlike the
-# malformed set these DROP rather than PASS: passing one hands it to a
+# Well-formed headers carrying a flag we cannot honour. These DROP, as
+# the malformed set now does too (G2): passing one hands it to a
 # userspace path that would accept it as plain unauthenticated BFD.
 # The counter differs: the M bit is a flag nothing can honour, while the
 # A bit is refused because this session has no key - a fact about the

@@ -150,6 +150,10 @@ int session_auth_evaluate(struct session *s, int64_t now)
 		s->auth_type = type;
 		s->auth_keyid = key_id;
 		s->auth_keylen = keylen;
+		/* A sendable key again, so the next gap is a new event and
+		 * gets its own line. */
+		if (type)
+			s->auth_gap_warned = 0;
 	}
 
 	s->auth_next_change = soonest;

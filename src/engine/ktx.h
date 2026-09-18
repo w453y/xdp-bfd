@@ -26,6 +26,12 @@ int ktx_attach(const char *ifname);
 int ktx_attach_if(int ifindex, const char *ifname);
 int ktx_covers(int ifindex);
 void ktx_update_mhop_flag(void);
+/* The program's view of a session, derived from it and the clock alone.
+ * Split from ktx_mirror so it can be driven without a loaded program;
+ * \see ktx_cfg.c. */
+void ktx_cfg_for(const struct session *s, int64_t now, struct tx_cfg *c,
+		 struct session_key *k);
+
 void ktx_mirror(struct session *s);
 void ktx_clear(struct session *s);
 void ktx_poll_all(void);
@@ -33,5 +39,7 @@ int ktx_events_fd(void);
 void ktx_drain_events(void);
 const char *ktx_poll_mode(void);
 void ktx_poll_map(struct session *s, uint64_t t);
+void ktx_session_counters(const struct session *s, uint64_t *rx,
+			  uint64_t *tx);
 
 #endif /* BFD_ENGINE_KTX_H */

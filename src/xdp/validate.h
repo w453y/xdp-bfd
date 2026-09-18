@@ -11,11 +11,13 @@
  * Returns an XDP verdict to bail with, or -1 to mean carry on - the same
  * sentinel idiom parse_l3 uses.
  *
- * Two dispositions, deliberately different. A MALFORMED header is counted
- * to slot 2 and PASSED to the stack: a broken header is not evidence of
- * an attack, and the stack may have a use for it. A well-formed header we
- * cannot honour is DROPPED, because PASSing it hands it to a userspace
- * path that would accept it as something it is not.
+ * Every disposition here drops. Under the threat model (HARDENING_PLAN
+ * G2) the BFD ports have no consumer on this host but our own socket, so
+ * a header the fast path will not honour has nowhere useful to go:
+ * passing it only costs a syscall and, at a flood, evicts datagrams for
+ * real sessions from the shared socket queue. A MALFORMED header is
+ * counted to slot 2 and dropped; a well-formed header we cannot honour is
+ * dropped for the same reason and counted to its own slot.
  *
  * Every check bails before any session lookup or state write.
  *
@@ -39,7 +41,7 @@ static __always_inline int bfd_hdr_verdict(const struct bfd_ctrl_pkt *bfd,
 			       bfd->len, bfd->my_disc, payload, auth_expected)) {
 	case BFD_CTRL_MALFORMED:
 		count(BFD_STAT_MALFORMED);
-		return XDP_PASS;
+		return XDP_DROP;
 	case BFD_CTRL_UNSUPPORTED:
 		/* RFC 5880 s6.8.6: the M bit is discarded, multipoint being
 		 * a different protocol. */

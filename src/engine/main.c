@@ -8,6 +8,8 @@
  *
  * Modes:
  *   ./bfd_tx <local-ip> <peer-ip> [--kernel-tx <if>]    static session
+ *     --auth <type>:<keyid>:<key>   authenticate that static session
+ *                                   (simple, keyed-sha1, meticulous-sha1)
  *   ./bfd_tx --dplane <port|sock-path> [--kernel-tx <if>]  bfdd-driven
  */
 #define _GNU_SOURCE
@@ -25,6 +27,7 @@
 #include <sys/stat.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/utsname.h>
 #include <sys/un.h>
 #include <netinet/in.h>
 #include <net/if.h>
@@ -40,6 +43,7 @@
 #include <pwd.h>
 
 #include "dplane.h"
+#include "rx.h"
 #include "ktx.h"
 #include "fsm.h"
 #include "stats.h"
@@ -66,59 +70,6 @@ static int tick_fd = -1;
 
 
 
-/* The half of acceptance that needs the session.
- *
- * bfd_ctrl_check settles everything a packet can be judged on alone, but
- * whether the A bit belongs there is a property of the session, and the
- * session is not known until the demux has run. So the rule from RFC
- * 5880 s6.8.6 is enforced here instead: an authenticated packet on a
- * session with no key is discarded, and so is a bare packet on a session
- * that has one. The second is the one an attacker would reach for.
- *
- * `len` is the packet's own length field, already checked against what
- * actually arrived, because that is the span the digest covers.
- */
-static int rx_auth_ok(struct session *s, const __u8 *buf, __u8 len)
-{
-	const struct bfd_ctrl_pkt *h = (const struct bfd_ctrl_pkt *)buf;
-	const struct auth_key *k;
-	int v;
-
-	/* Whether the session authenticates is a property of the session,
-	 * not of whichever key happens to be usable now: a session with no
-	 * key it may currently send under still expects authenticated
-	 * packets, and must not silently accept bare ones. */
-	if (!!(h->flags & BFD_F_AUTH) != !!s->auth_present)
-		return 0;
-	if (!s->auth_present)
-		return 1;
-
-	if (len < BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR)
-		return 0;
-
-	/* The peer names the key it signed with, and any key still inside
-	 * its accept period is a valid answer. Comparing against the key we
-	 * transmit under instead would refuse the peer for the whole of a
-	 * rollover, which is the breakage the accept period exists to
-	 * prevent. */
-	k = session_auth_key_for(s, buf[BFD_MIN_LEN + 2], (int64_t)time(NULL));
-	if (!k) {
-		log_debug("lid=%u no key %u is currently accepted\n", s->lid,
-			  buf[BFD_MIN_LEN + 2]);
-		return 0;
-	}
-
-	v = bfd_auth_check(buf, len, k->type, k->key_id,
-			   k->kpad, k->keylen, k->kpad,
-			   &s->auth_rx_seq, &s->auth_rx_seen,
-			   h->detect_mult);
-	if (v != BFD_AUTH_OK) {
-		log_debug("lid=%u authentication rejected a packet (%d)\n",
-			  s->lid, v);
-		return 0;
-	}
-	return 1;
-}
 
 /* ---------- main ---------- */
 /* Main loop tick in microseconds: the interval of the timerfd the
@@ -140,6 +91,8 @@ uint64_t loop_passes;
  * whose detection is held and which therefore has to verify its own path -
  * reachable only from a full FRR testbed. */
 static int static_demand;
+const char *static_auth = NULL;
+static int check_only;
 uint64_t loop_rx_wakeups;
 
 /* Inter-pass gap histogram, log2 buckets in microseconds. The ten-second
@@ -199,6 +152,80 @@ static void shutdown_on_signal(int sig)
 	shutdown_wanted = 1;
 }
 
+#ifndef BFD_XDP_VERSION
+#define BFD_XDP_VERSION "0.0.0-dev"
+#endif
+
+/* --auth <type>:<keyid>:<key> for static mode.
+ *
+ * bfdd cannot offload an authenticated session to a data plane it did not
+ * write, so the only way to exercise one end to end - the transmit
+ * sequence, the accept set, and the kernel handover of the replay window -
+ * is two static engines facing each other. The key has no lifetimes,
+ * which is how a key chain configured without them is spelled: zero means
+ * always.
+ */
+static int static_auth_apply(struct session *s, const char *spec)
+{
+	const char *c1 = strchr(spec, ':');
+	const char *c2 = c1 ? strchr(c1 + 1, ':') : NULL;
+	struct auth_key *k = &s->auth_keys[0];
+	char type[24];
+	unsigned long keyid;
+	size_t tlen, klen;
+
+	if (!c1 || !c2 || c1 == spec) {
+		log_err("--auth wants <type>:<keyid>:<key>\n");
+		return -1;
+	}
+	tlen = (size_t)(c1 - spec);
+	if (tlen >= sizeof(type)) {
+		log_err("--auth: unknown type\n");
+		return -1;
+	}
+	memcpy(type, spec, tlen);
+	type[tlen] = 0;
+
+	memset(s->auth_keys, 0, sizeof(s->auth_keys));
+	if (!strcmp(type, "simple"))
+		k->type = BFD_AUTH_SIMPLE;
+	else if (!strcmp(type, "keyed-sha1"))
+		k->type = BFD_AUTH_KEYED_SHA1;
+	else if (!strcmp(type, "meticulous-sha1"))
+		k->type = BFD_AUTH_METICULOUS_SHA1;
+	else {
+		log_err("--auth: type must be simple, keyed-sha1 or meticulous-sha1\n");
+		return -1;
+	}
+
+	keyid = strtoul(c1 + 1, NULL, 0);
+	if (keyid > 255) {
+		log_err("--auth: key id %lu is out of range\n", keyid);
+		return -1;
+	}
+	klen = strlen(c2 + 1);
+	if (!klen || klen > sizeof(k->kpad) ||
+	    (k->type == BFD_AUTH_SIMPLE && klen > BFD_AUTH_SIMPLE_MAXKEY)) {
+		log_err("--auth: key length %zu is unusable for this type\n", klen);
+		return -1;
+	}
+
+	k->key_id = (uint8_t)keyid;
+	k->keylen = (uint8_t)klen;
+	memcpy(k->kpad, c2 + 1, klen);
+
+	s->auth_present = 1;
+	s->auth_nkeys = 1;
+	/* Picks the send key and fills auth_type, auth_keyid and the pads,
+	 * the same call the dplane path makes when keys arrive. */
+	session_auth_evaluate(s, (int64_t)time(NULL));
+	if (!s->auth_type) {
+		log_err("--auth: no key is sendable, nothing would go out\n");
+		return -1;
+	}
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);
@@ -208,7 +235,11 @@ int main(int argc, char **argv)
 	const char *static_local = NULL, *static_peer = NULL;
 
 	for (int i = 1; i < argc; i++) {
-		if (!strcmp(argv[i], "--dplane") && i + 1 < argc)
+		if (!strcmp(argv[i], "--version")) {
+			printf("xdp-bfd %s\n", BFD_XDP_VERSION);
+			return 0;
+		}
+		else if (!strcmp(argv[i], "--dplane") && i + 1 < argc)
 			dplane_path = argv[++i];
 		else if (!strcmp(argv[i], "--kernel-tx") && i + 1 < argc)
 			ktx_if = argv[++i];
@@ -255,8 +286,12 @@ int main(int argc, char **argv)
 			}
 			ktx_deadman_ns = v * 1000ull;
 		}
+		else if (!strcmp(argv[i], "--auth") && i + 1 < argc)
+			static_auth = argv[++i];
 		else if (!strcmp(argv[i], "--demand"))
 			static_demand = 1;
+		else if (!strcmp(argv[i], "--check"))
+			check_only = 1;
 		else if (!strcmp(argv[i], "--demand-poll-us") && i + 1 < argc) {
 			const char *a = argv[++i];
 			char *end;
@@ -364,11 +399,48 @@ int main(int argc, char **argv)
 				dp_set_peer_uid((uid_t)v);
 			}
 		}
+		/* Before the positional arguments, or a mistyped option lands
+		 * in one of them. `--dead-man-us 50000` reported "static: bad
+		 * IPv4 address", and an option whose value was left off was
+		 * dropped without a word, so the engine started on the
+		 * default having been told otherwise. Both are configuration
+		 * silently not taking effect, which is the failure this whole
+		 * program exists to avoid elsewhere. */
+		else if (argv[i][0] == '-') {
+			log_err("unrecognised option '%s', or an option"
+				" missing its value\n", argv[i]);
+			return 1;
+		}
 		else if (!static_local)
 			static_local = argv[i];
 		else if (!static_peer)
 			static_peer = argv[i];
+		else {
+			log_err("unexpected argument '%s'\n", argv[i]);
+			return 1;
+		}
 	}
+	/* --check: the matrix probe. Open the object, run the ABI check, and
+	 * hand it to the verifier by loading it, then report and exit without
+	 * attaching to anything or opening a socket. ktx_load does exactly
+	 * that and logs the specific failure (ABI size mismatch, or the
+	 * verifier's own line) on the way; this reports the verdict and the
+	 * kernel it was reached on, which is what a package's postinst or a
+	 * support-matrix arm wants to know. */
+	if (check_only) {
+		struct utsname un;
+		int rc = ktx_load();
+
+		uname(&un);
+		if (rc == 0)
+			printf("xdp-bfd %s: bfd_xdp.o loads and is ABI-matched on %s %s\n",
+			       BFD_XDP_VERSION, un.sysname, un.release);
+		else
+			printf("xdp-bfd %s: object did NOT load on %s %s (see above)\n",
+			       BFD_XDP_VERSION, un.sysname, un.release);
+		return rc ? 1 : 0;
+	}
+
 	/* One address without the other: the guard below only demands a
 	 * pair when --dplane is absent, so `--dplane <p> <one-address>`
 	 * would otherwise reach the static setup with a NULL peer. */
@@ -599,6 +671,8 @@ int main(int argc, char **argv)
 		s->demand      = static_demand;
 		s->pushed_valid = 0;
 		s->next_tx_us  = now_us();
+		if (static_auth && static_auth_apply(s, static_auth))
+			return 1;
 		log_info("bfd_tx: static session lid=%u %s -> %s%s\n",
 		       s->lid, static_local, static_peer,
 		       use_ktx ? " (kernel-tx)" : "");
@@ -610,6 +684,10 @@ int main(int argc, char **argv)
 		/* Anything that did not fit the socket last pass. Cheap when
 		 * the queue is empty, which is the normal case. */
 		dp_flush();
+
+		/* Room the flush just freed goes to sessions whose state
+		 * change was deferred rather than dropped (G5). */
+		dp_notify_flush_pending();
 
 		if (shutdown_wanted) {
 			/* Tell every peer before going, rather than leaving
@@ -794,31 +872,14 @@ int main(int argc, char **argv)
 					       sizeof(rttl));
 			}
 
-			if (rttl != 255 ||
-			    bfd_ctrl_check(p.vers_diag, p.flags, p.detect_mult,
-					   p.len, p.my_disc, (__u32)n,
-					   !!(p.flags & BFD_F_AUTH)) !=
-				    BFD_CTRL_ACCEPT)
-				continue;
+			struct bfd_addr fp, fl;
+			enum rx_verdict why;
+			struct session *rs;
 
-			/* Demux (RFC 5880 s6.8.6), the same rule XDP applies:
-			 * your_disc must name our session, or be zero with the
-			 * peer in Down or AdminDown - it has lost state, or is
-			 * starting. Falling back to the address pair on any
-			 * miss accepted packets naming a discriminator we
-			 * never issued, which is the divergence
-			 * tests/netns_userspace.py found. */
-			uint32_t ydisc = ntohl(p.your_disc);
-			struct session *rs = sess_by_wire(ydisc);
-
-			if (!rs && ydisc == 0 && BFD_STATE(&p) <= ST_DOWN) {
-				struct bfd_addr fp, fl;
-
-				key_set_v4(&fp, from.sin_addr.s_addr);
-				key_set_v4(&fl, dst_ip);
-				rs = sess_by_addr(&fp, &fl);
-			}
-			if (rs && rx_auth_ok(rs, p_buf, p.len))
+			key_set_v4(&fp, from.sin_addr.s_addr);
+			key_set_v4(&fl, dst_ip);
+			rs = rx_accept(p_buf, (size_t)n, rttl, &fp, &fl, 0, &why);
+			if (rs)
 				fsm_rx(rs, &p, t);
 		}
 
@@ -846,11 +907,6 @@ int main(int argc, char **argv)
 		
 			if (nm < 0)
 				break;
-			if (bfd_ctrl_check(pm.vers_diag, pm.flags,
-					   pm.detect_mult, pm.len, pm.my_disc,
-					   (__u32)nm,
-					   !!(pm.flags & BFD_F_AUTH)) != BFD_CTRL_ACCEPT)
-				continue;
 		
 			uint32_t mdst = 0;
 			int mttl = -1;
@@ -865,26 +921,18 @@ int main(int argc, char **argv)
 					memcpy(&mttl, CMSG_DATA(c), sizeof(mttl));
 			}
 		
-			/* Same demux rule as the single-hop path above. */
-			uint32_t mydisc = ntohl(pm.your_disc);
-			struct session *ms = sess_by_wire(mydisc);
+			struct bfd_addr mp, ml;
+			enum rx_verdict mwhy;
+			struct session *ms;
 
-			if (!ms && mydisc == 0 && BFD_STATE(&pm) <= ST_DOWN) {
-				struct bfd_addr mp, ml;
-
-				key_set_v4(&mp, fromm.sin_addr.s_addr);
-				key_set_v4(&ml, mdst);
-				ms = sess_by_addr(&mp, &ml);
-			}
-			/* GTSM against this session's own minimum, the same rule
-			 * the kernel applies against cfg->min_ttl. Enforced after
-			 * demux because that is when the minimum is known. A
-			 * missing cmsg (mttl < 0) means the setsockopt did not
-			 * take, so drop rather than silently accept anything. */
-			if (ms && (mttl < 0 || mttl < (int)ms->min_ttl))
-				continue;
-			if (ms && rx_auth_ok(ms, pm_buf, pm.len))
-				fsm_rx(ms, &pm, now_us());
+			key_set_v4(&mp, fromm.sin_addr.s_addr);
+			key_set_v4(&ml, mdst);
+			ms = rx_accept(pm_buf, (size_t)nm, mttl, &mp, &ml, 1, &mwhy);
+			/* `t`, like the other three drains: packets taken in one
+			 * pass are stamped together rather than a few microseconds
+			 * apart for no reason. */
+			if (ms)
+				fsm_rx(ms, &pm, t);
 		}
 
 		/* rx6_sock >= 0 is redundant with rd6, which is only set from a
@@ -910,11 +958,6 @@ int main(int argc, char **argv)
 			memcpy(&p6, p6_buf, sizeof(p6));
 			if (n6 < 0)
 				break;
-			if (bfd_ctrl_check(p6.vers_diag, p6.flags,
-					   p6.detect_mult, p6.len, p6.my_disc,
-					   (__u32)n6,
-					   !!(p6.flags & BFD_F_AUTH)) != BFD_CTRL_ACCEPT)
-				continue;
 			struct bfd_addr fp6 = {0}, fl6 = {0};
 			int rhl6 = -1;
 
@@ -930,16 +973,11 @@ int main(int argc, char **argv)
 					       &((struct in6_pktinfo *)
 						CMSG_DATA(c))->ipi6_addr, 16);
 			}
-			/* Single-hop: exactly 255, same rule as v4 above. */
-			if (rhl6 != 255)
-				continue;
-			/* Same demux rule as the v4 single-hop path above. */
-			uint32_t ydisc6 = ntohl(p6.your_disc);
-			struct session *rs6 = sess_by_wire(ydisc6);
+			enum rx_verdict why6;
+			struct session *rs6 = rx_accept(p6_buf, (size_t)n6, rhl6,
+							       &fp6, &fl6, 0, &why6);
 
-			if (!rs6 && ydisc6 == 0 && BFD_STATE(&p6) <= ST_DOWN)
-				rs6 = sess_by_addr(&fp6, &fl6);
-			if (rs6 && rx_auth_ok(rs6, p6_buf, p6.len))
+			if (rs6)
 				fsm_rx(rs6, &p6, t);
 		}
 
@@ -964,11 +1002,6 @@ int main(int argc, char **argv)
 		
 			if (nm6 < 0)
 				break;
-			if (bfd_ctrl_check(pm6.vers_diag, pm6.flags,
-					   pm6.detect_mult, pm6.len, pm6.my_disc,
-					   (__u32)nm6,
-					   !!(pm6.flags & BFD_F_AUTH)) != BFD_CTRL_ACCEPT)
-				continue;
 		
 			struct bfd_addr mp6 = {0}, ml6 = {0};
 			memcpy(mp6.b, &fromm6.sin6_addr, 16);
@@ -985,16 +1018,11 @@ int main(int argc, char **argv)
 						CMSG_DATA(c))->ipi6_addr, 16);
 			}
 		
-			/* Same demux rule as the v4 single-hop path above. */
-			uint32_t mydisc6 = ntohl(pm6.your_disc);
-			struct session *ms6 = sess_by_wire(mydisc6);
+			enum rx_verdict mwhy6;
+			struct session *ms6 = rx_accept(pm6_buf, (size_t)nm6, mhl6,
+							       &mp6, &ml6, 1, &mwhy6);
 
-			if (!ms6 && mydisc6 == 0 && BFD_STATE(&pm6) <= ST_DOWN)
-				ms6 = sess_by_addr(&mp6, &ml6);
-			/* Same per-session GTSM as the v4 multihop path. */
-			if (ms6 && (mhl6 < 0 || mhl6 < (int)ms6->min_ttl))
-				continue;
-			if (ms6 && rx_auth_ok(ms6, pm6_buf, pm6.len))
+			if (ms6)
 				fsm_rx(ms6, &pm6, t);
 		}
 
@@ -1023,10 +1051,39 @@ int main(int argc, char **argv)
 				sess_teardown_one(cs, "hold expired");
 				continue;
 			}
+			/* An authenticated session whose keys never arrived.
+			 * bfdd set SESSION_AUTH on the ADD but sent no
+			 * DP_SESSION_AUTH, which is what a bfdd predating the
+			 * key extension does. Distinct from a key-chain
+			 * rollover gap (auth_nkeys > 0, none sendable now),
+			 * which tx_one already reports and which self-heals:
+			 * this is permanent, the session never comes up, and
+			 * the remedy is the opposite, act rather than wait.
+			 * auth_nkeys == 0 is the discriminator. A deadline,
+			 * not an ADD check, so the normal two-message
+			 * handshake (keys arrive within the same burst) does
+			 * not false-positive. */
+			if (cs->auth_present && cs->auth_nkeys == 0) {
+				if (!cs->auth_keys_deadline_us)
+					cs->auth_keys_deadline_us = t + 1000000;
+				else if (!cs->auth_nokeys_warned &&
+					 t >= cs->auth_keys_deadline_us) {
+					log_err("lid=%u: bfdd offloaded an authenticated session but sent no keys within 1s; this bfdd predates the DP_SESSION_AUTH key extension. Upgrade bfdd or keep authenticated sessions off the data plane.\n",
+						cs->lid);
+					cs->auth_nokeys_warned = 1;
+				}
+			} else {
+				/* keys arrived, or authentication withdrawn:
+				 * disarm, and re-arm for a future recurrence. */
+				cs->auth_keys_deadline_us = 0;
+				cs->auth_nokeys_warned = 0;
+			}
+
 			ktx_poll_map(cs, t);
 			fsm_detect(cs, t);
 			fsm_tx(cs, t);
 			echo_tx_maybe(cs, t);
+			dp_reresolve_wildcard(cs, t);
 			ktx_mirror(cs);
 		}
 	}

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Host suites: abi-check + hmac + fsm + dp. No root, no BPF kernel.
+set -e
+CLANG="$(command -v clang-21 || command -v clang-20 || command -v clang)"
+make check-host CLANG="$CLANG"

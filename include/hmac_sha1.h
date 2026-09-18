@@ -228,14 +228,28 @@ static inline int sha1_short(const __u8 *msg, __u32 len, __u8 out[SHA1_DIGEST_LE
  */
 SHA1_CORE int hmac_sha1_blocks(const __u8 kpad[SHA1_BLOCK_LEN],
 			       __u8 msgblk[SHA1_BLOCK_LEN], __u32 msglen,
-			       __u8 out[SHA1_DIGEST_LEN])
+			       __u8 out[SHA1_DIGEST_LEN],
+			       __u8 tmp[SHA1_BLOCK_LEN])
 {
-	/* One block buffer, not two. The BPF verifier charges the whole
-	 * call chain against a single 512-byte budget, so every frame this
-	 * sits under is paying for it. The key pad is dead the moment it
+	/* One block buffer, not two, and the caller's rather than ours.
+	 *
+	 * The BPF verifier charges a whole call chain against a single
+	 * 512-byte budget, and this sits under the packet path, so the
+	 * sixty-four bytes were the largest thing in the chain that did not
+	 * have to be on the stack. On the fast path `tmp` is a region of
+	 * the per-CPU scratch map, which costs no stack at all; a host
+	 * caller passes a local and pays what it used to.
+	 *
+	 * It measured: the chain came to 544 bytes under a 6.1 verifier's
+	 * accounting, against a 512 budget, and this is what brought it
+	 * under. A newer verifier accounted the same chain differently and
+	 * accepted it, which is the argument for the margin rather than
+	 * against it.
+	 *
+	 * Caller-owned, clobbered, and must alias neither the key, the
+	 * message block nor the output. The key pad is dead the moment it
 	 * has been compressed, which is before the buffer is needed again
-	 * for the inner digest. */
-	__u8 buf[SHA1_BLOCK_LEN];
+	 * for the inner digest, so one region serves both. */
 	__u32 h[5];
 	int i;
 
@@ -248,21 +262,21 @@ SHA1_CORE int hmac_sha1_blocks(const __u8 kpad[SHA1_BLOCK_LEN],
 	 * having. `out` must not alias the key or the message block, which
 	 * no caller has reason to do. */
 	for (i = 0; i < SHA1_BLOCK_LEN; i++)
-		buf[i] = 0x36 ^ kpad[i];
+		tmp[i] = 0x36 ^ kpad[i];
 	sha1_init(h);
-	if (!sha1_compress(h, buf) ||
+	if (!sha1_compress(h, tmp) ||
 	    !sha1_finish(h, msgblk, msglen, SHA1_BLOCK_LEN, out))
 		return 0;
 
 	for (i = 0; i < SHA1_BLOCK_LEN; i++)
-		buf[i] = 0x5c ^ kpad[i];
+		tmp[i] = 0x5c ^ kpad[i];
 	sha1_init(h);
-	if (!sha1_compress(h, buf))
+	if (!sha1_compress(h, tmp))
 		return 0;
 
 	for (i = 0; i < SHA1_BLOCK_LEN; i++)
-		buf[i] = (i < SHA1_DIGEST_LEN) ? out[i] : 0;
-	if (!sha1_finish(h, buf, SHA1_DIGEST_LEN, SHA1_BLOCK_LEN, out))
+		tmp[i] = (i < SHA1_DIGEST_LEN) ? out[i] : 0;
+	if (!sha1_finish(h, tmp, SHA1_DIGEST_LEN, SHA1_BLOCK_LEN, out))
 		return 0;
 	return 1;
 }
@@ -286,7 +300,11 @@ static inline int hmac_sha1(const __u8 *key, __u32 keylen, const __u8 *msg,
 		kpad[i] = key[i];
 	for (i = 0; i < msglen; i++)
 		mblk[i] = msg[i];
-	return hmac_sha1_blocks(kpad, mblk, msglen, out);
+	{
+		__u8 tmp[SHA1_BLOCK_LEN];
+
+		return hmac_sha1_blocks(kpad, mblk, msglen, out, tmp);
+	}
 }
 
 #endif /* BFD_HMAC_SHA1_H */

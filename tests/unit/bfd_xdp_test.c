@@ -91,6 +91,7 @@ struct hmac_scratch {
 	__u8  out[SHA1_DIGEST_LEN];
 	__u32 msglen;
 	__u32 ok;
+	__u8 tmp[SHA1_BLOCK_LEN];   /* hmac_sha1_blocks' working block */
 };
 
 struct {
@@ -108,7 +109,7 @@ int hmac_once(struct xdp_md *ctx)
 
 	if (!s)
 		return XDP_ABORTED;
-	s->ok = hmac_sha1_blocks(s->kpad, s->mblk, s->msglen, s->out);
+	s->ok = hmac_sha1_blocks(s->kpad, s->mblk, s->msglen, s->out, s->tmp);
 	return XDP_PASS;
 }
 

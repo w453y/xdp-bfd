@@ -44,9 +44,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: corpus
-          key: dp_fuzz-corpus-${{ hashFiles('tests/unit/dp_fuzz.c', 'src/engine/dplane.c') }}-${{ github.run_id }}
+          key: dp_fuzz-corpus-${{ hashFiles('tests/unit/dp_fuzz.c', 'src/engine/*.c') }}-${{ github.run_id }}
           restore-keys: |
-            dp_fuzz-corpus-${{ hashFiles('tests/unit/dp_fuzz.c', 'src/engine/dplane.c') }}-
+            dp_fuzz-corpus-${{ hashFiles('tests/unit/dp_fuzz.c', 'src/engine/*.c') }}-
 
       # -max_total_time rather than -runs: the budget is wall clock, and
       # runs/second varies with the runner.
@@ -69,4 +69,44 @@ jobs:
             leak-*
             timeout-*
             corpus/
+          if-no-files-found: ignore
+
+  xdp_fuzz:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build
+        run: make FUZZ_CC=clang-21 tests/unit/xdp_fuzz
+
+      # Known findings first: a reproduction means a fix regressed.
+      - name: regressions
+        run: sudo find tests/unit/fuzz-regress/xdp_fuzz -type f ! -name '*.md' -exec ./tests/unit/xdp_fuzz {} +
+
+      - name: restore corpus
+        uses: actions/cache@v4
+        with:
+          path: xcorpus
+          key: xdp_fuzz-corpus-${{ hashFiles('tests/unit/xdp_fuzz.c', 'src/xdp/*') }}-${{ github.run_id }}
+          restore-keys: |
+            xdp_fuzz-corpus-${{ hashFiles('tests/unit/xdp_fuzz.c', 'src/xdp/*') }}-
+
+      - name: search
+        run: |
+          mkdir -p xcorpus
+          sudo ./tests/unit/xdp_fuzz \
+            -max_total_time=$(( ${{ github.event.inputs.minutes || 20 }} * 60 )) \
+            -print_final_stats=1 xcorpus/
+
+      - name: keep any finding
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xdp_fuzz-findings
+          path: |
+            crash-*
+            leak-*
+            timeout-*
+            xcorpus/
           if-no-files-found: ignore

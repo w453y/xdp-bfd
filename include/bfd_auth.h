@@ -40,8 +40,10 @@ static inline int bfd_auth_sha1(const __u8 *pkt,
 	for (i = 0; i < SHA1_DIGEST_LEN; i++)
 		blk[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF + i] = 0;
 
+	__u8 tmp[SHA1_BLOCK_LEN];
+
 	return hmac_sha1_blocks(kpad, blk, BFD_MIN_LEN + BFD_AUTH_SHA1_LEN,
-				out);
+				out, tmp);
 }
 
 /* How long a packet of this type is. 0 for a type we do not produce. */

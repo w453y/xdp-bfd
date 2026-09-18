@@ -69,7 +69,7 @@ int bfd_observer(struct xdp_md *ctx)
 	struct bfd_ctrl_pkt *bfd = (void *)(udp + 1);
 	if ((void *)(bfd + 1) > data_end) {
 		count(BFD_STAT_MALFORMED);
-		return XDP_PASS;
+		return XDP_DROP;
 	}
 	/* The envelope has to describe the frame that arrived.
 	 *
@@ -81,9 +81,10 @@ int bfd_observer(struct xdp_md *ctx)
 	 * refreshed liveness and could acknowledge a Poll on a packet that
 	 * is not what it says it is.
 	 *
-	 * MALFORMED and PASS, like a broken BFD header: a length that does
-	 * not match the frame is not evidence of an attack, and the stack
-	 * applies the same rule and will reject it too.
+	 * MALFORMED, and dropped (HARDENING_PLAN G2): the BFD ports have no
+	 * consumer here but our own socket, so a frame whose envelope lies
+	 * about its length has nowhere useful to go, and passing it only
+	 * costs a syscall and, at a flood, evicts real datagrams.
 	 */
 	{
 		__u32 have = (__u32)((long)data_end - (long)udp);
@@ -91,7 +92,7 @@ int bfd_observer(struct xdp_md *ctx)
 
 		if (ulen < sizeof(*udp) || (__u32)ulen > have) {
 			count(BFD_STAT_MALFORMED);
-			return XDP_PASS;
+			return XDP_DROP;
 		}
 		if (iph) {
 			__u32 ihave = (__u32)((long)data_end - (long)iph);
@@ -100,7 +101,7 @@ int bfd_observer(struct xdp_md *ctx)
 			if (tot < sizeof(*iph) + sizeof(*udp) ||
 			    (__u32)tot > ihave) {
 				count(BFD_STAT_MALFORMED);
-				return XDP_PASS;
+				return XDP_DROP;
 			}
 		} else if (ip6) {
 			__u32 phave = (__u32)((long)data_end - (long)(ip6 + 1));
@@ -108,7 +109,7 @@ int bfd_observer(struct xdp_md *ctx)
 
 			if (plen < sizeof(*udp) || (__u32)plen > phave) {
 				count(BFD_STAT_MALFORMED);
-				return XDP_PASS;
+				return XDP_DROP;
 			}
 		}
 	}
@@ -124,7 +125,7 @@ int bfd_observer(struct xdp_md *ctx)
 	 * nothing in the BFD header is trusted to do it. */
 	struct tx_cfg *cfg = bpf_map_lookup_elem(&tx_config, &c.key);
 
-	int hv = bfd_hdr_verdict(bfd, udp, cfg ? cfg->auth_type : 0);
+	int hv = bfd_hdr_verdict(bfd, udp, cfg ? cfg->auth_present : 0);
 	if (hv >= 0)
 		return hv;
 
@@ -154,8 +155,19 @@ int bfd_observer(struct xdp_md *ctx)
 	if (!cfg) {
 		__u32 zero = 0;
 		__u32 *fl = bpf_map_lookup_elem(&prog_flags, &zero);
-		if (!fl || !(*fl & 1))
-			return XDP_PASS;
+		/* G3: a well-formed control packet for an address pair with no
+		 * tx_config is unwanted. bfdd ADDs a session before any packet
+		 * for it is useful, and our socket is the only consumer of the
+		 * BFD ports on this host, so passing it to the stack is the
+		 * widest path from the wire to recvmsg: a forger filling that
+		 * shared socket queue evicts packets for sessions still coming
+		 * up (measured, mesh 64->61 under such a flood). Drop it. The
+		 * promiscuous flag keeps XDP_PASS for bfd_loader, a debugging
+		 * tool that must never run on a production interface. */
+		if (!fl || !(*fl & 1)) {
+			count(BFD_STAT_UNKNOWN_SESSION);
+			return XDP_DROP;
+		}
 	}
 
 	/* Demux validation (RFC 5880 s6.8.6): your_disc must name our
@@ -192,13 +204,52 @@ int bfd_observer(struct xdp_md *ctx)
 	 * packet having arrived. */
 	struct auth_scratch *asc = NULL;
 
-	if (cfg && cfg->auth_type) {
+	/* auth_present, not auth_type. Verification does not need a key we
+	 * may send under: xdp_auth_verify reads the type and key id the
+	 * PACKET names and matches them against auth_accept, which is the
+	 * set the engine left for exactly this. Gating on the send key meant
+	 * that a session in a rollover gap, with nothing to transmit under
+	 * and a perfectly good accept set, skipped verification entirely and
+	 * took the packet on trust. */
+	if (cfg && cfg->auth_present) {
 		__u32 azero = 0;
+		__u64 anow = bpf_ktime_get_ns();
+		__u64 awin = (__u64)(st->detect_iv_us ? st->detect_iv_us
+						      : cfg->min_rx_us) * 1000;
+
+		/* G4: bound the HMAC a forger can force. The digest runs after
+		 * the replay window, so a forger must supply an in-window
+		 * sequence - visible on the wire - and each one then costs a
+		 * full HMAC-SHA1 in softirq, per packet, per CPU. Count the
+		 * digest failures in a detect interval; once BFD_AUTH_FAIL_MAX
+		 * of them land, drop further A-bit packets for this session
+		 * BEFORE the copy and digest until the interval turns over. A
+		 * key rollover produces at most a handful, so the ceiling does
+		 * not catch a legitimate cause.
+		 *
+		 * The trade is stated plainly: under a sustained in-window
+		 * forgery flood this also drops the peer's real packets once
+		 * the bucket is spent, so that one session can go down. That is
+		 * the honest outcome of an on-link attack on a single session,
+		 * and it bounds the CPU either way; the other 63 are untouched
+		 * because the bucket is per-session. */
+		if (anow - st->auth_fail_ts > awin) {
+			st->auth_fail_ts = anow;
+			st->auth_fail_n = 0;
+		}
+		if (st->auth_fail_n >= BFD_AUTH_FAIL_MAX) {
+			count(BFD_STAT_AUTH_RATELIMITED);
+			return XDP_DROP;
+		}
 
 		asc = bpf_map_lookup_elem(&auth_scratch, &azero);
-		if (!asc || !xdp_auth_fast(cfg) ||
+		/* The capability check belongs to the send key, because it
+		 * decides what we could BUILD. With no send key there is
+		 * nothing to build and the accept set still verifies. */
+		if (!asc || (cfg->auth_type && !xdp_auth_fast(cfg)) ||
 		    !xdp_auth_verify(ctx, iph ? BFD_OFF_V4 : BFD_OFF_V6,
 				     bfd, cfg, st, asc)) {
+			st->auth_fail_n++;
 			count(BFD_STAT_AUTH_BAD);
 			return XDP_DROP;
 		}
@@ -227,6 +278,13 @@ int bfd_observer(struct xdp_md *ctx)
 			st->detect_iv_us = cand;
 	}
 
+	/* Not atomic, and that rests on RSS: a 5-tuple hashes to one queue,
+	 * so one session's packets are handled by one CPU and these are
+	 * uncontended. Break that assumption - generic XDP with RPS
+	 * spreading a flow across CPUs - and two packets can pass the
+	 * replay check against the same window, or take the same
+	 * auth_tx_seq. One packet of replay tolerance, not a lost session,
+	 * but the assumption is worth stating where it is relied on. */
 	st->last_seen_ns = now;
 	st->rx_pkts++;
 	__builtin_memcpy(st->peer_mac, eth->h_source, 6);
@@ -245,6 +303,14 @@ int bfd_observer(struct xdp_md *ctx)
 	 * F. tx_cfg is userspace-owned, so ack via kernel-owned
 	 * final_seq instead of clearing cfg->poll in place (a racing
 	 * userspace mirror push could resurrect the finished poll). */
+	/* Whatever Poll is current, not the one this F answers: the packet
+	 * carries no sequence, so a Final that was in flight when a second
+	 * Poll began terminates the second one. It takes two Polls inside
+	 * one round trip to reach, which needs a parameter change landing
+	 * immediately after a demand verification poll, and the cost is one
+	 * poll ending early rather than a wrong value being applied. Noted
+	 * rather than fixed, because fixing it means a sequence on the wire
+	 * that RFC 5880 does not have. */
 	if (cfg && cfg->poll && (bfd->flags & BFD_F_FINAL))
 		st->final_seq = cfg->poll_seq;
 
@@ -255,7 +321,14 @@ int bfd_observer(struct xdp_md *ctx)
 	 * and bounce it. Peer's clock becomes our clock; runs in softirq.
 	 * Never echo Up at a peer that just said Down/AdminDown; let
 	 * userspace run the transition. */
-	if (cfg && cfg->enable && rstate >= 2) {
+	/* An authenticated session with no key to sign with cannot be
+	 * answered from here: the reply is built from auth_type, so it would
+	 * go out bare on a session whose peer must reject it. Userspace
+	 * declines to send in the same state (auth_fast_capable), and this
+	 * is the program's half of that agreement rather than a trust in
+	 * the mirror having set enable correctly. */
+	if (cfg && cfg->enable && rstate >= 2 &&
+	    !(cfg->auth_present && !xdp_auth_fast(cfg))) {
 	        /* Unless the engine has stopped saying it is there.
 	         *
 	         * Answering from softirq is what makes detection independent

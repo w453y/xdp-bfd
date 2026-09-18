@@ -122,7 +122,7 @@ struct {
 
 struct sweep {
 	struct bpf_timer timer;
-	__u32 inited;
+	__u64 inited;   /* 64-bit for the CAS: see alive in bfd_shared.h */
 	/* Negative errno from whichever arming call failed, so the value
 	 * says WHICH one rather than only that something did. Zero on a
 	 * healthy sweeper. */
@@ -153,6 +153,13 @@ struct auth_scratch {
 	__u8 rcv[SHA1_DIGEST_LEN];   /* the digest as it arrived, kept
 	                              * while blk's copy is zeroed to
 	                              * recompute over the same bytes */
+	__u8 tmp[SHA1_BLOCK_LEN];    /* hmac_sha1_blocks' working block.
+	                              * Its own local once, which made it the
+	                              * largest thing on a call chain the
+	                              * verifier charges against one 512-byte
+	                              * budget. Per-CPU here, so it costs no
+	                              * stack and the chain gained the margin
+	                              * it was missing. */
 	__u8 kpad[SHA1_BLOCK_LEN];   /* the chosen key, copied here so the
 	                              * digest is handed a pointer at a
 	                              * fixed offset. Reading it straight

@@ -77,8 +77,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # CLANG as well as FUZZ_CC: this target depends on bfd_xdp.o, which is
+      # built with $(CLANG), and the self-hosted runner carries clang-21
+      # with no unversioned clang for it to fall back on.
       - name: build
-        run: make FUZZ_CC=clang-21 tests/unit/xdp_fuzz
+        run: make CLANG=clang-21 FUZZ_CC=clang-21 tests/unit/xdp_fuzz
 
       # Known findings first: a reproduction means a fix regressed.
       - name: regressions

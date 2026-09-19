@@ -11,6 +11,9 @@ observer.csv
 /tests/unit/xdp_run
 /tests/unit/fsm_run
 /tests/unit/dp_run
+/tests/unit/rx_run
+/tests/unit/ktx_cfg_run
+/tests/unit/xdp_fuzz
 /tests/unit/dp_fuzz
 /tests/unit/hmac_run
 # libFuzzer writes findings into the working directory, and a live

@@ -76,7 +76,7 @@ static struct bfd_ctrl_pkt ctrl_up(void)
 /* A single-hop IPv6 BFD control packet. */
 /* A v6 frame with exactly one extension header (8 bytes, hdrlen 0) between
  * the IPv6 header and UDP. `ext` is the ip6 next-header (e.g. HOPOPTS),
- * `inner` is the extension header's own next-header. For G1. */
+ * `inner` is the extension header's own next-header. */
 static void build_v6_exthdr(struct frame *f, uint8_t ext, uint8_t inner,
 			    uint16_t dport, const struct bfd_ctrl_pkt *bfd)
 {

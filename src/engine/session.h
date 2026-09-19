@@ -230,7 +230,7 @@ struct session {
 	                               * session's current state once the queue
 	                               * drains, so a flap storm coalesces to
 	                               * the latest state instead of tearing
-	                               * the connection down for all 64 (G5) */
+	                               * the connection down for all 64 */
 	uint64_t log_win_us;          /* start of this session's 1s log window */
 	uint16_t log_n;               /* transitions logged in the window */
 	uint16_t log_suppressed;      /* transitions suppressed in it */

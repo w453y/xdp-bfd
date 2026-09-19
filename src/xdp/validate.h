@@ -11,8 +11,8 @@
  * Returns an XDP verdict to bail with, or -1 to mean carry on - the same
  * sentinel idiom parse_l3 uses.
  *
- * Every disposition here drops. Under the threat model (HARDENING_PLAN
- * G2) the BFD ports have no consumer on this host but our own socket, so
+ * Every disposition here drops. The BFD ports have no consumer on this
+ * host but our own socket, so
  * a header the fast path will not honour has nowhere useful to go:
  * passing it only costs a syscall and, at a flood, evicts datagrams for
  * real sessions from the shared socket queue. A MALFORMED header is

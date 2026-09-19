@@ -686,7 +686,7 @@ int main(int argc, char **argv)
 		dp_flush();
 
 		/* Room the flush just freed goes to sessions whose state
-		 * change was deferred rather than dropped (G5). */
+		 * change was deferred rather than dropped. */
 		dp_notify_flush_pending();
 
 		if (shutdown_wanted) {

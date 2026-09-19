@@ -24,21 +24,21 @@ Two separate floors matter:
 ## Measured
 
 Object load is the support question ("does the XDP program load and
-attach?"), so it is what each arm records. The build floor (clang >= 17)
+attach?"), so it is what each row records. The build floor (clang >= 17)
 is separate and is a build-host property, not a runtime one.
 
-| arm | distro / kernel | object loads | notes |
-|---|---|---|---|
-| M1 | Debian 12 / 6.1 | **yes** | the floor; verified on the 6.1 kernel directly (VM booted into 6.1, not the backports 6.12) |
-| M1c | Debian 12 / 6.12 (backports) | yes | current backports kernel |
-| M3b | Ubuntu 24.04 / 6.8 | yes | HWE kernel |
-| M2 | AlmaLinux 9 / 5.14 | **yes** | RHEL's "5.14" carries a heavily backported BPF stack and clears the bar despite the version number |
-| M2b | AlmaLinux 10 / 6.12 | **yes** | |
-| — | Fedora / 6.14 | yes | rpm build + load verified |
-| M1b | Debian 11 / 5.10 | not captured | vanilla 5.10, below the feature bar; expected to refuse. Live capture was blocked by the bullseye archive being EOL, which is itself a reason to drop it |
+| distro / kernel | object loads | notes |
+|---|---|---|
+| Debian 12 / 6.1 | **yes** | the floor; verified on the 6.1 kernel directly (VM booted into 6.1, not the backports 6.12) |
+| Debian 12 / 6.12 (backports) | yes | current backports kernel |
+| Ubuntu 24.04 / 6.8 | yes | HWE kernel |
+| AlmaLinux 9 / 5.14 | **yes** | RHEL's "5.14" carries a heavily backported BPF stack and clears the bar despite the version number |
+| AlmaLinux 10 / 6.12 | **yes** | |
+| Fedora / 6.14 | yes | rpm build + load verified |
+| Debian 11 / 5.10 | not captured | vanilla 5.10, below the feature bar; expected to refuse. Live capture was blocked by the bullseye archive being EOL, which is itself a reason to drop it |
 
 The object is byte-identical across the packaging and hardening changes on
-a given toolchain (md5 confirmed equal on the DUT and each arm); the load
+a given toolchain (md5 confirmed equal on the DUT and on every distro tested); the load
 result is a function of the kernel's BPF feature set, not the package or
 the version string.
 

@@ -8,7 +8,7 @@ injector VM on the test segment is the only way higher, and only the
 single-flow arms would need it (a spoofed peer is one 5-tuple to one RSS
 queue, so one DUT core eats it regardless of injector rate).
 
-## M9 flood arms: the per-arm checklist
+## Flood arms: the per-arm checklist
 
 m9-flood.py drives the flood arms. Three arms were mislabelled in one night
 because the frame did not take the path its label named, so before a number
@@ -16,7 +16,7 @@ is attached to an arm, pin every field that selects a path and record it:
 
 - **state** — the demux fallback in main.c:830 only runs for
   BFD_STATE <= ST_DOWN. An Up-state packet with your_disc 0 is dropped
-  cheaply and never reaches the address-pair scan. To exercise G3's real
+  cheaply and never reaches the address-pair scan. To exercise the unknown-session drop's real
   cost the frame must be state DOWN.
 - **your_disc** — 0 selects the address-pair path; nonzero selects the
   wire-disc scan. Choose deliberately.
@@ -33,5 +33,6 @@ is attached to an arm, pin every field that selects a path and record it:
 
 Then dump every counter for a short burst and confirm the counter that
 moves is the one the arm's path predicts, BEFORE the timed run. The
-counter-signature table in docs/matrix/m9-flood.md is the reference; an arm
+counter-signature table in matrix/m9-flood.md on the docs branch is the
+reference; an arm
 whose dump does not match its row is mislabelled, not a finding.

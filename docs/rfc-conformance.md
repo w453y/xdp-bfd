@@ -21,7 +21,7 @@ bffdp data-plane protocol, tested, with deviations justified. Today that is
 | 8562 / 8563 | Multipoint BFD | not implemented, **rejected on the wire** | The M bit is dropped (s6.8.6), multipoint being a different protocol. |
 | 8971 | BFD for VXLAN | not implemented | Encapsulation. |
 | 9127 | BFD YANG | n/a | Management; bfdd's. |
-| 9468 | Unsolicited BFD | not implemented | Would need "accept a session from an unknown peer", which is exactly what the G3 unknown-session drop removes by default. If wanted it is a per-interface allow rule, never a default. |
+| 9468 | Unsolicited BFD | not implemented | Would need "accept a session from an unknown peer", which is exactly what the unknown-session drop removes by default. If wanted it is a per-interface allow rule, never a default. |
 | 6428 | MPLS-TP CC/CV/RDI | not implemented | Different profile. |
 
 ## Deviation 1: keyed SHA1 is an HMAC

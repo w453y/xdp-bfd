@@ -24,7 +24,8 @@
 # a row answers "are the verifier workarounds load-bearing here, or only
 # at the floor".
 #
-# Output is one JSON object on stdout. Redirect it into docs/matrix/.
+# Output is one JSON object on stdout. The recorded runs live under
+# matrix/ on the docs branch.
 set -u
 
 TARGET=${1:?ssh target, e.g. matrix@192.168.11.201}

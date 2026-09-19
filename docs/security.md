@@ -54,13 +54,13 @@ shared socket queue.
 | non-IP / non-UDP / non-BFD port | passed to the stack, untouched | `seen` |
 | UDP options / v4 header options to a BFD port | dropped | `ip-options` |
 | first IPv4 fragment to a BFD port | dropped (a control packet never fragments) | `rejected` |
-| UDP behind a v6 extension header to a BFD port | dropped (**G1**) | `v6-exthdr` |
+| UDP behind a v6 extension header to a BFD port | dropped | `v6-exthdr` |
 | TTL/hop-limit not 255 (GTSM), no multihop session | dropped | `rejected` |
-| malformed header, or an envelope that lies about length, to a BFD port | dropped (**G2**) | `malformed` |
+| malformed header, or an envelope that lies about length, to a BFD port | dropped | `malformed` |
 | A-bit / M-bit the session cannot honour | dropped | `auth-mismatch`, `unsupported-flags` |
-| well-formed, no configured session (engine mode) | dropped (**G3**) | `unknown-session` |
+| well-formed, no configured session (engine mode) | dropped | `unknown-session` |
 | authenticated, replay window then digest | dropped on failure | `auth-bad` |
-| authenticated, too many digest failures this interval | dropped before the digest (**G4**) | `auth-ratelimited` |
+| authenticated, too many digest failures this interval | dropped before the digest | `auth-ratelimited` |
 
 The promiscuous observer (`xdp-bfd-observe`) passes unconfigured packets to
 userspace for debugging; it must never run on a production interface.
@@ -75,11 +75,11 @@ the testbed (`bpftool prog show` run-time delta, `kernel.bpf_stats_enabled`),
 
 | flood | before hardening | after |
 |---|---|---|
-| malformed to 3784, ~590k pps | passed to socket, `RcvbufErrors` +67k, mesh 61/64 | dropped in XDP, +0, 64/64, **42 ns/frame** (G2) |
-| valid, unknown pair, ~580k pps | passed to socket, +9k, mesh 63/64 | dropped in XDP, +0, 64/64, **80 ns/frame** (G3) |
+| malformed to 3784, ~590k pps | passed to socket, `RcvbufErrors` +67k, mesh 61/64 | dropped in XDP, +0, 64/64, **42 ns/frame** |
+| valid, unknown pair, ~580k pps | passed to socket, +9k, mesh 63/64 | dropped in XDP, +0, 64/64, **80 ns/frame** |
 | valid at TTL 64 (GTSM), ~667k pps | already dropped in the driver, +0, 64/64 | unchanged (the reference) |
 
-Before G2/G3 a forger could flap sessions it was **not addressing**, by
+Before those two drops a forger could flap sessions it was **not addressing**, by
 filling the shared socket queue so datagrams for sessions still coming up
 were evicted. After, both flood arms match the GTSM reference: dropped in
 the driver, nothing evicted, mesh holds 64/64, recovery within a second.
@@ -89,14 +89,14 @@ The drops are attributed, not inferred: under the unknown-pair flood the
 
 **Floods that name a real session.** Three more arms forge frames for an
 address pair the fast path actually serves, so they reach the demux, the
-authentication path and the echo reflector that a G3 unknown-session drop
+authentication path and the echo reflector that an unknown-session drop
 would otherwise hide. Measured live against individual sessions of the
 64-session mesh:
 
 | flood (aimed at a real session) | result |
 |---|---|
 | well-formed, wrong `your_disc`, ~513k frames | every frame dropped by the demux rule, `rejected` 1:1, **195 ns/frame**; the named session did not flap and the mesh held 64/64. A forger who knows the address pair but not the discriminator still cannot disturb the session (RFC 5880 s6.8.6). |
-| A bit set, bad digest, at an authenticated session, ~554k frames | the per-session auth bucket (G4) let the expensive verify run **248 times** and rate-limited the other **553,497** before the digest; the targeted session went down by design (its real packets share the spent bucket) while the other 63 were untouched, recovering to 64/64 in ~1s. A bad-auth flood costs a bounded amount of CPU and cannot spread past the single session it targets. |
+| A bit set, bad digest, at an authenticated session, ~554k frames | the per-session auth bucket let the expensive verify run **248 times** and rate-limited the other **553,497** before the digest; the targeted session went down by design (its real packets share the spent bucket) while the other 63 were untouched, recovering to 64/64 in ~1s. A bad-auth flood costs a bounded amount of CPU and cannot spread past the single session it targets. |
 | self-addressed echo from a known echo peer, ~253k frames | reflected one-for-one (`XDP_TX`), **204 ns/frame**, mesh 64/64; UDP/3785 from any source that is not a peer of an echo-active session is counted `declined` and never reflected, which closes the reflection off as an amplification vector. |
 
 The auth arm is the sharpest of the three: without the bucket every one of
@@ -111,11 +111,11 @@ dead-man gate never tripping. On the virtualised testbed the ceiling is the
 guest's RX path (~1M pps), not the engine; the per-frame ns figures are
 what carry to a bare-metal host with more RX queues.
 
-## The forced-HMAC bound (G4) and its trade
+## The forced-HMAC bound and its trade
 
 An authenticated session checks the replay window before the digest, so a
 forger must supply an in-window sequence (visible on the wire); each such
-packet then costs a full HMAC-SHA1 in softirq, per packet, per CPU. G4 caps
+packet then costs a full HMAC-SHA1 in softirq, per packet, per CPU. The bucket caps
 this: once a session sees more than eight digest failures inside one detect
 interval it drops further A-bit packets before the digest until the interval
 turns over, counted `auth-ratelimited`.
@@ -127,7 +127,7 @@ on-link attack on a single session, and it bounds the CPU either way. The
 bucket is per-session: the other sessions are untouched. A key rollover
 produces at most a handful of failures, well under the ceiling.
 
-## The dead-man gate under a flood (G6)
+## The dead-man gate under a flood
 
 If a flood saturates every CPU's softirq, userspace starves, the engine's
 heartbeat goes stale, and after one second the gate stops the fast path

@@ -1,0 +1,32 @@
+{
+  "arm": "m1c-debian12-backports",
+  "os": "Debian GNU/Linux 12 (bookworm)",
+  "kernel": "6.12.95+deb12-cloud-amd64",
+  "arch": "x86_64",
+  "gcc": "gcc (Debian 12.2.0-14+deb12u1) 12.2.0",
+  "clang": "Debian clang version 14.0.6",
+  "glibc": "ldd (Debian GLIBC 2.36-9+deb12u14) 2.36",
+  "libbpf_dev": "1:1.1.2-0+deb12u1",
+  "kernel_config": "CONFIG_BPF_JIT=y;CONFIG_XDP_SOCKETS=y;CONFIG_DEBUG_INFO_BTF=y;",
+  "native_bpf_object": "src/xdp/sweep.h:162:6: error: Unsupported atomic operations, please use 64 bit version",
+  "engine_build": "ok",
+  "check_host": "pass",
+  "check_all": "src/xdp/sweep.h:87:6: error: Unsupported atomic operations, please use 64 bit version",
+  "nic_driver": "virtio_net 1.0.0 ",
+  "nic_queues": "2",
+  "engine_run": "kernel-tx: XDP attached to eth1 (native mode, link)",
+  "object_load": [
+    {
+      "object": "bfd_xdp.o",
+      "result": "LOADS"
+    },
+    {
+      "object": "pins-only-e2d7e81.o",
+      "result": "LOADS"
+    },
+    {
+      "object": "pre-db432e8.o",
+      "result": "LOADS"
+    }
+  ]
+}

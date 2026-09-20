@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of the xdp_run test, split by subject (CI-review item 5).
+/* Part of the xdp_run test, split by subject.
  * Compiled as one unit via tests/unit/xdp_run.c, which carries the
  * includes, the shared globals and main; include order there is the
  * dependency order (harness first, sweep last). */

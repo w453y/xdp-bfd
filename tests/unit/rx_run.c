@@ -5,8 +5,8 @@
  * the addresses come out of the cmsgs; the decision they make once the
  * packet is in hand is rx_accept, and this is that decision as a table.
  *
- * It exists because both authentication findings of the review round sat
- * on this boundary and nothing on the host could reach them: the only
+ * It exists because the two authentication bugs found here sat on this
+ * boundary and nothing on the host could reach them: the only
  * coverage was tests/testbed/netns_userspace.py, which needs namespaces,
  * sockets and root to assert the same rules. Those CASES are here as unit
  * rows; the netns rig keeps only what it alone can test, the socket and

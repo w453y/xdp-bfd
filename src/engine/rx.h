@@ -6,8 +6,8 @@
  * addresses come out of the cmsgs. The decision they make about a packet
  * once it is in hand - does the header parse, does the TTL satisfy GTSM,
  * which session does it name, does it authenticate - was written out four
- * times, and both authentication findings of the last review round sat on
- * that boundary with no host test able to reach it.
+ * times, and the two authentication bugs found in it sat on that
+ * boundary with no host test able to reach them.
  *
  * Here it is one pure-ish function of the packet and the session table,
  * so the drains keep only the socket plumbing and the decision can be

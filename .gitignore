@@ -5,17 +5,12 @@ __pycache__/
 events.csv
 observer.csv
 
-# review patch scripts
+# numbered scratch scripts, local only
 /[0-9][0-9]-*.py
-# unit test binary
-/tests/unit/xdp_run
-/tests/unit/fsm_run
-/tests/unit/dp_run
-/tests/unit/rx_run
-/tests/unit/ktx_cfg_run
-/tests/unit/xdp_fuzz
-/tests/unit/dp_fuzz
-/tests/unit/hmac_run
+# unit test binaries. A pattern rather than a list: every harness is
+# <subject>_run or <subject>_fuzz, and the list kept going stale.
+/tests/unit/*_run
+/tests/unit/*_fuzz
 # libFuzzer writes findings into the working directory, and a live
 # corpus is regenerable in 90 seconds - neither belongs in the repo.
 /crash-*

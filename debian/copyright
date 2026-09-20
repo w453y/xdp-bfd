@@ -3,13 +3,13 @@ Upstream-Name: xdp-bfd
 Source: https://github.com/w453y/xdp-bfd
 
 Files: *
-Copyright: 2025-2026 Abdul Wasey <w453y.me@gmail.com>
+Copyright: 2026 Abdul Wasey <w453y.me@gmail.com>
 License: GPL-2.0-only
 
 Files: src/engine/bfddp.h
 Copyright: 2020 NetDEF, Inc.
            2020 Rafael F. Zalamena
-           2025-2026 Abdul Wasey <w453y.me@gmail.com>
+           2026 Abdul Wasey <w453y.me@gmail.com>
 Comment: The bfddp protocol definitions in this file are adapted from
  FRR's bfdd/bfddp_packet.h, which is MIT (Expat) licensed. The adapted
  file is distributed under the terms below.

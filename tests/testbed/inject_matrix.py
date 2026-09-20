@@ -11,9 +11,9 @@ Runs on the engine host. Injection happens on a separate host reached
 over ssh; this file pipes itself there rather than needing to be
 installed on both.
 
-    ./tests/inject_matrix.py                 run everything
-    ./tests/inject_matrix.py --list          show the cases
-    ./tests/inject_matrix.py --only gtsm-v4  run one
+    ./tests/testbed/inject_matrix.py                 run everything
+    ./tests/testbed/inject_matrix.py --list          show the cases
+    ./tests/testbed/inject_matrix.py --only gtsm-v4  run one
 
 Four cases need a phantom session: a peer configured on the DUT that
 nothing answers on, so its counters move only when we inject. Without

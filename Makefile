@@ -66,6 +66,7 @@ install: all
 	$(INSTALL) -m 0644 packaging/frr-daemons.snippet $(DESTDIR)$(DOCDIR)/examples/frr-daemons.snippet
 	$(INSTALL) -d $(DESTDIR)$(MANDIR)
 	$(INSTALL) -m 0644 packaging/xdp-bfd.8 $(DESTDIR)$(MANDIR)/xdp-bfd.8
+	$(INSTALL) -m 0644 packaging/xdp-bfd-observe.8 $(DESTDIR)$(MANDIR)/xdp-bfd-observe.8
 
 # Layout pins for the shared structs, checked by both compilers.
 # Syntax-only: a divergence is a build error, there is nothing to run.

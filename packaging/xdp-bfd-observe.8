@@ -1,0 +1,49 @@
+.TH XDP-BFD-OBSERVE 8 "2026-09-20" "xdp-bfd" "System Administration"
+.SH NAME
+xdp-bfd-observe \- attach the BFD XDP program and watch what it sees
+.SH SYNOPSIS
+.B xdp-bfd-observe
+.I interface
+.RB [ --generic ]
+.SH DESCRIPTION
+Attaches the same XDP program
+.BR xdp-bfd (8)
+uses to
+.IR interface ,
+prints the session table once a second, and logs liveness events as they
+arrive on the ring buffer. It is a debugging tool: it observes, it never
+answers a packet, and it runs no control plane.
+.PP
+It attaches the program in
+.B promiscuous
+mode, which is the difference that matters. In that mode the program
+stops dropping control packets for address pairs no session covers and
+passes them to the stack instead, so unconfigured traffic can be watched.
+That is also why it
+.B must not
+be run on a production interface: it reopens the flood path to the
+socket that the engine's unknown-session drop exists to close.
+.PP
+Attaching replaces whatever XDP program the interface already has, so
+running this on an interface an engine is serving takes that engine's
+fast path away.
+.SH OPTIONS
+.TP
+.B --generic
+Attach in generic (skb) mode rather than native. Slower, and works on
+drivers or virtual interfaces with no native XDP support.
+.SH FILES
+.TP
+.I observer.csv
+Session table samples, appended, in the working directory.
+.TP
+.I events.csv
+Liveness events, appended, in the working directory.
+.TP
+.I /usr/lib/xdp-bfd/bfd_xdp.o
+The XDP object, found with no argument.
+.SH EXIT STATUS
+Non-zero if the object cannot be loaded or the attach fails. Otherwise it
+runs until interrupted.
+.SH SEE ALSO
+.BR xdp-bfd (8)

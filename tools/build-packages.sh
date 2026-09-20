@@ -52,6 +52,12 @@ build_deb() {
         apt-get install -y -qq --no-install-recommends clang-21 >/dev/null
         mkdir -p /src && tar -x -C /src
         cd /src/xdp-bfd
+        # dch signs the entry with DEBEMAIL, and inside a container that
+        # resolves to root@<container id>, which lintian rejects outright
+        # (bogus-mail-host-in-debian-changelog). Sign as the maintainer the
+        # control file already names.
+        export DEBFULLNAME="Abdul Wasey"
+        export DEBEMAIL="w453y.me@gmail.com"
         dch --create --package xdp-bfd -v "${VERSION}-1" --distribution unstable \
             "Release ${VERSION}." 2>/dev/null || \
           dch -b -v "${VERSION}-1" --distribution unstable "Release ${VERSION}."

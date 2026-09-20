@@ -1,3 +1,17 @@
+## What is here
+
+These are instruments: they produce numbers rather than pass or fail, so
+nothing in CI runs them. All four need the testbed.
+
+- `sweep_ladder.py` — the shared plumbing the rest import: engine control,
+  the SIGUSR1 snapshot, and peer access. Reads the lab's addresses from
+  `tests/lib/lab.py`.
+- `m9-flood.py` — the flood arms, one arm per run. See the checklist below.
+- `wedged_ktx.py` — the dead-man gate against the 64-session mesh. The
+  namespace version of the same claim is `tests/e2e/test_deadman.py`.
+- `starved_detection.py` — detection under RT starvation, measured both
+  from the engine and on the wire from a machine that is not starved.
+
 
 ## Injector ceiling (measured)
 
@@ -14,10 +28,10 @@ m9-flood.py drives the flood arms. Three arms were mislabelled in one night
 because the frame did not take the path its label named, so before a number
 is attached to an arm, pin every field that selects a path and record it:
 
-- **state** — the demux fallback in main.c:830 only runs for
+- **state** — the demux fallback in main.c only runs for
   BFD_STATE <= ST_DOWN. An Up-state packet with your_disc 0 is dropped
-  cheaply and never reaches the address-pair scan. To exercise the unknown-session drop's real
-  cost the frame must be state DOWN.
+  cheaply and never reaches the address-pair scan. To exercise the real
+  cost of the unknown-session drop the frame must be state DOWN.
 - **your_disc** — 0 selects the address-pair path; nonzero selects the
   wire-disc scan. Choose deliberately.
 - **TTL / hop_limit** — 255 clears GTSM; anything else is the GTSM drop,
@@ -34,5 +48,5 @@ is attached to an arm, pin every field that selects a path and record it:
 Then dump every counter for a short burst and confirm the counter that
 moves is the one the arm's path predicts, BEFORE the timed run. The
 counter-signature table in matrix/m9-flood.md on the docs branch is the
-reference; an arm
-whose dump does not match its row is mislabelled, not a finding.
+reference; an arm whose dump does not match its row is mislabelled, not a
+finding.

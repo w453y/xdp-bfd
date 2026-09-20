@@ -20,9 +20,9 @@ recorded before it is fixed.
     python3 m9.py <arm> <rate-label>     e.g. m9.py C 300k
     python3 m9.py --ceiling             just report ns/frame idle
 """
-import json, re, subprocess, sys, time
+import json, os, re, subprocess, sys, time
 
-sys.path.insert(0, "/home/w453y/xdp-bfd/tools/measure")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sweep_ladder as sl
 
 INJECTOR = "w453y@10.66.0.3"
@@ -152,6 +152,25 @@ def frame_ip(dport, ttl, payload, src, dst, sport="const16(12345)"):
                s, d, sport, dport, 8 + n, payload))
 
 
+# F: A bit set (0x44 = state Down + A), your_disc 0 so the demux "peer
+# restarting" exception lets it reach the auth path; auth section keyed-SHA1
+# (type 4), len 28, key id 3, an out-of-window seq and a garbage 20-byte
+# digest. Every such frame fails the verify and, past 8 in a detect
+# interval, is rate-limited by the per-session bucket.
+BFD_AUTH_BAD = ("0x20, 0x44, 0x03, 0x34, 0x11, 0x22, 0x33, 0x44, "
+                "0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc3, 0x50, "
+                "0x00, 0x00, 0xc3, 0x50, 0x00, 0x00, 0x00, 0x00, "
+                "0x04, 0x1c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01, "
+                "0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, "
+                "0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41")
+
+# G: a self-addressed echo body; the reflector does not parse it on the
+# forward path, so a plain 24-byte control-shaped payload suffices.
+ECHO_SELF = ("0x20, 0xc0, 0x03, 0x18, 0x11, 0x22, 0x33, 0x44, "
+             "0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc3, 0x50, "
+             "0x00, 0x00, 0xc3, 0x50, 0x00, 0x00, 0x00, 0x00")
+
+
 ARMS = {
     # A: unrelated UDP, non-BFD port, source ports spread across queues.
     # Only `seen` moves (cbd30d6 leaves it before counting). Question:
@@ -190,25 +209,6 @@ ARMS = {
           frame_ip(3785, 0xff, ECHO_SELF,
                    src="10.66.0.18", dst="10.66.0.18"), "reflected"),
 }
-
-
-# F: A bit set (0x44 = state Down + A), your_disc 0 so the demux "peer
-# restarting" exception lets it reach the auth path; auth section keyed-SHA1
-# (type 4), len 28, key id 3, an out-of-window seq and a garbage 20-byte
-# digest. Every such frame fails the verify and, past 8 in a detect
-# interval, is rate-limited by the per-session bucket (G4).
-BFD_AUTH_BAD = ("0x20, 0x44, 0x03, 0x34, 0x11, 0x22, 0x33, 0x44, "
-                "0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc3, 0x50, "
-                "0x00, 0x00, 0xc3, 0x50, 0x00, 0x00, 0x00, 0x00, "
-                "0x04, 0x1c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01, "
-                "0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, "
-                "0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41")
-
-# G: a self-addressed echo body; the reflector does not parse it on the
-# forward path, so a plain 24-byte control-shaped payload suffices.
-ECHO_SELF = ("0x20, 0xc0, 0x03, 0x18, 0x11, 0x22, 0x33, 0x44, "
-             "0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc3, 0x50, "
-             "0x00, 0x00, 0xc3, 0x50, 0x00, 0x00, 0x00, 0x00")
 
 
 def run_arm(arm, rate):

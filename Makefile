@@ -63,12 +63,10 @@ install: all
 	$(INSTALL) -m 0644 packaging/engine.conf $(DESTDIR)$(SYSCONFDIR)/xdp-bfd/engine.conf
 	$(INSTALL) -d $(DESTDIR)$(DOCDIR) $(DESTDIR)$(DOCDIR)/examples
 	$(INSTALL) -m 0644 README.md $(DESTDIR)$(DOCDIR)/README.md
-	$(INSTALL) -m 0644 docs/security.md $(DESTDIR)$(DOCDIR)/security.md
-	$(INSTALL) -m 0644 docs/rfc-conformance.md $(DESTDIR)$(DOCDIR)/rfc-conformance.md
-	$(INSTALL) -m 0644 docs/support-matrix.md $(DESTDIR)$(DOCDIR)/support-matrix.md
 	$(INSTALL) -m 0644 packaging/frr-daemons.snippet $(DESTDIR)$(DOCDIR)/examples/frr-daemons.snippet
 	$(INSTALL) -d $(DESTDIR)$(MANDIR)
 	$(INSTALL) -m 0644 packaging/xdp-bfd.8 $(DESTDIR)$(MANDIR)/xdp-bfd.8
+	$(INSTALL) -m 0644 packaging/xdp-bfd-observe.8 $(DESTDIR)$(MANDIR)/xdp-bfd-observe.8
 
 # Layout pins for the shared structs, checked by both compilers.
 # Syntax-only: a divergence is a build error, there is nothing to run.

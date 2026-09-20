@@ -70,9 +70,6 @@ fi
 %files
 %license LICENSE
 %doc %{_docdir}/%{name}/README.md
-%doc %{_docdir}/%{name}/security.md
-%doc %{_docdir}/%{name}/rfc-conformance.md
-%doc %{_docdir}/%{name}/support-matrix.md
 %{_sbindir}/xdp-bfd
 %{_sbindir}/xdp-bfd-observe
 %dir %{_libdir}/xdp-bfd
@@ -82,6 +79,7 @@ fi
 %dir %{_sysconfdir}/xdp-bfd
 %config(noreplace) %{_sysconfdir}/xdp-bfd/engine.conf
 %{_mandir}/man8/xdp-bfd.8*
+%{_mandir}/man8/xdp-bfd-observe.8*
 %dir %{_docdir}/%{name}/examples
 %{_docdir}/%{name}/examples/frr-daemons.snippet
 

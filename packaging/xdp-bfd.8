@@ -92,14 +92,14 @@ The XDP object, found by the binary with no argument.
 .I /run/xdp-bfd/stats.json
 Default stats output path.
 .SH SEE ALSO
+.BR xdp-bfd-observe (8),
 .BR bfdd (8),
 .BR systemctl (1)
 .PP
 Full deployment and limitations notes are in
 .IR /usr/share/doc/xdp-bfd/README.md .
-The threat model and flood measurements are in
-.IR /usr/share/doc/xdp-bfd/security.md ,
-RFC coverage in
-.IR /usr/share/doc/xdp-bfd/rfc-conformance.md ,
-and the supported kernels in
-.IR /usr/share/doc/xdp-bfd/support-matrix.md .
+The threat model and flood measurements, the RFC coverage matrix and the
+list of supported kernels are kept with the project rather than shipped,
+on the docs branch at
+.UR https://github.com/w453y/xdp-bfd/tree/docs
+.UE .

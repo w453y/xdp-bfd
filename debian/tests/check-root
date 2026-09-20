@@ -2,6 +2,6 @@
 # Root suites: the XDP program under BPF_PROG_TEST_RUN, then the veth /
 # netns end-to-end. Needs root and a BPF-capable kernel.
 set -e
-CLANG="$(command -v clang-21 || command -v clang-20 || command -v clang)"
+CLANG="$(command -v clang-21 || command -v clang-20 || command -v clang-19 || command -v clang-18 || command -v clang-17 || command -v clang)"
 make check CLANG="$CLANG"
 make check-netns

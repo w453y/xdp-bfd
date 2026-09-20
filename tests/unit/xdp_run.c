@@ -5,7 +5,7 @@
  * BPF_PROG_TEST_RUN hands the program a synthetic frame and returns the
  * verdict plus the (possibly rewritten) frame, so it can be tested as
  * what it is: a pure function of (frame bytes, map state) to (verdict,
- * frame bytes, map state). tests/inject_matrix.py reaches the same
+ * frame bytes, map state). tests/testbed/inject_matrix.py reaches the same
  * program only through the wire and cannot set map state directly.
  *
  * Needs root. Run from the repo root so the default object path resolves.

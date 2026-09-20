@@ -220,7 +220,7 @@ void dp_notify_state(struct session *s)
 	 * other 63 their control channel. If the message will not fit, mark
 	 * the session owing a notification and re-send its CURRENT state
 	 * from dp_notify_flush_pending once the queue drains, so a storm of
-	 * flaps collapses to one send of the final state (G5). Bounded: at
+	 * flaps collapses to one send of the final state. Bounded: at
 	 * most one deferred notification per session, resolved in loop
 	 * order, so a full queue can never orphan the connection. */
 	if (sizeof(m) > sizeof(dp_out) - dp_out_len) {
@@ -303,7 +303,7 @@ static void dp_resolve_local(struct session *s)
  * source resolved once, at ADD. If the route to the peer later moves -
  * an interface flaps, a source address is withdrawn - that source goes
  * stale: the peer's replies then arrive with a destination the fast
- * path keys elsewhere, G3 drops them, and the session cannot recover on
+ * path keys elsewhere, they are dropped as unknown, and the session cannot recover on
  * its own. While such a session is not Up, re-resolve at a slow cadence
  * and, if the source moved, drop the old key so ktx_mirror re-pushes
  * under the new one. Bounded to non-Up wildcard sessions at one probe a

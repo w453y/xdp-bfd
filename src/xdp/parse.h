@@ -155,7 +155,7 @@ static __always_inline int parse_l3(struct ethhdr *eth, void *data_end,
 		 * discovery is untouched. But UDP behind one extension header
 		 * aimed at a BFD port is not something single-hop BFD ever
 		 * sends, and passing it is the same flood path to our socket
-		 * that G3 closed for the plain case (HARDENING_PLAN G1). Walk
+		 * the unknown-session drop closed for plain UDP. Walk
 		 * exactly one extension header - hop-by-hop, routing,
 		 * dest-opts or fragment - and if UDP to a BFD port sits behind
 		 * it, drop and count. Deeper chains, and any header whose

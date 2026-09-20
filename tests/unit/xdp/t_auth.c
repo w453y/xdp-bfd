@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of the xdp_run test, split by subject (CI-review item 5).
+/* Part of the xdp_run test, split by subject.
  * Compiled as one unit via tests/unit/xdp_run.c, which carries the
  * includes, the shared globals and main; include order there is the
  * dependency order (harness first, sweep last). */
@@ -214,7 +214,7 @@ static void case_hmac(const struct hmac_vec *v)
 	printf("ok   %-40s key %2u msg %2u\n", v->name, v->keylen, v->msglen);
 }
 
-/* G4: bound the forced HMAC. Feed a session more corrupt-digest packets
+/* Bound the forced HMAC. Feed a session more corrupt-digest packets
  * than BFD_AUTH_FAIL_MAX inside one detect interval: the first
  * BFD_AUTH_FAIL_MAX reach the digest and fail (auth-bad), the rest are
  * dropped before it (auth-ratelimited). The interval is pinned wide so the

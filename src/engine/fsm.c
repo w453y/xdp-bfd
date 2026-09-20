@@ -106,7 +106,7 @@ static int slot_sock(int slot, const struct session *s)
 }
 
 /* ---------- FSM ---------- */
-/* Transition log lines per session per second before summarising (G5). */
+/* Transition log lines per session per second before summarising. */
 #define BFD_LOG_BURST 5
 
 void state_transition(struct session *s, int newstate, int diag,
@@ -119,7 +119,7 @@ void state_transition(struct session *s, int newstate, int diag,
 	 * unauthenticated session can flap it per packet, and one INFO line
 	 * per flap is a log flood in its own right. Log the first few each
 	 * second, then count the rest and summarise when the window closes
-	 * (G5). The transition itself, and the dplane notify, still happen. */
+	 * The transition itself, and the dplane notify, still happen. */
 	if (t - s->log_win_us >= 1000000ull) {
 		if (s->log_suppressed)
 			log_info("[%llu] lid=%u %u more transition(s) suppressed in the last second\n",

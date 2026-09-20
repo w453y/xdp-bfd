@@ -81,7 +81,7 @@ int bfd_observer(struct xdp_md *ctx)
 	 * refreshed liveness and could acknowledge a Poll on a packet that
 	 * is not what it says it is.
 	 *
-	 * MALFORMED, and dropped (HARDENING_PLAN G2): the BFD ports have no
+	 * MALFORMED, and dropped: the BFD ports have no
 	 * consumer here but our own socket, so a frame whose envelope lies
 	 * about its length has nowhere useful to go, and passing it only
 	 * costs a syscall and, at a flood, evicts real datagrams.
@@ -155,7 +155,7 @@ int bfd_observer(struct xdp_md *ctx)
 	if (!cfg) {
 		__u32 zero = 0;
 		__u32 *fl = bpf_map_lookup_elem(&prog_flags, &zero);
-		/* G3: a well-formed control packet for an address pair with no
+		/* A well-formed control packet for an address pair with no
 		 * tx_config is unwanted. bfdd ADDs a session before any packet
 		 * for it is useful, and our socket is the only consumer of the
 		 * BFD ports on this host, so passing it to the stack is the
@@ -217,7 +217,7 @@ int bfd_observer(struct xdp_md *ctx)
 		__u64 awin = (__u64)(st->detect_iv_us ? st->detect_iv_us
 						      : cfg->min_rx_us) * 1000;
 
-		/* G4: bound the HMAC a forger can force. The digest runs after
+		/* Bound the HMAC a forger can force. The digest runs after
 		 * the replay window, so a forger must supply an in-window
 		 * sequence - visible on the wire - and each one then costs a
 		 * full HMAC-SHA1 in softirq, per packet, per CPU. Count the

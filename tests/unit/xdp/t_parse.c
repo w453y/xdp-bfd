@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of the xdp_run test, split by subject (CI-review item 5).
+/* Part of the xdp_run test, split by subject.
  * Compiled as one unit via tests/unit/xdp_run.c, which carries the
  * includes, the shared globals and main; include order there is the
  * dependency order (harness first, sweep last). */
@@ -492,7 +492,7 @@ static void run_frag_matrix(void)
  * out still claiming 208 - built by this engine, with a length its own
  * receive path would now refuse.
  *
- * MALFORMED, and now dropped (HARDENING_PLAN G2), like any broken BFD
+ * MALFORMED, and now dropped, like any broken BFD
  * header on ports only our socket consumes. It still must not refresh
  * liveness, and must not leave on the wire under our name.
  */
@@ -683,7 +683,7 @@ static void case_not_bfd_v6_hlim(uint8_t hlim)
 	map_reset();
 }
 
-/* G3 (HARDENING_PLAN 3.1): a well-formed control packet at TTL 255 for an
+/* A well-formed control packet at TTL 255 for an
  * address pair with no tx_config entry is dropped in XDP and counted, not
  * passed to the socket. Our socket is the only consumer of the BFD ports,
  * so passing it is the widest flood path to recvmsg. The promiscuous flag
@@ -738,7 +738,7 @@ static void case_unknown_session(void)
 	map_reset();
 }
 
-/* G1 (HARDENING_PLAN 3.3): UDP behind one v6 extension header aimed at a
+/* UDP behind one v6 extension header aimed at a
  * BFD port is dropped and counted; the same behind a non-BFD port, and a
  * plain ICMPv6 packet (neighbour discovery), still pass. */
 static void case_v6_exthdr(void)
@@ -775,7 +775,7 @@ static void case_v6_exthdr(void)
 		printf("ok   %-40s not counted\n", "v6-exthdr-nonbfd-counter");
 
 	/* plain ICMPv6 (nexthdr 58, not an extension header): passes. This
-	 * is neighbour discovery, and G1 must never touch it. */
+	 * is neighbour discovery, and this drop must never touch it. */
 	build_v6_exthdr(&f, IPPROTO_ICMPV6, 0, BFD_PORT_1HOP, &p);
 	expect("v6-icmp6-nd-passes", run_frame(&f, NULL, NULL), XDP_PASS);
 

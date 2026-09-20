@@ -36,6 +36,12 @@ if [ "$KIND" = deb ]; then
 	apt-get update -qq
 	apt-get install -y -qq --no-install-recommends clang-21 >/dev/null
 
+	# dch signs the entry with DEBEMAIL, and inside a container that
+	# resolves to root@<container id>, which lintian rejects outright
+	# (bogus-mail-host-in-debian-changelog). Sign as the maintainer the
+	# control file already names.
+	export DEBFULLNAME="Abdul Wasey"
+	export DEBEMAIL="w453y.me@gmail.com"
 	dch --create --package xdp-bfd -v "${PKGVER}-1" --distribution unstable \
 		"CI build ${PKGVER}." 2>/dev/null || \
 	  dch -b -v "${PKGVER}-1" --distribution unstable "CI build ${PKGVER}."

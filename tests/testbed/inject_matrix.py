@@ -11,9 +11,9 @@ Runs on the engine host. Injection happens on a separate host reached
 over ssh; this file pipes itself there rather than needing to be
 installed on both.
 
-    ./tests/inject_matrix.py                 run everything
-    ./tests/inject_matrix.py --list          show the cases
-    ./tests/inject_matrix.py --only gtsm-v4  run one
+    ./tests/testbed/inject_matrix.py                 run everything
+    ./tests/testbed/inject_matrix.py --list          show the cases
+    ./tests/testbed/inject_matrix.py --only gtsm-v4  run one
 
 Four cases need a phantom session: a peer configured on the DUT that
 nothing answers on, so its counters move only when we inject. Without
@@ -110,21 +110,26 @@ def stat_names():
     if _STAT:
         return _STAT
 
+    # tests/testbed/ -> repo root. This said ".." while the script lived
+    # one level up, and the relocation left it pointing at tests/include.
     hdr = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                       "..", "include", "bfd_shared.h")
-    out, inside = {}, False
-    with open(hdr) as f:
-        for line in f:
-            if line.startswith("#define BFD_STAT_LIST"):
-                inside = True
-                continue
-            if not inside:
-                continue
-            m = re.match(r'\s*X\(\w+,\s*"([^"]+)"\)', line)
-            if m:
-                out[len(out)] = m.group(1)
-            if not line.rstrip().endswith("\\"):
-                break
+                       "..", "..", "include", "bfd_shared.h")
+    # Strip comments before walking the lines. Several entries carry a
+    # comment that runs over three lines, and only its last line ends in a
+    # backslash, so a line-at-a-time reader stops at the first of them and
+    # silently returns a short list. That is how the three newest counters
+    # went missing here while abi_check still pinned eighteen.
+    src = open(hdr).read()
+    src = src[src.index("#define BFD_STAT_LIST"):]
+    src = re.sub(r"/\*.*?\*/", " ", src, flags=re.S)
+
+    out = {}
+    for line in src.split("\n")[1:]:
+        m = re.match(r'\s*X\(\w+,\s*"([^"]+)"\)', line)
+        if m:
+            out[len(out)] = m.group(1)
+        if not line.rstrip().endswith("\\"):
+            break
     if not out:
         sys.exit("no BFD_STAT_LIST entries found in %s" % hdr)
     _STAT.update(out)

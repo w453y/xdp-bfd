@@ -823,7 +823,7 @@ static void case_auth_short(void)
 	report("auth-short-message", bad, "refused");
 }
 
-/* G5: a notification storm on one session overflows the output queue. The
+/* A notification storm on one session overflows the output queue. The
  * old behaviour tore the connection down, taking every other session's
  * control channel with it. Now it coalesces: the connection survives, and
  * once bfdd reads again the session's CURRENT (final) state is delivered.
@@ -881,7 +881,7 @@ static void case_notify_coalesce(void)
 	}
 
 	if (!hit_overflow) { printf("     never overflowed (test ineffective)\n"); bad = 1; }
-	if (!alive)        { printf("     connection dropped on overflow (G5 regression)\n"); bad = 1; }
+	if (!alive)        { printf("     connection dropped on overflow\n"); bad = 1; }
 	if (s->notify_pending) { printf("     deferred notification never delivered\n"); bad = 1; }
 	if (last_state != ST_UP) { printf("     last delivered state %d, want UP %d\n", last_state, ST_UP); bad = 1; }
 
@@ -896,7 +896,7 @@ static void case_notify_coalesce(void)
 /* A peer configured without a local-address makes bfdd register the
  * offloaded session with local 0.0.0.0 (v4) or :: (v6). The engine must
  * resolve the concrete source the kernel would use to reach the peer, so
- * the fast path can key the session and the unknown-session drop (G3) does
+ * the fast path can key the session and the unknown-session drop does
  * not strand it. A loopback peer resolves to a loopback source in any
  * environment, so the expected result is deterministic. */
 static void case_local_resolve(void)

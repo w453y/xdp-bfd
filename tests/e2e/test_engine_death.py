@@ -10,7 +10,7 @@ Two claims, asserted separately:
 Neither is the wedged-but-alive case: with --kernel-tx active XDP answers
 the peer from softirq regardless of userspace state, so an engine that
 wedges without dying keeps the peer Up. Killing a process cannot test
-that; tools/measure/wedged_ktx.py covers it.
+that; measure/wedged_ktx.py on the docs branch covers it.
 
 No tight timing bound here. The engine records last_overshoot_us for
 diag 1 and the test asserts it exists and is sane; thresholds belong in

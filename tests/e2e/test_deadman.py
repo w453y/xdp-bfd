@@ -1,6 +1,7 @@
 """The dead-man gate, arm and disarm, in two namespaces.
 
-tools/measure/wedged_ktx.py asserts the same thing against the 64-session mesh and
+measure/wedged_ktx.py on the docs branch asserts the same thing against
+the 64-session mesh and
 needs that mesh; this is the version CI can run. The claim is narrow and
 the negative arm is what makes it mean anything:
 

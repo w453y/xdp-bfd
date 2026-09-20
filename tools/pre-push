@@ -9,6 +9,23 @@ set -u
 cd "$(git rev-parse --show-toplevel)" || exit 0
 
 pgrep -x bfd_tx >/dev/null || { echo "pre-push: no engine, skipping matrix"; exit 0; }
+stats=/tmp/bfd_tx_stats.json
+# An engine started without --stats-dump leaves whatever the last one
+# wrote, and that file will happily claim a full mesh for days. Age it
+# first: an unknown mesh has to read as unknown, not as a healthy one.
+if [ -f "$stats" ]; then
+    age=$(( $(date +%s) - $(stat -c %Y "$stats") ))
+else
+    age=-1
+fi
+if [ "$age" -lt 0 ]; then
+    echo "pre-push: no $stats, skipping matrix"; exit 0
+fi
+if [ "$age" -gt 300 ]; then
+    echo "pre-push: $stats is $((age / 60))m old, so the mesh state is"
+    echo "pre-push: unknown (engine started without --stats-dump?), skipping"
+    exit 0
+fi
 up=$(python3 - <<'PY' 2>/dev/null
 import json
 try:
@@ -25,7 +42,16 @@ echo "pre-push: running the injection matrix against $up sessions"
 # what this hook exists to catch, so the status is deliberately not
 # checked here - valid JSON means the run happened and `failures` is the
 # answer whatever the exit status was.
-out=$(python3 tests/inject_matrix.py --json)
+matrix=tests/testbed/inject_matrix.py
+# Reaching here means a live mesh, so a missing script is a broken hook
+# rather than a machine without a testbed, and it must not pass quietly:
+# the stale path below this line went unnoticed for weeks that way.
+[ -f "$matrix" ] || {
+    echo "pre-push: $matrix is missing; the matrix gate did not run"
+    echo "pre-push: push refused (--no-verify to override)"
+    exit 1
+}
+out=$(python3 "$matrix" --json)
 fails=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["failures"])')
 if [ -z "$fails" ]; then
     # A hook problem, not a test failure. Say so and get out of the way.

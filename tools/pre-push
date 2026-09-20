@@ -10,20 +10,20 @@ cd "$(git rev-parse --show-toplevel)" || exit 0
 
 pgrep -x bfd_tx >/dev/null || { echo "pre-push: no engine, skipping matrix"; exit 0; }
 stats=/tmp/bfd_tx_stats.json
-# An engine started without --stats-dump leaves whatever the last one
-# wrote, and that file will happily claim a full mesh for days. Age it
-# first: an unknown mesh has to read as unknown, not as a healthy one.
-if [ -f "$stats" ]; then
-    age=$(( $(date +%s) - $(stat -c %Y "$stats") ))
-else
-    age=-1
-fi
-if [ "$age" -lt 0 ]; then
+# The snapshot is written on SIGUSR1, so ask for one rather than reading
+# whatever is lying there. An engine started without --stats-dump does not
+# answer, and the file it leaves behind will claim a full mesh for days,
+# so check afterwards that the file actually moved: an unknown mesh has to
+# read as unknown, not as a healthy one.
+sudo pkill -USR1 -x bfd_tx 2>/dev/null
+sleep 1
+if [ ! -f "$stats" ]; then
     echo "pre-push: no $stats, skipping matrix"; exit 0
 fi
-if [ "$age" -gt 300 ]; then
-    echo "pre-push: $stats is $((age / 60))m old, so the mesh state is"
-    echo "pre-push: unknown (engine started without --stats-dump?), skipping"
+age=$(( $(date +%s) - $(stat -c %Y "$stats") ))
+if [ "$age" -gt 30 ]; then
+    echo "pre-push: $stats did not refresh on SIGUSR1 ($((age / 60))m old),"
+    echo "pre-push: so the mesh state is unknown; skipping"
     exit 0
 fi
 up=$(python3 - <<'PY' 2>/dev/null

@@ -34,7 +34,7 @@ LockPersonality=yes
 # Detection and the heartbeat run in the userspace loop, so it has to stay
 # schedulable when softirq is saturated. Raise the priority only if other
 # real-time threads share the core. Headroom for busy hosts rather than a
-# fix for anything observed; see security.md.
+# fix for anything observed.
 CPUSchedulingPolicy=fifo
 CPUSchedulingPriority=10
 IOSchedulingClass=realtime

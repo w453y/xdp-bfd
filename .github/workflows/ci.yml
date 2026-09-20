@@ -1,14 +1,22 @@
 name: ci
 
-#   full         self-hosted: build, unit suites, fuzz corpus, and the
-#                namespace and FRR end-to-end suites. The FRR scenarios read
-#                BPF maps through bpftool, which hosted runners cannot do.
-#   toolchain    the clang floor, asserted in both directions.
-#   kernel       unit suites under a chosen kernel in a microVM.
-#   cross        the BPF object builds for a non-host architecture.
-#   compilers    hosted, stock machine: build and unit suites under both
-#                compilers.
+# The jobs, in the order they appear below:
+#
+#   full             self-hosted: build, unit suites, fuzz regressions, and
+#                    the namespace and FRR end-to-end suites. The FRR
+#                    scenarios read BPF maps through bpftool, which hosted
+#                    runners cannot do.
+#   toolchain        every supported clang compiles the BPF object.
+#   kernel           unit suites under a chosen kernel in a microVM.
+#   cross            the BPF object builds for a non-host architecture.
+#   compilers        hosted, stock machine: build and unit suites under
+#                    both compilers.
+#   coverage         what the host suites reach, reported not gated.
 #   static-analysis  scan-build over the engine, any finding fails.
+#   package          the deb and the rpm, built and installed in a
+#                    container per distro.
+#
+# The nightly fuzz search is separate, in fuzz.yml.
 on:
   pull_request:
   # Every branch, not just main. A merge commit is a different tree from the
@@ -118,24 +126,16 @@ jobs:
           sudo find . -user root -exec rm -rf {} + 2>/dev/null || true
           true
 
-  # The clang floor. Below LLVM 20 the BPF backend has no 32-bit atomic
-  # compare-and-swap, so sweep.h's __sync_val_compare_and_swap crashes the
-  # compiler. Both sides are asserted: below the floor must fail, and fail
-  # on that specific error rather than on some unrelated breakage.
-  # Every supported clang builds the object. It used to be a floor check:
-  # below clang 20 the BPF backend had no 32-bit atomic compare-and-swap
-  # and refused the object at compile. The CAS targets are __u64 now
-  # (session_state.alive, sweep.inited), so that build-time floor is gone
-  # and clang 14 up all compile.
+  # Every clang the packaging declares support for compiles the BPF
+  # object. This was once a floor check, because below clang 20 the BPF
+  # backend had no 32-bit atomic compare-and-swap and refused the object
+  # outright; the two CAS targets are __u64 now, so that barrier is gone.
   #
-  # The real floor moved to load time and is codegen-dependent: clang 14
-  # produces an object the verifier refuses ("combined stack size 528, too
-  # large"), clang 19 produces one that loads. This hosted job has no BPF
-  # kernel and can only confirm the compile; the `kernel` job below builds
-  # with clang-21 and loads it under a real kernel, which is the load
-  # regression guard for the version we ship. The exact sub-floor boundary
-  # (which clang between 15 and 18 first loads) is a pending bisect in the
-  # packaging plan, not a regression gate, so it is not asserted anywhere.
+  # 17 is the lowest arm because it is the lowest clang measured to
+  # compile an object that then loads, and it is what Build-Depends and
+  # BuildRequires ask for. Compiling is all this hosted job can check: it
+  # has no BPF kernel. The `kernel` job below loads a clang-21 object
+  # under a real one, which is the guard for the version actually shipped.
   toolchain:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -301,8 +301,14 @@ jobs:
           sudo apt-get install -y gcovr libbpf-dev
       - name: build and run fsm_run and dp_run instrumented
         run: make CFLAGS="--coverage -O0 -g" test-fsm test-dp
+      # The job summary is rendered as Markdown, so gcovr's text table
+      # arrives as one run-on paragraph. Emit a real table, and keep the
+      # plain report in the log for anyone who wants the missing lines.
       - name: report line and branch coverage
-        run: gcovr -s --filter 'src/engine/(fsm|dplane)\.c' | tee -a "$GITHUB_STEP_SUMMARY"
+        run: |
+          gcovr -s --filter 'src/engine/(fsm|dplane)\.c'
+          gcovr --json-summary --filter 'src/engine/(fsm|dplane)\.c' \
+            | python3 .github/coverage-summary.py >> "$GITHUB_STEP_SUMMARY"
 
   # Its own job rather than a step on the end of the compiler matrix, where
   # a finding was reported as "portability (cc) failed" and said nothing

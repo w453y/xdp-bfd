@@ -140,8 +140,9 @@ staticd_options="  -A 127.0.0.1"
 
 # Side A's bfdd drives the engine instead of its own dataplane. The `c`
 # in ipv4c is client mode: bfdd connects out to the engine's listener.
-# unixc is the natural choice and is broken in FRR <= 10.5 (an oversized
-# addrlen that AF_UNIX rejects, fixed upstream as #22621), so TCP it is.
+# unixc is the natural choice and is broken in every FRR release through
+# 10.7.1 (an oversized addrlen that AF_UNIX rejects, fixed upstream as
+# #22621 and so far on master only), so TCP it is.
 DPLANE_OPT = " --dplaneaddr ipv4c:127.0.0.1:50700"
 
 

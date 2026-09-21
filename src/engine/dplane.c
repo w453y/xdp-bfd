@@ -910,9 +910,10 @@ void dp_accept(void)
 int dp_listen_init(const char *arg)
 {
 	/* "<path>" = unix socket; "<port number>" = TCP on 127.0.0.1.
-	 * Note: FRR <=10.5 bfdd unixc: client mode passes an oversized
-	 * addrlen to connect(2), which AF_UNIX rejects (EINVAL) - use
-	 * TCP with those versions. */
+	 * Note: bfdd unixc: client mode passes an oversized addrlen to
+	 * connect(2), which AF_UNIX rejects (EINVAL). Measured against
+	 * 10.1.2, 10.7.1 and master: every release through 10.7.1 fails
+	 * this way, master does not. Use TCP with any released FRR. */
 	if (arg[0] == '/') {
 		dp_listen = socket(AF_UNIX, SOCK_STREAM, 0);
 		if (dp_listen < 0) {

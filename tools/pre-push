@@ -36,21 +36,29 @@ PY
 )
 [ "${up:-0}" -ge 2 ] || { echo "pre-push: mesh is down ($up up), skipping"; exit 0; }
 
+matrix=tests/testbed/inject_matrix.py
+# A missing script means one of two very different things. If the engine
+# sources are not here either, this is a branch the gate does not apply
+# to, such as docs, and there is nothing to check. If they are here, the
+# script has moved or been deleted and the gate is broken, which must not
+# pass quietly: that is exactly how the stale path below went unnoticed
+# for weeks.
+if [ ! -f "$matrix" ]; then
+    if [ ! -d src/engine ]; then
+        echo "pre-push: no engine sources here, skipping matrix"
+        exit 0
+    fi
+    echo "pre-push: $matrix is missing; the matrix gate did not run"
+    echo "pre-push: push refused (--no-verify to override)"
+    exit 1
+fi
+
 echo "pre-push: running the injection matrix against $up sessions"
 # stdout only: progress goes to stderr, and folding it back in with 2>&1
 # breaks the parse. The script exits non-zero when cases fail, which is
 # what this hook exists to catch, so the status is deliberately not
 # checked here - valid JSON means the run happened and `failures` is the
 # answer whatever the exit status was.
-matrix=tests/testbed/inject_matrix.py
-# Reaching here means a live mesh, so a missing script is a broken hook
-# rather than a machine without a testbed, and it must not pass quietly:
-# the stale path below this line went unnoticed for weeks that way.
-[ -f "$matrix" ] || {
-    echo "pre-push: $matrix is missing; the matrix gate did not run"
-    echo "pre-push: push refused (--no-verify to override)"
-    exit 1
-}
 out=$(python3 "$matrix" --json)
 fails=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["failures"])')
 if [ -z "$fails" ]; then

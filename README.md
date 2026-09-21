@@ -9,6 +9,14 @@ cannot hold aggressive timers under load. Every claim here has a packet
 capture, a kernel counter or a log behind it, in the directory that makes
 the claim.
 
+Three places, and it is worth knowing which is which. The **code** is on
+[main](https://github.com/w453y/xdp-bfd). Anything you would read to run
+or operate it, including the threat model, the RFC conformance matrix and
+the supported kernels, is in the
+[wiki](https://github.com/w453y/xdp-bfd/wiki). This branch is the
+evidence: the captures, the counters and the runs those documents are
+drawn from.
+
 ## Start here
 
 | | |
@@ -51,6 +59,12 @@ Questions asked after the fact, each answered with a measurement.
 | [v6-echo](investigations/v6-echo/) | IPv6 echo origination, and the assumption it corrected. |
 | [netns-rig](investigations/netns-rig/) | Testing the userspace receive path in namespaces. |
 | [dp-fuzz](investigations/dp-fuzz/) | An out-of-bounds read in the bfddp parser, found by fuzzing. |
+
+## Tools
+
+[tools/](tools/) — the instruments that produced these numbers, the
+support-matrix arm runner, and the standalone rigs the test suites
+replaced.
 
 ## Review
 

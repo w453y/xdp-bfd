@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* addrstr.h - render a 16-byte session address (v4 stored v4-mapped).
- * Userspace only. */
+ * Userspace only.
+ */
 #ifndef BFD_ADDRSTR_H
 #define BFD_ADDRSTR_H
 
@@ -9,11 +10,9 @@
 
 #include "bfd_shared.h"
 
-static inline const char *bfd_addr_str(const struct bfd_addr *a, char *buf,
-				       size_t n)
+static inline const char *bfd_addr_str(const struct bfd_addr *a, char *buf, size_t n)
 {
-	static const __u8 v4map[12] = { 0, 0, 0, 0, 0, 0,
-					0, 0, 0, 0, 0xff, 0xff };
+	static const __u8 v4map[12] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff };
 
 	if (!memcmp(a->b, v4map, sizeof(v4map)))
 		return inet_ntop(AF_INET, &a->b[12], buf, n);

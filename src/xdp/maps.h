@@ -17,7 +17,8 @@ struct {
 } bfd_sessions SEC(".maps");
 
 /* Slots and their meanings are defined once by BFD_STAT_LIST in
- * include/bfd_shared.h; the size follows from it. */
+ * include/bfd_shared.h; the size follows from it.
+ */
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, BFD_STAT_MAX);
@@ -38,7 +39,8 @@ struct {
 } tx_config SEC(".maps");
 
 /* echo_peers: peer address (v4-mapped) -> 1 for each echo-active session's
- * peer. The reflector returns only these echoes. */
+ * peer. The reflector returns only these echoes.
+ */
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, BFD_MAX_SESSIONS);
@@ -47,7 +49,8 @@ struct {
 } echo_peers SEC(".maps");
 
 /* echo_disc: our my_disc -> session key, to demux our own returning echoes,
- * which carry no Your Disc. */
+ * which carry no Your Disc.
+ */
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, BFD_MAX_SESSIONS);
@@ -56,7 +59,8 @@ struct {
 } echo_disc SEC(".maps");
 
 /* bit 0: promiscuous, track sessions with no tx_config (bfd_loader only).
- * bit 1: a multihop session exists; see parse_l3. */
+ * bit 1: a multihop session exists; see parse_l3.
+ */
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, 1);
@@ -73,7 +77,8 @@ struct {
 
 /* Structs that cross to the engine but belong to no map, recorded in BTF for
  * ktx_abi_check. BTF keeps only types reachable from maps and program
- * signatures; declared by value so their sizes are recorded. */
+ * signatures; declared by value so their sizes are recorded.
+ */
 static const struct {
 	struct bfd_event ev;
 	struct bfd_ctrl_pkt pkt;
@@ -81,7 +86,8 @@ static const struct {
 
 /* Engine heartbeat: CLOCK_MONOTONIC in ns at each loop pass, comparable to
  * bpf_ktime_get_ns. Mmapable so the engine writes it without a syscall. Zero
- * means not written yet and reads as healthy. */
+ * means not written yet and reads as healthy.
+ */
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, 1);
@@ -92,7 +98,7 @@ struct {
 
 struct sweep {
 	struct bpf_timer timer;
-	__u64 inited;   /* 64-bit for the CAS: see alive in bfd_shared.h */
+	__u64 inited; /* 64-bit for the CAS: see alive in bfd_shared.h */
 	/* Negative errno from the arming call that failed; 0 when healthy. */
 	__s32 init_err;
 };
@@ -106,18 +112,20 @@ struct {
 
 /* Scratch space for authentication. A per-CPU map rather than the stack: the
  * verifier's 512-byte budget covers the whole call chain and the digest uses
- * most of it. */
+ * most of it.
+ */
 struct auth_scratch {
 	__u8 blk[SHA1_BLOCK_LEN];
 	__u8 dig[SHA1_DIGEST_LEN];
-	__u8 rcv[SHA1_DIGEST_LEN];   /* the digest as it arrived, kept
-	                              * while blk's copy is zeroed to
-	                              * recompute over the same bytes */
-	__u8 tmp[SHA1_BLOCK_LEN];    /* hmac_sha1_blocks' working block, kept
-	                              * off the stack */
-	__u8 kpad[SHA1_BLOCK_LEN];   /* the chosen key at a fixed offset; a
-	                              * variable offset makes the verifier
-	                              * re-walk the digest per state */
+	/* the digest as it arrived, kept while blk's copy is zeroed to
+	 * recompute over the same bytes
+	 */
+	__u8 rcv[SHA1_DIGEST_LEN];
+	__u8 tmp[SHA1_BLOCK_LEN]; /* hmac_sha1_blocks' working block, kept off the stack */
+	/* the chosen key at a fixed offset; a variable offset makes the
+	 * verifier re-walk the digest per state
+	 */
+	__u8 kpad[SHA1_BLOCK_LEN];
 };
 
 struct {

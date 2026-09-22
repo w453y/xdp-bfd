@@ -53,43 +53,41 @@
 #include <linux/if_ether.h>
 
 
-
-
 #include "bfddp.h"
 
 
 /* ---------- globals ---------- */
 static int rx_sock = -1, rx6_sock = -1;
-static int rxm_sock = -1;   /* v4 multihop RX, port 4784 */
-static int rxm6_sock = -1;  /* v6 multihop RX, port 4784 */
+static int rxm_sock = -1;  /* v4 multihop RX, port 4784 */
+static int rxm6_sock = -1; /* v6 multihop RX, port 4784 */
 /* Loop clock: a timerfd, so sub-millisecond ticks are honoured. SO_RCVTIMEO
- * would round anything under 1ms up. */
+ * would round anything under 1ms up.
+ */
 static int tick_fd = -1;
-
-
-
 
 
 /* ---------- main ---------- */
 /* Main loop tick in microseconds, --tick-us. */
 #define TICK_US_DEFAULT 2000
-static unsigned tick_us = TICK_US_DEFAULT;
+static unsigned int tick_us = TICK_US_DEFAULT;
 
 
 /* Main loop passes, for the stats dump. */
 uint64_t loop_passes;
 /* --demand, static mode only; under bfdd demand arrives per session in the
- * ADD. */
+ * ADD.
+ */
 static int static_demand;
-const char *static_auth = NULL;
+const char *static_auth;
 static int check_only;
-uint64_t loop_rx_wakeups;   /* passes on which rx_sock had a packet */
+uint64_t loop_rx_wakeups; /* passes on which rx_sock had a packet */
 
 /* Inter-pass gap histogram, log2 buckets in microseconds. */
 uint64_t loop_gap_us[24];
 
 /* Re-choose keys whose periods have moved on. The chain arrives once, so
- * rollovers are noticed here; once a second suits periods in whole seconds. */
+ * rollovers are noticed here; once a second suits periods in whole seconds.
+ */
 static void auth_rollover_tick(void)
 {
 	static int64_t last;
@@ -106,20 +104,23 @@ static void auth_rollover_tick(void)
 		if (!s->used || !s->auth_nkeys)
 			continue;
 		/* Nothing changes until the next boundary, and a session
-		 * whose keys never expire has none. */
+		 * whose keys never expire has none.
+		 */
 		if (s->auth_next_change == 0 || now < s->auth_next_change)
 			continue;
 		if (session_auth_evaluate(s, now))
-			log_info("lid=%u authentication key %u is now in use\n",
-				 s->lid, s->auth_keyid);
+			log_info("lid=%u authentication key %u is now in use\n", s->lid,
+				 s->auth_keyid);
 		/* The acceptable set is evaluated here too, so the program
-		 * is refreshed whether or not the transmit key moved. */
+		 * is refreshed whether or not the transmit key moved.
+		 */
 		ktx_mirror(s);
 	}
 }
 
 /* SIGTERM and SIGINT request an orderly exit, so peers get AdminDown instead
- * of a detect timeout. */
+ * of a detect timeout.
+ */
 static volatile sig_atomic_t shutdown_wanted;
 
 static void shutdown_on_signal(int sig)
@@ -133,7 +134,8 @@ static void shutdown_on_signal(int sig)
 #endif
 
 /* --auth <type>:<keyid>:<key> for static mode, to test authentication between
- * two static engines. The key has no lifetime. */
+ * two static engines. The key has no lifetime.
+ */
 static int static_auth_apply(struct session *s, const char *spec)
 {
 	const char *c1 = strchr(spec, ':');
@@ -186,7 +188,8 @@ static int static_auth_apply(struct session *s, const char *spec)
 	s->auth_present = 1;
 	s->auth_nkeys = 1;
 	/* Picks the send key and fills auth_type, auth_keyid and the pads,
-	 * the same call the dplane path makes when keys arrive. */
+	 * the same call the dplane path makes when keys arrive.
+	 */
 	session_auth_evaluate(s, (int64_t)time(NULL));
 	if (!s->auth_type) {
 		log_err("--auth: no key is sendable, nothing would go out\n");
@@ -207,8 +210,7 @@ int main(int argc, char **argv)
 		if (!strcmp(argv[i], "--version")) {
 			printf("xdp-bfd %s\n", BFD_XDP_VERSION);
 			return 0;
-		}
-		else if (!strcmp(argv[i], "--dplane") && i + 1 < argc)
+		} else if (!strcmp(argv[i], "--dplane") && i + 1 < argc)
 			dplane_path = argv[++i];
 		else if (!strcmp(argv[i], "--kernel-tx") && i + 1 < argc)
 			ktx_if = argv[++i];
@@ -222,32 +224,28 @@ int main(int argc, char **argv)
 			unsigned long long v = strtoull(a, &end, 10);
 
 			/* Below ~0.5ms timer churn outweighs the gain; above
-			 * 100ms the sweep is slower than any detect budget. */
+			 * 100ms the sweep is slower than any detect budget.
+			 */
 			if (end == a || *end || v < 500 || v > 100000) {
-				log_err(
-					"--sweep-us: expected 500-100000, got '%s'\n",
-					a);
+				log_err("--sweep-us: expected 500-100000, got '%s'\n", a);
 				return 1;
 			}
 			ktx_sweep_ns = v * 1000ull;
-		}
-		else if (!strcmp(argv[i], "--deadman-us") && i + 1 < argc) {
+		} else if (!strcmp(argv[i], "--deadman-us") && i + 1 < argc) {
 			const char *a = argv[++i];
 			char *end;
 			unsigned long long v = strtoull(a, &end, 10);
 
 			/* 0 turns the gate off. Otherwise at least 50ms, above
-			 * the worst measured loop gap, and at most a minute. */
-			if (end == a || *end ||
-			    (v && (v < 50000 || v > 60000000))) {
-				log_err(
-					"--deadman-us: expected 0 (off) or 50000-60000000, got '%s'\n",
+			 * the worst measured loop gap, and at most a minute.
+			 */
+			if (end == a || *end || (v && (v < 50000 || v > 60000000))) {
+				log_err("--deadman-us: expected 0 (off) or 50000-60000000, got '%s'\n",
 					a);
 				return 1;
 			}
 			ktx_deadman_ns = v * 1000ull;
-		}
-		else if (!strcmp(argv[i], "--auth") && i + 1 < argc)
+		} else if (!strcmp(argv[i], "--auth") && i + 1 < argc)
 			static_auth = argv[++i];
 		else if (!strcmp(argv[i], "--demand"))
 			static_demand = 1;
@@ -259,17 +257,15 @@ int main(int argc, char **argv)
 			unsigned long long v = strtoull(a, &end, 10);
 
 			/* 0 turns it off. The 10ms floor only catches typos;
-			 * the interval is raised to the detect budget anyway. */
-			if (end == a || *end ||
-			    (v && (v < 10000 || v > 600000000))) {
-				log_err(
-					"--demand-poll-us: expected 0 (off) or 10000-600000000, got '%s'\n",
+			 * the interval is raised to the detect budget anyway.
+			 */
+			if (end == a || *end || (v && (v < 10000 || v > 600000000))) {
+				log_err("--demand-poll-us: expected 0 (off) or 10000-600000000, got '%s'\n",
 					a);
 				return 1;
 			}
 			demand_poll_us = v;
-		}
-		else if (!strcmp(argv[i], "--log-level") && i + 1 < argc) {
+		} else if (!strcmp(argv[i], "--log-level") && i + 1 < argc) {
 			const char *a = argv[++i];
 
 			if (!strcmp(a, "error"))
@@ -279,58 +275,49 @@ int main(int argc, char **argv)
 			else if (!strcmp(a, "debug"))
 				bfd_log_level = BFD_LOG_DEBUG;
 			else {
-				log_err(
-					"--log-level: expected error|info|debug, got '%s'\n",
-					a);
+				log_err("--log-level: expected error|info|debug, got '%s'\n", a);
 				return 1;
 			}
-		}
-		else if (!strcmp(argv[i], "--tick-us") && i + 1 < argc) {
+		} else if (!strcmp(argv[i], "--tick-us") && i + 1 < argc) {
 			const char *a = argv[++i];
 			char *end;
 			unsigned long long v = strtoull(a, &end, 10);
 
 			/* Main loop tick: how often the per-session TX and
 			 * detect pass runs. Floor 200us, since each pass walks
-			 * every session; ceiling 100ms. */
+			 * every session; ceiling 100ms.
+			 */
 			if (end == a || *end || v < 200 || v > 100000) {
-				log_err(
-					"--tick-us: expected 200-100000, got '%s'\n",
-					a);
+				log_err("--tick-us: expected 200-100000, got '%s'\n", a);
 				return 1;
 			}
-			tick_us = (unsigned)v;
-		}
-		else if (!strcmp(argv[i], "--xdp-mode") && i + 1 < argc) {
+			tick_us = (unsigned int)v;
+		} else if (!strcmp(argv[i], "--xdp-mode") && i + 1 < argc) {
 			const char *m = argv[++i];
+
 			if (!strcmp(m, "generic") || !strcmp(m, "skb"))
 				ktx_xdp_flags = XDP_FLAGS_SKB_MODE;
 			else if (!strcmp(m, "drv") || !strcmp(m, "native"))
 				ktx_xdp_flags = XDP_FLAGS_DRV_MODE;
 			else {
-				log_err(
-					"--xdp-mode: expected drv or generic, got '%s'\n",
-					m);
+				log_err("--xdp-mode: expected drv or generic, got '%s'\n", m);
 				return 1;
 			}
-		}
-		else if (!strcmp(argv[i], "--dp-hold") && i + 1 < argc) {
+		} else if (!strcmp(argv[i], "--dp-hold") && i + 1 < argc) {
 			const char *a = argv[++i];
 			char *end;
 			unsigned long long v = strtoull(a, &end, 10);
 
 			/* Reject trailing text: "10s" must not parse as 10. */
 			if (end == a || *end || v > 86400) {
-				log_err(
-					"--dp-hold: expected seconds (0-86400), got '%s'\n",
-					a);
+				log_err("--dp-hold: expected seconds (0-86400), got '%s'\n", a);
 				return 1;
 			}
 			dp_hold_us = v * 1000000ull;
-		}
-		else if (!strcmp(argv[i], "--dp-peer") && i + 1 < argc) {
+		} else if (!strcmp(argv[i], "--dp-peer") && i + 1 < argc) {
 			/* The account bfdd runs as: owner of the UNIX control
-			 * socket, and the uid SO_PEERCRED must match. */
+			 * socket, and the uid SO_PEERCRED must match.
+			 */
 			const char *a = argv[++i];
 			const struct passwd *pw = getpwnam(a);
 			char *end;
@@ -340,22 +327,21 @@ int main(int argc, char **argv)
 			} else {
 				unsigned long long v = strtoull(a, &end, 10);
 
-				if (end == a || *end || v > (unsigned)-2) {
-					log_err("--dp-peer: no such user and not a uid: '%s'\n",
-						a);
+				if (end == a || *end || v > (unsigned int)-2) {
+					log_err("--dp-peer: no such user and not a uid: '%s'\n", a);
 					return 1;
 				}
 				dp_set_peer_uid((uid_t)v);
 			}
 		}
 		/* Reject unknown options, and options missing their value,
-		 * before they are taken as positional arguments. */
+		 * before they are taken as positional arguments.
+		 */
 		else if (argv[i][0] == '-') {
-			log_err("unrecognised option '%s', or an option"
-				" missing its value\n", argv[i]);
+			log_err("unrecognised option '%s', or an option missing its value\n",
+				argv[i]);
 			return 1;
-		}
-		else if (!static_local)
+		} else if (!static_local)
 			static_local = argv[i];
 		else if (!static_peer)
 			static_peer = argv[i];
@@ -365,7 +351,8 @@ int main(int argc, char **argv)
 		}
 	}
 	/* --check: load the object (ABI check and verifier), report the
-	 * verdict and kernel, and exit without attaching. */
+	 * verdict and kernel, and exit without attaching.
+	 */
 	if (check_only) {
 		struct utsname un;
 		int rc = ktx_load();
@@ -382,13 +369,11 @@ int main(int argc, char **argv)
 
 	/* Static mode needs both addresses, even alongside --dplane. */
 	if (static_local && !static_peer) {
-		log_err("static: %s given without a peer address\n",
-			static_local);
+		log_err("static: %s given without a peer address\n", static_local);
 		return 1;
 	}
 	if (!dplane_path && (!static_local || !static_peer)) {
-		log_err(
-			"usage: %s <local-ip> <peer-ip> [--kernel-tx <if>]\n"
+		log_err("usage: %s <local-ip> <peer-ip> [--kernel-tx <if>]\n"
 			"       %s --dplane <port|sock-path> [--kernel-tx <if>] [--dp-hold <sec>]\n"
 			"       [--dp-peer <user|uid>]  (the account bfdd runs as)\n"
 			"       [--bpf-obj <path>] [--xdp-mode drv|generic]\n"
@@ -415,10 +400,10 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	if (tick_us != TICK_US_DEFAULT)
-		log_info("engine: main loop tick %uus (default %uus)\n",
-		       tick_us, TICK_US_DEFAULT);
+		log_info("engine: main loop tick %uus (default %uus)\n", tick_us, TICK_US_DEFAULT);
 	/* No SO_RCVTIMEO: poll() is the only wait and every drain is
-	 * MSG_DONTWAIT. */
+	 * MSG_DONTWAIT.
+	 */
 	tick_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
 	if (tick_fd < 0) {
 		perror("timerfd_create");
@@ -426,7 +411,7 @@ int main(int argc, char **argv)
 	}
 	{
 		struct itimerspec its = {
-			.it_interval = { .tv_sec  = tick_us / 1000000,
+			.it_interval = { .tv_sec = tick_us / 1000000,
 					 .tv_nsec = (tick_us % 1000000) * 1000 },
 		};
 		its.it_value = its.it_interval;
@@ -436,14 +421,17 @@ int main(int argc, char **argv)
 		}
 	}
 	int pi = 1;
+
 	setsockopt(rx_sock, IPPROTO_IP, IP_PKTINFO, &pi, sizeof(pi));
 	/* GTSM (RFC 5881 s5) by checking the received TTL. Linux honours
-	 * IP_MINTTL and IPV6_MINHOPCOUNT only for TCP. */
+	 * IP_MINTTL and IPV6_MINHOPCOUNT only for TCP.
+	 */
 	setsockopt(rx_sock, IPPROTO_IP, IP_RECVTTL, &pi, sizeof(pi));
 
 	/* RFC 5883 multihop control packets arrive on 4784, on their own
 	 * socket. Establishment goes through userspace; XDP handles both ports
-	 * once Up. */
+	 * once Up.
+	 */
 	rxm_sock = socket(AF_INET, SOCK_DGRAM, 0);
 	if (rxm_sock < 0) {
 		perror("socket v4 multihop (multihop disabled)");
@@ -456,12 +444,11 @@ int main(int argc, char **argv)
 			close(rxm_sock);
 			rxm_sock = -1;
 		} else {
-			setsockopt(rxm_sock, IPPROTO_IP, IP_PKTINFO, &pi,
-				   sizeof(pi));
+			setsockopt(rxm_sock, IPPROTO_IP, IP_PKTINFO, &pi, sizeof(pi));
 			/* The minimum TTL is per session, so read the TTL per
-			 * packet instead of setting IP_MINTTL. */
-			setsockopt(rxm_sock, IPPROTO_IP, IP_RECVTTL, &pi,
-				   sizeof(pi));
+			 * packet instead of setting IP_MINTTL.
+			 */
+			setsockopt(rxm_sock, IPPROTO_IP, IP_RECVTTL, &pi, sizeof(pi));
 		}
 	}
 
@@ -474,26 +461,26 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	int v6only = 1;
+
 	setsockopt(rx6_sock, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
-	struct sockaddr_in6 la6 = { .sin6_family = AF_INET6,
-		.sin6_port = htons(PORT_CTRL) };
+	struct sockaddr_in6 la6 = { .sin6_family = AF_INET6, .sin6_port = htons(PORT_CTRL) };
+
 	if (bind(rx6_sock, (void *)&la6, sizeof(la6))) {
 		perror("bind 3784 v6 (is another BFD daemon running?)");
 		return 1;
 	}
 	setsockopt(rx6_sock, IPPROTO_IPV6, IPV6_RECVPKTINFO, &pi, sizeof(pi));
 	/* Not IPV6_MINHOPCOUNT: Linux enforces it only for TCP. */
-	setsockopt(rx6_sock, IPPROTO_IPV6, IPV6_RECVHOPLIMIT, &pi,
-		   sizeof(pi));
+	setsockopt(rx6_sock, IPPROTO_IPV6, IPV6_RECVHOPLIMIT, &pi, sizeof(pi));
 
 	/* v6 multihop, port 4784. The minimum hop limit is per session and
-	 * checked per packet. */
+	 * checked per packet.
+	 */
 	rxm6_sock = socket(AF_INET6, SOCK_DGRAM, 0);
 	if (rxm6_sock < 0) {
 		perror("socket v6 multihop (v6 multihop disabled)");
 	} else {
-		setsockopt(rxm6_sock, IPPROTO_IPV6, IPV6_V6ONLY, &v6only,
-			   sizeof(v6only));
+		setsockopt(rxm6_sock, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
 		struct sockaddr_in6 lam6 = { .sin6_family = AF_INET6,
 					     .sin6_port = htons(BFD_PORT_MHOP) };
 		if (bind(rxm6_sock, (void *)&lam6, sizeof(lam6))) {
@@ -501,21 +488,21 @@ int main(int argc, char **argv)
 			close(rxm6_sock);
 			rxm6_sock = -1;
 		} else {
-			setsockopt(rxm6_sock, IPPROTO_IPV6, IPV6_RECVPKTINFO,
-				   &pi, sizeof(pi));
+			setsockopt(rxm6_sock, IPPROTO_IPV6, IPV6_RECVPKTINFO, &pi, sizeof(pi));
 			/* As for v4 multihop: read the hop limit per packet. */
-			setsockopt(rxm6_sock, IPPROTO_IPV6, IPV6_RECVHOPLIMIT,
-				   &pi, sizeof(pi));
+			setsockopt(rxm6_sock, IPPROTO_IPV6, IPV6_RECVHOPLIMIT, &pi, sizeof(pi));
 		}
 	}
 
 	/* Unbound fallback TX socket; per-slot bound sockets carry
-	 * normal traffic (slot_sock). */
+	 * normal traffic (slot_sock).
+	 */
 	tx_sock = socket(AF_INET, SOCK_DGRAM, 0);
 	if (tx_sock < 0) {
 		perror("socket v4 fallback TX");
 	} else {
 		int ttl = 255;
+
 		setsockopt(tx_sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
 	}
 	tx6_sock = socket(AF_INET6, SOCK_DGRAM, 0);
@@ -523,8 +510,8 @@ int main(int argc, char **argv)
 		perror("socket v6 fallback TX");
 	} else {
 		int hops6 = 255;
-		setsockopt(tx6_sock, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &hops6,
-			   sizeof(hops6));
+
+		setsockopt(tx6_sock, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &hops6, sizeof(hops6));
 	}
 
 	if (ktx_if) {
@@ -538,7 +525,8 @@ int main(int argc, char **argv)
 
 	srandom(getpid() ^ time(NULL));
 	/* Both handlers set a flag and nothing else; the work happens in
-	 * the loop below, so neither needs to be async-signal-safe. */
+	 * the loop below, so neither needs to be async-signal-safe.
+	 */
 	signal(SIGUSR1, stats_on_signal);
 	signal(SIGTERM, shutdown_on_signal);
 	signal(SIGINT, shutdown_on_signal);
@@ -546,20 +534,21 @@ int main(int argc, char **argv)
 	if (static_local) {
 		struct session *s = sess_alloc();
 		/* Family from the address text: a colon means v6. Both
-		 * addresses must be the same family. */
+		 * addresses must be the same family.
+		 */
 		int fam = strchr(static_local, ':') ? AF_INET6 : AF_INET;
 
 		if ((strchr(static_peer, ':') != NULL) != (fam == AF_INET6)) {
-			log_err(
-				"static: %s and %s are different families\n",
-				static_local, static_peer);
+			log_err("static: %s and %s are different families\n", static_local,
+				static_peer);
 			return 1;
 		}
 		if (fam == AF_INET6) {
 			struct in6_addr sl6, sp6;
 
 			/* Unchecked, a typo yields a zero address and a
-			 * session that can never match. */
+			 * session that can never match.
+			 */
 			if (inet_pton(AF_INET6, static_local, &sl6) != 1 ||
 			    inet_pton(AF_INET6, static_peer, &sp6) != 1) {
 				log_err("static: bad IPv6 address\n");
@@ -579,38 +568,40 @@ int main(int argc, char **argv)
 			key_set_v4(&s->peer, sp);
 		}
 		s->family = fam;
-		s->lid         = (random() & 0x7fffffff) | 1;
-		s->wire_disc   = s->lid;
-		s->min_tx_us   = DEF_MIN_TX;
+		s->lid = (random() & 0x7fffffff) | 1;
+		s->wire_disc = s->lid;
+		s->min_tx_us = DEF_MIN_TX;
 		s->applied_tx_us = DEF_MIN_TX;
-		s->min_rx_us   = DEF_MIN_RX;
+		s->min_rx_us = DEF_MIN_RX;
 		s->detect_mult = DEF_MULT;
-		s->state       = ST_DOWN;
-		s->demand      = static_demand;
+		s->state = ST_DOWN;
+		s->demand = static_demand;
 		s->pushed_valid = 0;
-		s->next_tx_us  = now_us();
+		s->next_tx_us = now_us();
 		if (static_auth && static_auth_apply(s, static_auth))
 			return 1;
-		log_info("bfd_tx: static session lid=%u %s -> %s%s\n",
-		       s->lid, static_local, static_peer,
-		       use_ktx ? " (kernel-tx)" : "");
+		log_info("bfd_tx: static session lid=%u %s -> %s%s\n", s->lid, static_local,
+			 static_peer, use_ktx ? " (kernel-tx)" : "");
 	}
 
 	for (;;) {
 		auth_rollover_tick();
 
 		/* Anything that did not fit the socket last pass. Cheap when
-		 * the queue is empty, which is the normal case. */
+		 * the queue is empty, which is the normal case.
+		 */
 		dp_flush();
 
 		/* Room the flush just freed goes to sessions whose state
-		 * change was deferred rather than dropped. */
+		 * change was deferred rather than dropped.
+		 */
 		dp_notify_flush_pending();
 
 		if (shutdown_wanted) {
 			/* Announce AdminDown to every peer before exiting.
 			 * dp-hold orphans are skipped: they must survive
-			 * unnoticed. */
+			 * unnoticed.
+			 */
 			int announced = 0;
 
 			for (int i = 0; i < MAX_SESSIONS; i++) {
@@ -621,8 +612,7 @@ int main(int argc, char **argv)
 				fsm_announce_down(cs);
 				announced++;
 			}
-			log_info("shutdown: announced AdminDown on %d session(s)\n",
-				 announced);
+			log_info("shutdown: announced AdminDown on %d session(s)\n", announced);
 			break;
 		}
 
@@ -631,18 +621,20 @@ int main(int argc, char **argv)
 			stats_dump();
 		}
 
-		__u8 p_buf[BFD_MAX_LEN] = {0};
+		__u8 p_buf[BFD_MAX_LEN] = { 0 };
 		struct bfd_ctrl_pkt p;
 		struct sockaddr_in from;
 		/* Packets drained per socket per pass. The bound keeps a flood
 		 * from starving TX, detection and the dplane; one per session
-		 * clears a legitimate burst in one pass. */
+		 * clears a legitimate burst in one pass.
+		 */
 		const int drain_budget = MAX_SESSIONS;
 
 		/* Poll set: the tick timerfd, four RX sockets, the dplane
 		 * listener and connection, and the sweep event ring. Drains
-		 * are non-blocking; drain_budget bounds a pass. */
-		struct pollfd pfd[8] = {0};
+		 * are non-blocking; drain_budget bounds a pass.
+		 */
+		struct pollfd pfd[8] = { 0 };
 		int dp_l = -1, dp_c = -1;
 
 		dp_fds(&dp_l, &dp_c);
@@ -650,21 +642,36 @@ int main(int argc, char **argv)
 		{
 			uint64_t exp;
 
-			pfd[np].fd = tick_fd; pfd[np++].events = POLLIN;
-			if (ktx_events_fd() >= 0)
-				{ pfd[np].fd = ktx_events_fd(); pfd[np++].events = POLLIN; }
-			if (rx_sock >= 0)
-				{ pfd[np].fd = rx_sock; pfd[np++].events = POLLIN; }
-			if (rx6_sock >= 0)
-				{ pfd[np].fd = rx6_sock; pfd[np++].events = POLLIN; }
-			if (rxm_sock >= 0)
-				{ pfd[np].fd = rxm_sock; pfd[np++].events = POLLIN; }
-			if (rxm6_sock >= 0)
-				{ pfd[np].fd = rxm6_sock; pfd[np++].events = POLLIN; }
-			if (dp_l >= 0)
-				{ pfd[np].fd = dp_l; pfd[np++].events = POLLIN; }
-			if (dp_c >= 0)
-				{ pfd[np].fd = dp_c; pfd[np++].events = POLLIN; }
+			pfd[np].fd = tick_fd;
+			pfd[np++].events = POLLIN;
+			if (ktx_events_fd() >= 0) {
+				pfd[np].fd = ktx_events_fd();
+				pfd[np++].events = POLLIN;
+			}
+			if (rx_sock >= 0) {
+				pfd[np].fd = rx_sock;
+				pfd[np++].events = POLLIN;
+			}
+			if (rx6_sock >= 0) {
+				pfd[np].fd = rx6_sock;
+				pfd[np++].events = POLLIN;
+			}
+			if (rxm_sock >= 0) {
+				pfd[np].fd = rxm_sock;
+				pfd[np++].events = POLLIN;
+			}
+			if (rxm6_sock >= 0) {
+				pfd[np].fd = rxm6_sock;
+				pfd[np++].events = POLLIN;
+			}
+			if (dp_l >= 0) {
+				pfd[np].fd = dp_l;
+				pfd[np++].events = POLLIN;
+			}
+			if (dp_c >= 0) {
+				pfd[np].fd = dp_c;
+				pfd[np++].events = POLLIN;
+			}
 			poll(pfd, np, -1);
 			/* Drain the timer so it does not stay readable. */
 			if (pfd[0].revents & POLLIN)
@@ -672,30 +679,41 @@ int main(int argc, char **argv)
 		}
 		/* Drain only the sockets poll reported readable. */
 		int rd4 = 0, rd6 = 0, rdm4 = 0, rdm6 = 0, rdl = 0, rdc = 0;
+
 		for (int k = 0; k < np; k++) {
 			if (!(pfd[k].revents & POLLIN))
 				continue;
-			if (pfd[k].fd == rx_sock)   rd4 = 1;
-			if (pfd[k].fd == rx6_sock)  rd6 = 1;
-			if (pfd[k].fd == rxm_sock)  rdm4 = 1;
-			if (pfd[k].fd == rxm6_sock) rdm6 = 1;
-			if (dp_l >= 0 && pfd[k].fd == dp_l) rdl = 1;
-			if (dp_c >= 0 && pfd[k].fd == dp_c) rdc = 1;
+			if (pfd[k].fd == rx_sock)
+				rd4 = 1;
+			if (pfd[k].fd == rx6_sock)
+				rd6 = 1;
+			if (pfd[k].fd == rxm_sock)
+				rdm4 = 1;
+			if (pfd[k].fd == rxm6_sock)
+				rdm6 = 1;
+			if (dp_l >= 0 && pfd[k].fd == dp_l)
+				rdl = 1;
+			if (dp_c >= 0 && pfd[k].fd == dp_c)
+				rdc = 1;
 		}
 		if (rdl)
 			dp_accept();
 		if (rdc)
 			dp_read();
 		uint64_t t = now_us();
+
 		loop_passes++;
 		/* Heartbeat for the dead-man gate in bfd_xdp.c. Taken after
-		 * poll() returns, so a loop stuck in poll stops beating. */
+		 * poll() returns, so a loop stuck in poll stops beating.
+		 */
 		ktx_heartbeat(t);
 		{
 			static uint64_t prev;
+
 			if (prev) {
 				uint64_t d = t - prev;
 				int b = 0;
+
 				while (d >>= 1)
 					b++;
 				loop_gap_us[b < 24 ? b : 23]++;
@@ -705,20 +723,20 @@ int main(int argc, char **argv)
 
 		/* Drain up to drain_budget packets. loop_rx_wakeups counts
 		 * passes with traffic, not packets. rx_sock >= 0 duplicates
-		 * rd4, but lets scan-build prove it. */
+		 * rd4, but lets scan-build prove it.
+		 */
 		for (int d = 0; rd4 && rx_sock >= 0 && d < drain_budget; d++) {
-			struct iovec iov4 = { .iov_base = p_buf,
-					      .iov_len = sizeof(p_buf) };
-			char cbuf4[CMSG_SPACE(sizeof(struct in_pktinfo)) +
-				   CMSG_SPACE(sizeof(int))];
+			struct iovec iov4 = { .iov_base = p_buf, .iov_len = sizeof(p_buf) };
+			char cbuf4[CMSG_SPACE(sizeof(struct in_pktinfo)) + CMSG_SPACE(sizeof(int))];
 			struct msghdr mh4 = {
-				.msg_name = &from, .msg_namelen = sizeof(from),
-				.msg_iov = &iov4, .msg_iovlen = 1,
+				.msg_name = &from,
+				.msg_namelen = sizeof(from),
+				.msg_iov = &iov4,
+				.msg_iovlen = 1,
 				.msg_control = cbuf4,
 				.msg_controllen = sizeof(cbuf4),
 			};
-			ssize_t n = recvmsg(rx_sock, &mh4,
-					    MSG_DONTWAIT | MSG_TRUNC);
+			ssize_t n = recvmsg(rx_sock, &mh4, MSG_DONTWAIT | MSG_TRUNC);
 
 			if (n < 0)
 				break;
@@ -727,20 +745,16 @@ int main(int argc, char **argv)
 			memcpy(&p, p_buf, sizeof(p));
 
 			/* Read the TTL from cmsg before demux. A missing cmsg
-			 * leaves rttl -1, which drops the packet. */
+			 * leaves rttl -1, which drops the packet.
+			 */
 			uint32_t dst_ip = 0;
 			int rttl = -1;
 
-			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh4); c;
-			     c = CMSG_NXTHDR(&mh4, c)) {
-				if (c->cmsg_level == IPPROTO_IP &&
-				    c->cmsg_type == IP_PKTINFO)
-					dst_ip = ((struct in_pktinfo *)
-						  CMSG_DATA(c))->ipi_addr.s_addr;
-				if (c->cmsg_level == IPPROTO_IP &&
-				    c->cmsg_type == IP_TTL)
-					memcpy(&rttl, CMSG_DATA(c),
-					       sizeof(rttl));
+			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh4); c; c = CMSG_NXTHDR(&mh4, c)) {
+				if (c->cmsg_level == IPPROTO_IP && c->cmsg_type == IP_PKTINFO)
+					dst_ip = ((struct in_pktinfo *)CMSG_DATA(c))->ipi_addr.s_addr;
+				if (c->cmsg_level == IPPROTO_IP && c->cmsg_type == IP_TTL)
+					memcpy(&rttl, CMSG_DATA(c), sizeof(rttl));
 			}
 
 			struct bfd_addr fp, fl;
@@ -755,41 +769,40 @@ int main(int argc, char **argv)
 		}
 
 		/* RFC 5883 multihop control packets, port 4784. Same
-		 * rx_accept as single-hop, with the session's minimum TTL. */
+		 * rx_accept as single-hop, with the session's minimum TTL.
+		 */
 		for (int d = 0; rdm4 && rxm_sock >= 0 && d < drain_budget; d++) {
-			__u8 pm_buf[BFD_MAX_LEN] = {0};
-		struct bfd_ctrl_pkt pm;
+			__u8 pm_buf[BFD_MAX_LEN] = { 0 };
+			struct bfd_ctrl_pkt pm;
 			struct sockaddr_in fromm;
-			struct iovec iovm = { .iov_base = pm_buf,
-					      .iov_len = sizeof(pm_buf) };
+			struct iovec iovm = { .iov_base = pm_buf, .iov_len = sizeof(pm_buf) };
 			/* Room for two cmsgs, IP_PKTINFO and IP_TTL. */
-			char cbufm[CMSG_SPACE(sizeof(struct in_pktinfo)) +
-				   CMSG_SPACE(sizeof(int))];
+			char cbufm[CMSG_SPACE(sizeof(struct in_pktinfo)) + CMSG_SPACE(sizeof(int))];
 			struct msghdr mhm = {
-				.msg_name = &fromm, .msg_namelen = sizeof(fromm),
-				.msg_iov = &iovm, .msg_iovlen = 1,
+				.msg_name = &fromm,
+				.msg_namelen = sizeof(fromm),
+				.msg_iov = &iovm,
+				.msg_iovlen = 1,
 				.msg_control = cbufm,
 				.msg_controllen = sizeof(cbufm),
 			};
 			ssize_t nm = recvmsg(rxm_sock, &mhm, MSG_DONTWAIT | MSG_TRUNC);
+
 			memcpy(&pm, pm_buf, sizeof(pm));
-		
+
 			if (nm < 0)
 				break;
-		
+
 			uint32_t mdst = 0;
 			int mttl = -1;
-			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mhm); c;
-			     c = CMSG_NXTHDR(&mhm, c)) {
-				if (c->cmsg_level == IPPROTO_IP &&
-				    c->cmsg_type == IP_PKTINFO)
-					mdst = ((struct in_pktinfo *)
-						CMSG_DATA(c))->ipi_addr.s_addr;
-				if (c->cmsg_level == IPPROTO_IP &&
-				    c->cmsg_type == IP_TTL)
+
+			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mhm); c; c = CMSG_NXTHDR(&mhm, c)) {
+				if (c->cmsg_level == IPPROTO_IP && c->cmsg_type == IP_PKTINFO)
+					mdst = ((struct in_pktinfo *)CMSG_DATA(c))->ipi_addr.s_addr;
+				if (c->cmsg_level == IPPROTO_IP && c->cmsg_type == IP_TTL)
 					memcpy(&mttl, CMSG_DATA(c), sizeof(mttl));
 			}
-		
+
 			struct bfd_addr mp, ml;
 			enum rx_verdict mwhy;
 			struct session *ms;
@@ -804,42 +817,39 @@ int main(int argc, char **argv)
 
 		/* rx6_sock >= 0 duplicates rd6, as in the v4 drain. */
 		for (int d = 0; rd6 && rx6_sock >= 0 && d < drain_budget; d++) {
-			__u8 p6_buf[BFD_MAX_LEN] = {0};
-		struct bfd_ctrl_pkt p6;
+			__u8 p6_buf[BFD_MAX_LEN] = { 0 };
+			struct bfd_ctrl_pkt p6;
 			struct sockaddr_in6 from6;
-			struct iovec iov6 = { .iov_base = p6_buf,
-				.iov_len = sizeof(p6_buf) };
-			char cbuf6[CMSG_SPACE(sizeof(struct in6_pktinfo)) +
-				   CMSG_SPACE(sizeof(int))];
+			struct iovec iov6 = { .iov_base = p6_buf, .iov_len = sizeof(p6_buf) };
+			char cbuf6[CMSG_SPACE(sizeof(struct in6_pktinfo)) + CMSG_SPACE(sizeof(int))];
 			struct msghdr mh6 = {
 				.msg_name = &from6,
 				.msg_namelen = sizeof(from6),
-				.msg_iov = &iov6, .msg_iovlen = 1,
+				.msg_iov = &iov6,
+				.msg_iovlen = 1,
 				.msg_control = cbuf6,
 				.msg_controllen = sizeof(cbuf6),
 			};
 			ssize_t n6 = recvmsg(rx6_sock, &mh6, MSG_DONTWAIT | MSG_TRUNC);
+
 			memcpy(&p6, p6_buf, sizeof(p6));
 			if (n6 < 0)
 				break;
-			struct bfd_addr fp6 = {0}, fl6 = {0};
+			struct bfd_addr fp6 = { 0 }, fl6 = { 0 };
 			int rhl6 = -1;
 
 			memcpy(fp6.b, &from6.sin6_addr, 16);
-			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh6); c;
-			     c = CMSG_NXTHDR(&mh6, c)) {
-				if (c->cmsg_level == IPPROTO_IPV6 &&
-				    c->cmsg_type == IPV6_HOPLIMIT)
+			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh6); c; c = CMSG_NXTHDR(&mh6, c)) {
+				if (c->cmsg_level == IPPROTO_IPV6 && c->cmsg_type == IPV6_HOPLIMIT)
 					memcpy(&rhl6, CMSG_DATA(c), sizeof(rhl6));
-				if (c->cmsg_level == IPPROTO_IPV6 &&
-				    c->cmsg_type == IPV6_PKTINFO)
+				if (c->cmsg_level == IPPROTO_IPV6 && c->cmsg_type == IPV6_PKTINFO)
 					memcpy(fl6.b,
-					       &((struct in6_pktinfo *)
-						CMSG_DATA(c))->ipi6_addr, 16);
+					       &((struct in6_pktinfo *)CMSG_DATA(c))->ipi6_addr,
+					       16);
 			}
 			enum rx_verdict why6;
-			struct session *rs6 = rx_accept(p6_buf, (size_t)n6, rhl6,
-							       &fp6, &fl6, 0, &why6);
+			struct session *rs6 = rx_accept(p6_buf, (size_t)n6, rhl6, &fp6, &fl6, 0,
+							&why6);
 
 			if (rs6)
 				fsm_rx(rs6, &p6, t);
@@ -847,44 +857,44 @@ int main(int argc, char **argv)
 
 		/* v6 multihop control packets, port 4784. */
 		for (int d = 0; rdm6 && rxm6_sock >= 0 && d < drain_budget; d++) {
-			__u8 pm6_buf[BFD_MAX_LEN] = {0};
-		struct bfd_ctrl_pkt pm6;
+			__u8 pm6_buf[BFD_MAX_LEN] = { 0 };
+			struct bfd_ctrl_pkt pm6;
 			struct sockaddr_in6 fromm6;
-			struct iovec iovm6 = { .iov_base = pm6_buf,
-					       .iov_len = sizeof(pm6_buf) };
-			char cbufm6[CMSG_SPACE(sizeof(struct in6_pktinfo)) +
-				    CMSG_SPACE(sizeof(int))];
+			struct iovec iovm6 = { .iov_base = pm6_buf, .iov_len = sizeof(pm6_buf) };
+			char cbufm6[CMSG_SPACE(sizeof(struct in6_pktinfo)) + CMSG_SPACE(sizeof(int))];
 			struct msghdr mhm6 = {
 				.msg_name = &fromm6,
 				.msg_namelen = sizeof(fromm6),
-				.msg_iov = &iovm6, .msg_iovlen = 1,
+				.msg_iov = &iovm6,
+				.msg_iovlen = 1,
 				.msg_control = cbufm6,
 				.msg_controllen = sizeof(cbufm6),
 			};
 			ssize_t nm6 = recvmsg(rxm6_sock, &mhm6, MSG_DONTWAIT | MSG_TRUNC);
+
 			memcpy(&pm6, pm6_buf, sizeof(pm6));
-		
+
 			if (nm6 < 0)
 				break;
-		
-			struct bfd_addr mp6 = {0}, ml6 = {0};
+
+			struct bfd_addr mp6 = { 0 }, ml6 = { 0 };
+
 			memcpy(mp6.b, &fromm6.sin6_addr, 16);
 			int mhl6 = -1;
+
 			for (struct cmsghdr *c = CMSG_FIRSTHDR(&mhm6); c;
 			     c = CMSG_NXTHDR(&mhm6, c)) {
-				if (c->cmsg_level == IPPROTO_IPV6 &&
-				    c->cmsg_type == IPV6_HOPLIMIT)
+				if (c->cmsg_level == IPPROTO_IPV6 && c->cmsg_type == IPV6_HOPLIMIT)
 					memcpy(&mhl6, CMSG_DATA(c), sizeof(mhl6));
-				if (c->cmsg_level == IPPROTO_IPV6 &&
-				    c->cmsg_type == IPV6_PKTINFO)
+				if (c->cmsg_level == IPPROTO_IPV6 && c->cmsg_type == IPV6_PKTINFO)
 					memcpy(ml6.b,
-					       &((struct in6_pktinfo *)
-						CMSG_DATA(c))->ipi6_addr, 16);
+					       &((struct in6_pktinfo *)CMSG_DATA(c))->ipi6_addr,
+					       16);
 			}
-		
+
 			enum rx_verdict mwhy6;
-			struct session *ms6 = rx_accept(pm6_buf, (size_t)nm6, mhl6,
-							       &mp6, &ml6, 1, &mwhy6);
+			struct session *ms6 = rx_accept(pm6_buf, (size_t)nm6, mhl6, &mp6, &ml6, 1,
+							&mwhy6);
 
 			if (ms6)
 				fsm_rx(ms6, &pm6, t);
@@ -894,18 +904,19 @@ int main(int argc, char **argv)
 			dp_reconcile_us = 0;
 			for (int i = 0; i < MAX_SESSIONS; i++)
 				if (sessions[i].used && sessions[i].orphaned)
-					sess_teardown_one(&sessions[i],
-						"not re-added by bfdd");
+					sess_teardown_one(&sessions[i], "not re-added by bfdd");
 		}
 
 		/* Apply the sweep's verdicts first, so this pass sees sessions
-		 * the kernel already declared down. */
+		 * the kernel already declared down.
+		 */
 		ktx_drain_events();
 
 		/* One batch map fetch for the whole pass. */
 		ktx_poll_all();
 		for (int i = 0; i < MAX_SESSIONS; i++) {
 			struct session *cs = &sessions[i];
+
 			if (!cs->used)
 				continue;
 			if (cs->orphaned && t >= cs->orphan_deadline_us) {
@@ -915,19 +926,20 @@ int main(int argc, char **argv)
 			/* Authenticated session whose keys never arrived:
 			 * SESSION_AUTH but no DP_SESSION_AUTH, as from a bfdd
 			 * without the key extension. Unlike a rollover gap
-			 * this never heals, so warn after a 1s grace. */
+			 * this never heals, so warn after a 1s grace.
+			 */
 			if (cs->auth_present && cs->auth_nkeys == 0) {
 				if (!cs->auth_keys_deadline_us)
 					cs->auth_keys_deadline_us = t + 1000000;
-				else if (!cs->auth_nokeys_warned &&
-					 t >= cs->auth_keys_deadline_us) {
+				else if (!cs->auth_nokeys_warned && t >= cs->auth_keys_deadline_us) {
 					log_err("lid=%u: bfdd offloaded an authenticated session but sent no keys within 1s; this bfdd predates the DP_SESSION_AUTH key extension. Upgrade bfdd or keep authenticated sessions off the data plane.\n",
 						cs->lid);
 					cs->auth_nokeys_warned = 1;
 				}
 			} else {
 				/* keys arrived, or authentication withdrawn:
-				 * disarm, and re-arm for a future recurrence. */
+				 * disarm, and re-arm for a future recurrence.
+				 */
 				cs->auth_keys_deadline_us = 0;
 				cs->auth_nokeys_warned = 0;
 			}

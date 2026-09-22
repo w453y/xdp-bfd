@@ -21,9 +21,10 @@ def run_engine(binary, obj, secs=8):
     """Run the engine in the foreground and return its output; a refusal
     happens at startup. The timeout bounds the success case.
     """
-    cmd = ("sudo timeout %d ip netns exec %s %s 10.0.0.1 10.0.0.2"
-           " --kernel-tx lo --xdp-mode generic --bpf-obj %s"
-           % (secs, NS_A, binary, obj))
+    cmd = (
+        "sudo timeout %d ip netns exec %s %s 10.0.0.1 10.0.0.2"
+        " --kernel-tx lo --xdp-mode generic --bpf-obj %s" % (secs, NS_A, binary, obj)
+    )
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     return (r.stdout or "") + (r.stderr or "")
 
@@ -59,12 +60,12 @@ def skewed_obj(rig, tmp_path_factory):
     with open(hdr, "w") as f:
         f.write(text.replace(*SKEW))
 
-    r = subprocess.run("make -C %s bfd_xdp.o" % src, shell=True,
-                       capture_output=True, text=True)
+    r = subprocess.run(
+        "make -C %s bfd_xdp.o" % src, shell=True, capture_output=True, text=True
+    )
     obj = os.path.join(str(src), "bfd_xdp.o")
     if r.returncode or not os.path.exists(obj):
-        pytest.skip("cannot build a skewed object here: %s"
-                    % (r.stderr or r.stdout))
+        pytest.skip("cannot build a skewed object here: %s" % (r.stderr or r.stdout))
     # World-readable: the engine runs under sudo out of a pytest tmp dir.
     sh("chmod -R a+rX %s" % src)
     return obj
@@ -74,17 +75,15 @@ def test_the_matching_object_is_accepted(rig, skewed_obj):
     """The object this tree just built must load."""
     out = run_engine(str(rig / "bfd_tx"), str(rig / "bfd_xdp.o"))
     assert "refusing to load" not in out, (
-        "the engine rejected its own freshly built object:\n%s" % out)
-    assert "XDP attached" in out, (
-        "engine did not attach with its own object:\n%s" % out)
+        "the engine rejected its own freshly built object:\n%s" % out
+    )
+    assert "XDP attached" in out, "engine did not attach with its own object:\n%s" % out
 
 
 def test_a_skewed_object_is_refused(rig, skewed_obj):
     out = run_engine(str(rig / "bfd_tx"), skewed_obj)
     assert "refusing to load" in out, (
-        "engine accepted an object whose tx_cfg is 4 bytes"
-        " longer:\n%s" % out)
-    assert "tx_cfg" in out, (
-        "refusal did not name the struct that differs:\n%s" % out)
-    assert "XDP attached" not in out, (
-        "engine attached anyway after refusing:\n%s" % out)
+        "engine accepted an object whose tx_cfg is 4 bytes" " longer:\n%s" % out
+    )
+    assert "tx_cfg" in out, "refusal did not name the struct that differs:\n%s" % out
+    assert "XDP attached" not in out, "engine attached anyway after refusing:\n%s" % out

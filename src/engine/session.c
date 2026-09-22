@@ -44,8 +44,8 @@ struct session *sess_by_wire(uint32_t disc)
 	return NULL;
 }
 
-void sm_addrs(const struct bfddp_session_msg *sm,
-		     struct bfd_addr *l, struct bfd_addr *p, int *family)
+void sm_addrs(const struct bfddp_session_msg *sm, struct bfd_addr *l, struct bfd_addr *p,
+	      int *family)
 {
 	if (ntohl(sm->flags) & SESSION_IPV6) {
 		memcpy(l->b, &sm->src, 16);
@@ -53,6 +53,7 @@ void sm_addrs(const struct bfddp_session_msg *sm,
 		*family = AF_INET6;
 	} else {
 		uint32_t lip, pip;
+
 		memcpy(&lip, &sm->src.s6_addr[0], 4);
 		memcpy(&pip, &sm->dst.s6_addr[0], 4);
 		key_set_v4(l, lip);
@@ -61,26 +62,23 @@ void sm_addrs(const struct bfddp_session_msg *sm,
 	}
 }
 
-struct session *sess_by_addr_pair_local(
-	const struct bfddp_session_msg *sm)
+struct session *sess_by_addr_pair_local(const struct bfddp_session_msg *sm)
 {
 	struct bfd_addr l, p;
 	int fam;
+
 	sm_addrs(sm, &l, &p, &fam);
 	for (int i = 0; i < MAX_SESSIONS; i++)
-		if (sessions[i].used &&
-		    !memcmp(&sessions[i].local, &l, 16) &&
+		if (sessions[i].used && !memcmp(&sessions[i].local, &l, 16) &&
 		    !memcmp(&sessions[i].peer, &p, 16))
 			return &sessions[i];
 	return NULL;
 }
 
-struct session *sess_by_addr(const struct bfd_addr *peer,
-				    const struct bfd_addr *local)
+struct session *sess_by_addr(const struct bfd_addr *peer, const struct bfd_addr *local)
 {
 	for (int i = 0; i < MAX_SESSIONS; i++)
-		if (sessions[i].used &&
-		    !memcmp(&sessions[i].peer, peer, 16) &&
+		if (sessions[i].used && !memcmp(&sessions[i].peer, peer, 16) &&
 		    !memcmp(&sessions[i].local, local, 16))
 			return &sessions[i];
 	return NULL;
@@ -90,7 +88,8 @@ struct session *sess_by_addr(const struct bfd_addr *peer,
 static void auth_note_boundary(int64_t at, int64_t now, int64_t *soonest)
 {
 	/* Zero means "always", -1 means "never expires": neither is an
-	 * instant at which anything changes. */
+	 * instant at which anything changes.
+	 */
 	if (at <= 0 || at <= now)
 		return;
 	if (*soonest == 0 || at < *soonest)
@@ -98,13 +97,14 @@ static void auth_note_boundary(int64_t at, int64_t now, int64_t *soonest)
 }
 
 /* Pick the transmit key and when that choice can next change. Returns non-zero
- * if the key changed. */
+ * if the key changed.
+ */
 int session_auth_evaluate(struct session *s, int64_t now)
 {
 	uint8_t type = 0, key_id = 0, keylen = 0;
 	const struct auth_key *chosen = NULL;
 	int64_t soonest = 0;
-	unsigned i;
+	unsigned int i;
 	int changed;
 
 	for (i = 0; i < s->auth_nkeys; i++) {
@@ -116,9 +116,9 @@ int session_auth_evaluate(struct session *s, int64_t now)
 		auth_note_boundary(k->accept_end, now, &soonest);
 
 		/* First match wins, which is the order the chain was sent
-		 * in and so the same key the control plane would pick. */
-		if (chosen == NULL && s->auth_present &&
-		    auth_key_sendable(k, now))
+		 * in and so the same key the control plane would pick.
+		 */
+		if (chosen == NULL && s->auth_present && auth_key_sendable(k, now))
 			chosen = k;
 	}
 
@@ -128,8 +128,7 @@ int session_auth_evaluate(struct session *s, int64_t now)
 		keylen = chosen->keylen;
 	}
 
-	changed = (type != s->auth_type || key_id != s->auth_keyid ||
-		   keylen != s->auth_keylen ||
+	changed = (type != s->auth_type || key_id != s->auth_keyid || keylen != s->auth_keylen ||
 		   (keylen && memcmp(s->auth_kpad, chosen->kpad, sizeof(s->auth_kpad))));
 
 	if (changed) {
@@ -143,7 +142,8 @@ int session_auth_evaluate(struct session *s, int64_t now)
 		s->auth_keyid = key_id;
 		s->auth_keylen = keylen;
 		/* A sendable key again, so the next gap is a new event and
-		 * gets its own line. */
+		 * gets its own line.
+		 */
 		if (type)
 			s->auth_gap_warned = 0;
 	}
@@ -153,11 +153,11 @@ int session_auth_evaluate(struct session *s, int64_t now)
 }
 
 /* The key a received packet names, if still acceptable. Any acceptable key
- * counts, so a rollover does not refuse the peer. */
-const struct auth_key *session_auth_key_for(const struct session *s,
-					    uint8_t key_id, int64_t now)
+ * counts, so a rollover does not refuse the peer.
+ */
+const struct auth_key *session_auth_key_for(const struct session *s, uint8_t key_id, int64_t now)
 {
-	unsigned i;
+	unsigned int i;
 
 	if (!s->auth_present)
 		return NULL;

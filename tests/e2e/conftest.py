@@ -15,16 +15,28 @@ TESTS = os.path.dirname(HERE)
 ROOT = os.path.dirname(TESTS)
 sys.path.insert(0, TESTS)
 
-from lib.netns import (NS_A, NS_B, STATS, STATS_B, sh, setup, teardown,
-                       ns_pids, start_engine, dump, engine_log)
+from lib.netns import (
+    NS_A,
+    NS_B,
+    STATS,
+    STATS_B,
+    sh,
+    setup,
+    teardown,
+    ns_pids,
+    start_engine,
+    dump,
+    engine_log,
+)
 
 UP_WAIT = 15.0
 DOWN_WAIT = 10.0
 
 
 def pytest_addoption(parser):
-    parser.addoption("--keep-ns", action="store_true",
-                     help="leave the namespaces up after the run")
+    parser.addoption(
+        "--keep-ns", action="store_true", help="leave the namespaces up after the run"
+    )
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -60,9 +72,10 @@ def rig(request):
 def engine_tails():
     out = []
     for ns in (NS_A, NS_B):
-        out.append("--- %s\n%s"
-                   % (engine_log(ns), sh("tail -20 %s" % engine_log(ns),
-                                         check=False)))
+        out.append(
+            "--- %s\n%s"
+            % (engine_log(ns), sh("tail -20 %s" % engine_log(ns), check=False))
+        )
     return "\n".join(out)
 
 
@@ -75,8 +88,9 @@ def wait_both_up(timeout=UP_WAIT):
         if a == 1 and b == 1:
             return
         time.sleep(0.5)
-    raise AssertionError("never came Up (A=%s B=%s after %.0fs)\n%s"
-                         % (a, b, timeout, engine_tails()))
+    raise AssertionError(
+        "never came Up (A=%s B=%s after %.0fs)\n%s" % (a, b, timeout, engine_tails())
+    )
 
 
 def xdp_progs(ns, dev):
@@ -84,8 +98,7 @@ def xdp_progs(ns, dev):
     clause only when a program is attached. Not bpftool, which is missing
     on some runners.
     """
-    out = sh("sudo ip netns exec %s ip -d link show %s" % (ns, dev),
-             check=False)
+    out = sh("sudo ip netns exec %s ip -d link show %s" % (ns, dev), check=False)
     if not out.strip():
         raise AssertionError("no link %s in %s" % (dev, ns))
     progs = []
@@ -105,8 +118,8 @@ def xdp_progs(ns, dev):
 # cgroup2 mount, and crun refuses to start. RUNTIME may be podman or docker.
 RUNTIME = os.environ.get("BFD_CONTAINER_RUNTIME", "podman")
 FRR_IMAGE = os.environ.get("BFD_FRR_IMAGE", "quay.io/frrouting/frr:10.4.2")
-NAME_A = "bfdrig-frr-a"          # engine's control plane, talks bfddp
-NAME_B = "bfdrig-frr-b"          # the wire peer, plain stock bfdd
+NAME_A = "bfdrig-frr-a"  # engine's control plane, talks bfddp
+NAME_B = "bfdrig-frr-b"  # the wire peer, plain stock bfdd
 
 # The image ships /etc/frr/daemons with bfdd=no and nothing else in
 # /etc/frr, so a bind mount of a generated directory clobbers nothing.
@@ -134,17 +147,22 @@ def frr_start(name, confdir):
     """Start detached with no network of its own, and return its pid so a
     veth end can be moved in."""
     frr_rm(name)
-    sh("sudo %s run -d --name %s --network none --privileged -v %s:/etc/frr %s"
-       % (RUNTIME, name, confdir, FRR_IMAGE), check=False)
+    sh(
+        "sudo %s run -d --name %s --network none --privileged -v %s:/etc/frr %s"
+        % (RUNTIME, name, confdir, FRR_IMAGE),
+        check=False,
+    )
     for _ in range(50):
-        out = sh("sudo %s inspect -f '{{.State.Pid}}' %s" % (RUNTIME, name),
-                 check=False).strip()
+        out = sh(
+            "sudo %s inspect -f '{{.State.Pid}}' %s" % (RUNTIME, name), check=False
+        ).strip()
         if out.isdigit() and int(out) > 0:
             return int(out)
         time.sleep(0.2)
-    raise AssertionError("container %s did not start: %s"
-                         % (name, sh("sudo %s logs %s" % (RUNTIME, name),
-                                     check=False)))
+    raise AssertionError(
+        "container %s did not start: %s"
+        % (name, sh("sudo %s logs %s" % (RUNTIME, name), check=False))
+    )
 
 
 def frr_ns(pid, cmd):
@@ -159,23 +177,24 @@ def frr_daemon_pid(container_pid, comm):
     namespace so the host's own bfdd is never hit. Signal from the host,
     since `podman exec ... kill` does not work.
     """
-    ns = sh("sudo readlink /proc/%d/ns/pid" % container_pid,
-            check=False).strip()
+    ns = sh("sudo readlink /proc/%d/ns/pid" % container_pid, check=False).strip()
     assert ns, "no pid namespace for container pid %d" % container_pid
-    out = sh("sudo ls /proc | grep -E '^[0-9]+$' | while read p; do"
-             " c=$(cat /proc/$p/comm 2>/dev/null);"
-             " [ \"$c\" = %s ] && echo \"$p $(readlink /proc/$p/ns/pid)\";"
-             " done" % comm, check=False)
-    hits = [int(l.split()[0]) for l in out.splitlines()
-            if l.strip().endswith(ns)]
-    assert len(hits) == 1, ("expected one %s in %s, got %r\n%s"
-                            % (comm, ns, hits, out))
+    out = sh(
+        "sudo ls /proc | grep -E '^[0-9]+$' | while read p; do"
+        " c=$(cat /proc/$p/comm 2>/dev/null);"
+        ' [ "$c" = %s ] && echo "$p $(readlink /proc/$p/ns/pid)";'
+        " done" % comm,
+        check=False,
+    )
+    hits = [int(l.split()[0]) for l in out.splitlines() if l.strip().endswith(ns)]
+    assert len(hits) == 1, "expected one %s in %s, got %r\n%s" % (comm, ns, hits, out)
     return hits[0]
 
 
 def frr_vtysh(name, cmd):
-    return sh("sudo %s exec %s vtysh -c %s"
-              % (RUNTIME, name, json.dumps(cmd)), check=False)
+    return sh(
+        "sudo %s exec %s vtysh -c %s" % (RUNTIME, name, json.dumps(cmd)), check=False
+    )
 
 
 def frr_conf_dir(daemons, conf):

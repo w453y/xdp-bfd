@@ -8,9 +8,21 @@ import time
 
 import pytest
 
-from conftest import (NS_A, NS_B, STATS, STATS_B, DOWN_WAIT, sh, setup,
-                      teardown, ns_pids, start_engine, wait_both_up,
-                      only_session, engine_tails)
+from conftest import (
+    NS_A,
+    NS_B,
+    STATS,
+    STATS_B,
+    DOWN_WAIT,
+    sh,
+    setup,
+    teardown,
+    ns_pids,
+    start_engine,
+    wait_both_up,
+    only_session,
+    engine_tails,
+)
 
 
 @pytest.fixture(scope="module")
@@ -23,9 +35,15 @@ def term(request):
     try:
         # Signal the kernel-tx side: XDP would keep replying after the loop
         # stops, so AdminDown must go out before the link closes.
-        start_engine(binary, 4, ns=NS_A, stats=STATS,
-                     kernel_tx="rig-a", xdp_mode="generic",
-                     extra=("--bpf-obj", obj))
+        start_engine(
+            binary,
+            4,
+            ns=NS_A,
+            stats=STATS,
+            kernel_tx="rig-a",
+            xdp_mode="generic",
+            extra=("--bpf-obj", obj),
+        )
         start_engine(binary, 4, ns=NS_B, stats=STATS_B)
         wait_both_up()
 
@@ -50,9 +68,10 @@ def term(request):
 
 
 def test_sigterm_brings_the_peer_down(term):
-    assert term["down"], (
-        "peer still Up %.0fs after SIGTERM\n%s"
-        % (DOWN_WAIT, term.get("tails", "")))
+    assert term["down"], "peer still Up %.0fs after SIGTERM\n%s" % (
+        DOWN_WAIT,
+        term.get("tails", ""),
+    )
 
 
 def test_sigterm_announces_rather_than_going_silent(term):
@@ -60,5 +79,5 @@ def test_sigterm_announces_rather_than_going_silent(term):
     assert s["diag"] == 3, (
         "peer went down with diag %s (%r), not 3 - it timed the engine"
         " out instead of being told, which is the SIGKILL path and the"
-        " outcome the epilogue exists to avoid"
-        % (s["diag"], s.get("last_reason")))
+        " outcome the epilogue exists to avoid" % (s["diag"], s.get("last_reason"))
+    )

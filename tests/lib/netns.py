@@ -8,8 +8,8 @@ import subprocess
 import sys
 import time
 
-NS_A = "bfdrig-a"          # engine side
-NS_B = "bfdrig-b"          # far end: injector, or a second engine
+NS_A = "bfdrig-a"  # engine side
+NS_B = "bfdrig-b"  # far end: injector, or a second engine
 IP_A = "10.77.0.1"
 IP_B = "10.77.0.2"
 IP_A6 = "fd77::1"
@@ -38,17 +38,20 @@ def teardown():
     processes, and a surviving engine keeps its XDP attach.
     """
     for ns in (NS_A, NS_B):
-        sh("sudo ip netns pids %s 2>/dev/null | xargs -r sudo kill" % ns,
-           check=False)
+        sh("sudo ip netns pids %s 2>/dev/null | xargs -r sudo kill" % ns, check=False)
     for _ in range(20):
-        left = sum(len(sh("sudo ip netns pids %s 2>/dev/null" % ns,
-                          check=False).split()) for ns in (NS_A, NS_B))
+        left = sum(
+            len(sh("sudo ip netns pids %s 2>/dev/null" % ns, check=False).split())
+            for ns in (NS_A, NS_B)
+        )
         if not left:
             break
         time.sleep(0.1)
     for ns in (NS_A, NS_B):
-        sh("sudo ip netns pids %s 2>/dev/null | xargs -r sudo kill -9" % ns,
-           check=False)
+        sh(
+            "sudo ip netns pids %s 2>/dev/null | xargs -r sudo kill -9" % ns,
+            check=False,
+        )
     sh("sudo ip netns del %s" % NS_A, check=False)
     sh("sudo ip netns del %s" % NS_B, check=False)
 
@@ -57,15 +60,18 @@ def setup():
     teardown()
     sh("sudo ip netns add %s" % NS_A)
     sh("sudo ip netns add %s" % NS_B)
-    sh("sudo ip link add rig-a netns %s type veth peer name rig-b netns %s"
-       % (NS_A, NS_B))
-    for ns, dev, ip, ip6 in ((NS_A, "rig-a", IP_A, IP_A6),
-                             (NS_B, "rig-b", IP_B, IP_B6)):
+    sh(
+        "sudo ip link add rig-a netns %s type veth peer name rig-b netns %s"
+        % (NS_A, NS_B)
+    )
+    for ns, dev, ip, ip6 in (
+        (NS_A, "rig-a", IP_A, IP_A6),
+        (NS_B, "rig-b", IP_B, IP_B6),
+    ):
         sh("sudo ip netns exec %s ip addr add %s/24 dev %s" % (ns, ip, dev))
         # nodad: a tentative v6 address cannot be bound, so the engine would
         # fall back to an ephemeral socket.
-        sh("sudo ip netns exec %s ip addr add %s/64 dev %s nodad"
-           % (ns, ip6, dev))
+        sh("sudo ip netns exec %s ip addr add %s/64 dev %s nodad" % (ns, ip6, dev))
         sh("sudo ip netns exec %s ip link set %s up" % (ns, dev))
         sh("sudo ip netns exec %s ip link set lo up" % ns)
 
@@ -82,8 +88,17 @@ def engine_log(ns):
     return "/tmp/bfd_rig_%s.log" % ns
 
 
-def start_engine(binary, fam=4, ns=NS_A, stats=STATS, local=None, peer=None,
-                 kernel_tx=None, xdp_mode=None, extra=()):
+def start_engine(
+    binary,
+    fam=4,
+    ns=NS_A,
+    stats=STATS,
+    local=None,
+    peer=None,
+    kernel_tx=None,
+    xdp_mode=None,
+    extra=(),
+):
     """Start bfd_tx in static mode inside `ns`.
 
     local and peer default to this namespace's own address and the far
@@ -102,8 +117,11 @@ def start_engine(binary, fam=4, ns=NS_A, stats=STATS, local=None, peer=None,
         opts += ["--xdp-mode", xdp_mode]
     opts += list(extra)
     log = engine_log(ns)
-    sh("sudo ip netns exec %s nohup %s %s %s %s >>%s 2>&1 &"
-       % (ns, binary, local, peer, " ".join(opts), log), capture=False)
+    sh(
+        "sudo ip netns exec %s nohup %s %s %s %s >>%s 2>&1 &"
+        % (ns, binary, local, peer, " ".join(opts), log),
+        capture=False,
+    )
     for _ in range(50):
         time.sleep(0.2)
         if ns_pids(ns):
@@ -125,8 +143,7 @@ def dump(ns=NS_A, stats=STATS):
         if os.path.exists(stats):
             with open(stats) as f:
                 return json.load(f)
-    sys.exit("no snapshot at %s after SIGUSR1; see %s"
-             % (stats, engine_log(ns)))
+    sys.exit("no snapshot at %s after SIGUSR1; see %s" % (stats, engine_log(ns)))
 
 
 def _one(out):

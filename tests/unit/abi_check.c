@@ -1,23 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Layout pins for every struct the XDP program and engine share, compiled by
  * both the host compiler and clang for BPF; if it compiles, it passes. After a
- * deliberate change, read the new offsets with tests/unit/abi_probe.c. */
+ * deliberate change, read the new offsets with tests/unit/abi_probe.c.
+ */
 #include <bfd_shared.h>
 #include <hmac_sha1.h>
 #include <stddef.h>
 
-_Static_assert(sizeof(struct bfd_ctrl_pkt) == 24,
-	       "sizeof(struct bfd_ctrl_pkt)");
-_Static_assert(sizeof(struct bfd_addr) == 16,
-	       "sizeof(struct bfd_addr)");
-_Static_assert(sizeof(struct session_key) == 32,
-	       "sizeof(struct session_key)");
-_Static_assert(sizeof(struct session_state) == 136,
-	       "sizeof(struct session_state)");
-_Static_assert(sizeof(struct bfd_event) == 56,
-	       "sizeof(struct bfd_event)");
-_Static_assert(sizeof(struct tx_cfg) == 1208,
-	       "sizeof(struct tx_cfg)");
+_Static_assert(sizeof(struct bfd_ctrl_pkt) == 24, "sizeof(struct bfd_ctrl_pkt)");
+_Static_assert(sizeof(struct bfd_addr) == 16, "sizeof(struct bfd_addr)");
+_Static_assert(sizeof(struct session_key) == 32, "sizeof(struct session_key)");
+_Static_assert(sizeof(struct session_state) == 136, "sizeof(struct session_state)");
+_Static_assert(sizeof(struct bfd_event) == 56, "sizeof(struct bfd_event)");
+_Static_assert(sizeof(struct tx_cfg) == 1208, "sizeof(struct tx_cfg)");
 _Static_assert(offsetof(struct session_state, last_seen_ns) == 0,
 	       "offsetof(struct session_state, last_seen_ns)");
 _Static_assert(offsetof(struct session_state, rx_pkts) == 8,
@@ -60,42 +55,25 @@ _Static_assert(offsetof(struct session_state, echo_alive) == 96,
 	       "offsetof(struct session_state, echo_alive)");
 _Static_assert(offsetof(struct session_state, remote_min_echo_us) == 104,
 	       "offsetof(struct session_state, remote_min_echo_us)");
-_Static_assert(offsetof(struct tx_cfg, enable) == 0,
-	       "offsetof(struct tx_cfg, enable)");
-_Static_assert(offsetof(struct tx_cfg, my_disc) == 4,
-	       "offsetof(struct tx_cfg, my_disc)");
-_Static_assert(offsetof(struct tx_cfg, your_disc) == 8,
-	       "offsetof(struct tx_cfg, your_disc)");
-_Static_assert(offsetof(struct tx_cfg, min_tx_us) == 12,
-	       "offsetof(struct tx_cfg, min_tx_us)");
-_Static_assert(offsetof(struct tx_cfg, min_rx_us) == 16,
-	       "offsetof(struct tx_cfg, min_rx_us)");
-_Static_assert(offsetof(struct tx_cfg, src_port) == 20,
-	       "offsetof(struct tx_cfg, src_port)");
-_Static_assert(offsetof(struct tx_cfg, state) == 22,
-	       "offsetof(struct tx_cfg, state)");
-_Static_assert(offsetof(struct tx_cfg, diag) == 23,
-	       "offsetof(struct tx_cfg, diag)");
-_Static_assert(offsetof(struct tx_cfg, mult) == 24,
-	       "offsetof(struct tx_cfg, mult)");
-_Static_assert(offsetof(struct tx_cfg, poll) == 25,
-	       "offsetof(struct tx_cfg, poll)");
-_Static_assert(offsetof(struct tx_cfg, demand) == 26,
-	       "offsetof(struct tx_cfg, demand)");
-_Static_assert(offsetof(struct tx_cfg, demand_hold) == 27,
-	       "offsetof(struct tx_cfg, demand_hold)");
-_Static_assert(offsetof(struct tx_cfg, poll_seq) == 32,
-	       "offsetof(struct tx_cfg, poll_seq)");
-_Static_assert(offsetof(struct tx_cfg, echo_iv_us) == 36,
-	       "offsetof(struct tx_cfg, echo_iv_us)");
+_Static_assert(offsetof(struct tx_cfg, enable) == 0, "offsetof(struct tx_cfg, enable)");
+_Static_assert(offsetof(struct tx_cfg, my_disc) == 4, "offsetof(struct tx_cfg, my_disc)");
+_Static_assert(offsetof(struct tx_cfg, your_disc) == 8, "offsetof(struct tx_cfg, your_disc)");
+_Static_assert(offsetof(struct tx_cfg, min_tx_us) == 12, "offsetof(struct tx_cfg, min_tx_us)");
+_Static_assert(offsetof(struct tx_cfg, min_rx_us) == 16, "offsetof(struct tx_cfg, min_rx_us)");
+_Static_assert(offsetof(struct tx_cfg, src_port) == 20, "offsetof(struct tx_cfg, src_port)");
+_Static_assert(offsetof(struct tx_cfg, state) == 22, "offsetof(struct tx_cfg, state)");
+_Static_assert(offsetof(struct tx_cfg, diag) == 23, "offsetof(struct tx_cfg, diag)");
+_Static_assert(offsetof(struct tx_cfg, mult) == 24, "offsetof(struct tx_cfg, mult)");
+_Static_assert(offsetof(struct tx_cfg, poll) == 25, "offsetof(struct tx_cfg, poll)");
+_Static_assert(offsetof(struct tx_cfg, demand) == 26, "offsetof(struct tx_cfg, demand)");
+_Static_assert(offsetof(struct tx_cfg, demand_hold) == 27, "offsetof(struct tx_cfg, demand_hold)");
+_Static_assert(offsetof(struct tx_cfg, poll_seq) == 32, "offsetof(struct tx_cfg, poll_seq)");
+_Static_assert(offsetof(struct tx_cfg, echo_iv_us) == 36, "offsetof(struct tx_cfg, echo_iv_us)");
 _Static_assert(offsetof(struct tx_cfg, min_echo_rx_us) == 40,
 	       "offsetof(struct tx_cfg, min_echo_rx_us)");
-_Static_assert(offsetof(struct tx_cfg, min_ttl) == 44,
-	       "offsetof(struct tx_cfg, min_ttl)");
-_Static_assert(offsetof(struct tx_cfg, auth_type) == 48,
-	       "offsetof(struct tx_cfg, auth_type)");
-_Static_assert(offsetof(struct tx_cfg, auth_kpad) == 52,
-	       "offsetof(struct tx_cfg, auth_kpad)");
+_Static_assert(offsetof(struct tx_cfg, min_ttl) == 44, "offsetof(struct tx_cfg, min_ttl)");
+_Static_assert(offsetof(struct tx_cfg, auth_type) == 48, "offsetof(struct tx_cfg, auth_type)");
+_Static_assert(offsetof(struct tx_cfg, auth_kpad) == 52, "offsetof(struct tx_cfg, auth_kpad)");
 _Static_assert(sizeof(((struct tx_cfg *)0)->auth_kpad) == SHA1_BLOCK_LEN,
 	       "the mirrored key must be exactly one HMAC block");
 _Static_assert(offsetof(struct session_state, auth_tx_seq) == 108,
@@ -106,25 +84,22 @@ _Static_assert(offsetof(struct session_state, auth_fail_n) == 120,
 	       "offsetof(struct session_state, auth_fail_n)");
 _Static_assert(offsetof(struct session_state, auth_fail_ts) == 128,
 	       "offsetof(struct session_state, auth_fail_ts)");
-_Static_assert(offsetof(struct bfd_event, ts_ns) == 0,
-	       "offsetof(struct bfd_event, ts_ns)");
+_Static_assert(offsetof(struct bfd_event, ts_ns) == 0, "offsetof(struct bfd_event, ts_ns)");
 _Static_assert(offsetof(struct bfd_event, last_seen_ns) == 8,
 	       "offsetof(struct bfd_event, last_seen_ns)");
 _Static_assert(offsetof(struct bfd_event, remote_disc) == 48,
 	       "offsetof(struct bfd_event, remote_disc)");
-_Static_assert(offsetof(struct bfd_event, event) == 52,
-	       "offsetof(struct bfd_event, event)");
-_Static_assert(offsetof(struct session_key, peer) == 0,
-	       "offsetof(struct session_key, peer)");
-_Static_assert(offsetof(struct session_key, local) == 16,
-	       "offsetof(struct session_key, local)");
+_Static_assert(offsetof(struct bfd_event, event) == 52, "offsetof(struct bfd_event, event)");
+_Static_assert(offsetof(struct session_key, peer) == 0, "offsetof(struct session_key, peer)");
+_Static_assert(offsetof(struct session_key, local) == 16, "offsetof(struct session_key, local)");
 _Static_assert(offsetof(struct bfd_ctrl_pkt, my_disc) == 4,
 	       "offsetof(struct bfd_ctrl_pkt, my_disc)");
 _Static_assert(offsetof(struct bfd_ctrl_pkt, min_echo_rx) == 20,
 	       "offsetof(struct bfd_ctrl_pkt, min_echo_rx)");
 
 /* The auth section's shape. A keyed-SHA1 packet must fit what hmac_sha1.h
- * hashes in one go. */
+ * hashes in one go.
+ */
 _Static_assert(BFD_AUTH_SHA1_LEN == 28, "BFD_AUTH_SHA1_LEN");
 _Static_assert(BFD_MAX_LEN == 52, "BFD_MAX_LEN");
 _Static_assert(BFD_MAX_LEN <= HMAC_SHA1_MAX_MSG + SHA1_DIGEST_LEN,

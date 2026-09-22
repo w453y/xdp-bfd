@@ -13,6 +13,7 @@ name: ci
 #                    both compilers.
 #   coverage         what the host suites reach, reported not gated.
 #   static-analysis  scan-build over the engine, any finding fails.
+#   style            clang-format, checkpatch and black, as FRR runs them.
 #   package          the deb and the rpm, built and installed in a
 #                    container per distro.
 #
@@ -286,6 +287,27 @@ jobs:
 
       - name: scan-build
         run: scan-build-21 --status-bugs -o /tmp/sb make bfd_tx bfd_loader
+
+  style:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/llvm
+        with:
+          version: 21
+          packages: clang-format-21
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: install black
+        run: pip install black==26.5.1
+
+      - name: tools/checkstyle.sh
+        run: tools/checkstyle.sh
 
   package:
     if: github.event_name == 'pull_request'

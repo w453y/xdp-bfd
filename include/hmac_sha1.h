@@ -4,14 +4,16 @@
  * The kernel has no hashing kfunc, so the fast path carries its own; one
  * implementation keeps both planes' digests identical. Bounded: a keyed-SHA1
  * packet is 52 bytes, so the HMAC is four fixed block compressions. Oversized
- * input returns 0 and writes nothing. */
+ * input returns 0 and writes nothing.
+ */
 #ifndef BFD_HMAC_SHA1_H
 #define BFD_HMAC_SHA1_H
 
 #include <linux/types.h>
 
 /* bpf_helpers.h supplies __always_inline on the BPF side; the host build
- * needs its own. */
+ * needs its own.
+ */
 #ifndef __always_inline
 #define __always_inline inline __attribute__((always_inline))
 #endif
@@ -22,7 +24,8 @@
 #endif
 
 /* On BPF, sha1_compress and hmac_sha1_blocks are real calls: fully inlined,
- * their message schedules overrun the 512-byte stack. */
+ * their message schedules overrun the 512-byte stack.
+ */
 #if defined(__bpf__)
 #define SHA1_CORE static __attribute__((noinline))
 #else
@@ -30,15 +33,17 @@
 #endif
 
 #define SHA1_DIGEST_LEN 20
-#define SHA1_BLOCK_LEN  64
+#define SHA1_BLOCK_LEN	64
 
 /* The message HMAC will accept. 55 keeps the inner hash at exactly two
  * blocks: 64 bytes of padded key, the message, one 0x80 byte and an
- * 8-byte length still fit in 128. A BFD auth packet is 52. */
+ * 8-byte length still fit in 128. A BFD auth packet is 52.
+ */
 #define HMAC_SHA1_MAX_MSG 55
 
 /* Opaque to the optimiser. A bpf-to-bpf callee must set R0, and LLVM would
- * otherwise fold away a constant return. */
+ * otherwise fold away a constant return.
+ */
 static __always_inline int sha1_barrier(int v)
 {
 	__asm__ __volatile__("" : "+r"(v));
@@ -49,14 +54,15 @@ static __always_inline int sha1_barrier(int v)
 
 /* One block into the state. The message schedule rolls through 16 words
  * instead of expanding to 80, which keeps this off the BPF stack limit
- * with room to spare. */
+ * with room to spare.
+ */
 SHA1_CORE int sha1_compress(__u32 h[5], const __u8 b[SHA1_BLOCK_LEN])
 {
 	__u32 w[16];
 	__u32 a = h[0], bb = h[1], c = h[2], d = h[3], e = h[4];
 	int i;
 
-SHA1_UNROLL
+	SHA1_UNROLL
 	for (i = 0; i < 16; i++)
 		w[i] = ((__u32)b[4 * i] << 24) | ((__u32)b[4 * i + 1] << 16) |
 		       ((__u32)b[4 * i + 2] << 8) | (__u32)b[4 * i + 3];
@@ -68,8 +74,7 @@ SHA1_UNROLL
 		if (i < 16) {
 			wi = w[i];
 		} else {
-			wi = w[(i + 13) & 15] ^ w[(i + 8) & 15] ^
-			     w[(i + 2) & 15] ^ w[i & 15];
+			wi = w[(i + 13) & 15] ^ w[(i + 8) & 15] ^ w[(i + 2) & 15] ^ w[i & 15];
 			wi = SHA1_ROTL(wi, 1);
 			w[i & 15] = wi;
 		}
@@ -117,9 +122,9 @@ static __always_inline void sha1_out(const __u32 h[5], __u8 out[SHA1_DIGEST_LEN]
 {
 	int i;
 
-SHA1_UNROLL
+	SHA1_UNROLL
 	for (i = 0; i < 5; i++) {
-		out[4 * i]     = (__u8)(h[i] >> 24);
+		out[4 * i] = (__u8)(h[i] >> 24);
 		out[4 * i + 1] = (__u8)(h[i] >> 16);
 		out[4 * i + 2] = (__u8)(h[i] >> 8);
 		out[4 * i + 3] = (__u8)h[i];
@@ -131,9 +136,10 @@ SHA1_UNROLL
  * `blk` holds `len` message bytes, zero past them, and is padded in place.
  * `prior` is the byte count of the leading blocks. Takes a pre-padded block
  * because a data-dependent copy loop makes the verifier fork on every
- * iteration. */
+ * iteration.
+ */
 static __always_inline int sha1_finish(__u32 h[5], __u8 blk[SHA1_BLOCK_LEN], __u32 len,
-			   __u64 prior, __u8 out[SHA1_DIGEST_LEN])
+				       __u64 prior, __u8 out[SHA1_DIGEST_LEN])
 {
 	__u64 bits = (prior + len) * 8;
 	int i;
@@ -144,7 +150,8 @@ static __always_inline int sha1_finish(__u32 h[5], __u8 blk[SHA1_BLOCK_LEN], __u
 	blk[len] = 0x80;
 
 	/* No room for the 8-byte length after the 0x80: this block goes as
-	 * it stands and the trailer takes a zeroed one of its own. */
+	 * it stands and the trailer takes a zeroed one of its own.
+	 */
 	if (len + 9 > SHA1_BLOCK_LEN) {
 		if (!sha1_compress(h, blk))
 			return 0;
@@ -179,15 +186,15 @@ static inline int sha1_short(const __u8 *msg, __u32 len, __u8 out[SHA1_DIGEST_LE
 /* HMAC-SHA1 (RFC 2104) over pre-padded blocks. `kpad` is the key zero-filled
  * to a block, which is K' for any short key. `msgblk` is the message,
  * zero-filled, and is written to. Returns 0 without touching `out` if the
- * message does not fit one block. */
-SHA1_CORE int hmac_sha1_blocks(const __u8 kpad[SHA1_BLOCK_LEN],
-			       __u8 msgblk[SHA1_BLOCK_LEN], __u32 msglen,
-			       __u8 out[SHA1_DIGEST_LEN],
-			       __u8 tmp[SHA1_BLOCK_LEN])
+ * message does not fit one block.
+ */
+SHA1_CORE int hmac_sha1_blocks(const __u8 kpad[SHA1_BLOCK_LEN], __u8 msgblk[SHA1_BLOCK_LEN],
+			       __u32 msglen, __u8 out[SHA1_DIGEST_LEN], __u8 tmp[SHA1_BLOCK_LEN])
 {
 	/* `tmp` is caller-owned scratch (the per-CPU map on the fast path),
 	 * keeping 64 bytes off the verifier's 512-byte stack budget.
-	 * Clobbered; must not alias the key, message or output. */
+	 * Clobbered; must not alias the key, message or output.
+	 */
 	__u32 h[5];
 	int i;
 
@@ -198,8 +205,7 @@ SHA1_CORE int hmac_sha1_blocks(const __u8 kpad[SHA1_BLOCK_LEN],
 	for (i = 0; i < SHA1_BLOCK_LEN; i++)
 		tmp[i] = 0x36 ^ kpad[i];
 	sha1_init(h);
-	if (!sha1_compress(h, tmp) ||
-	    !sha1_finish(h, msgblk, msglen, SHA1_BLOCK_LEN, out))
+	if (!sha1_compress(h, tmp) || !sha1_finish(h, msgblk, msglen, SHA1_BLOCK_LEN, out))
 		return 0;
 
 	for (i = 0; i < SHA1_BLOCK_LEN; i++)
@@ -216,9 +222,10 @@ SHA1_CORE int hmac_sha1_blocks(const __u8 kpad[SHA1_BLOCK_LEN],
 }
 
 /* Plain key and message. Host side only: the copies loop over runtime lengths,
- * which the verifier cannot take; the fast path uses hmac_sha1_blocks. */
-static inline int hmac_sha1(const __u8 *key, __u32 keylen, const __u8 *msg,
-			    __u32 msglen, __u8 out[SHA1_DIGEST_LEN])
+ * which the verifier cannot take; the fast path uses hmac_sha1_blocks.
+ */
+static inline int hmac_sha1(const __u8 *key, __u32 keylen, const __u8 *msg, __u32 msglen,
+			    __u8 out[SHA1_DIGEST_LEN])
 {
 	__u8 kpad[SHA1_BLOCK_LEN] = {};
 	__u8 mblk[SHA1_BLOCK_LEN] = {};

@@ -29,7 +29,7 @@ static void report(const char *name, int bad, const char *detail)
 	}
 }
 
-#define NOW 1000000   /* an arbitrary fixed second */
+#define NOW 1000000 /* an arbitrary fixed second */
 
 /* A plain Up session the fast path would answer for. */
 static struct session *arm(void)
@@ -64,13 +64,14 @@ int main(void)
 	ktx_cfg_for(s, NOW, &c, &k);
 	report("key-is-the-address-pair",
 	       memcmp(&k.peer, &s->peer, sizeof(k.peer)) ||
-	       memcmp(&k.local, &s->local, sizeof(k.local)), "peer and local");
-	report("discriminators-mirrored",
-	       c.my_disc != s->wire_disc || c.your_disc != s->rdisc,
+		       memcmp(&k.local, &s->local, sizeof(k.local)),
+	       "peer and local");
+	report("discriminators-mirrored", c.my_disc != s->wire_disc || c.your_disc != s->rdisc,
 	       "my_disc from wire_disc, your_disc from rdisc");
 	report("intervals-mirrored",
 	       c.min_tx_us != s->min_tx_us || c.min_rx_us != s->min_rx_us ||
-	       c.mult != s->detect_mult || c.min_ttl != s->min_ttl, "");
+		       c.mult != s->detect_mult || c.min_ttl != s->min_ttl,
+	       "");
 
 	/* --- enable: exactly ktx_answers --- */
 	report("enable-up-unauthenticated", c.enable != 1,
@@ -82,7 +83,8 @@ int main(void)
 	report("enable-off-when-down", c.enable != 0, "");
 
 	/* A peer that asked us to go quiet: answering every accepted packet
-	 * would transmit at exactly the rate demand mode exists to stop. */
+	 * would transmit at exactly the rate demand mode exists to stop.
+	 */
 	s = arm();
 	s->r_flags = BFD_F_DEMAND;
 	s->demand_announced = DEMAND_ANNOUNCE_N;
@@ -100,10 +102,9 @@ int main(void)
 	/* --- auth_present versus auth_type --- */
 	s = arm();
 	s->auth_present = 1;
-	s->auth_type = 0;          /* must authenticate, nothing to sign with */
+	s->auth_type = 0; /* must authenticate, nothing to sign with */
 	ktx_cfg_for(s, NOW, &c, &k);
-	report("auth-required-without-a-key-disarms",
-	       c.enable != 0 || c.auth_type != 0,
+	report("auth-required-without-a-key-disarms", c.enable != 0 || c.auth_type != 0,
 	       "no key to sign with: the program must not answer");
 
 	s = arm();
@@ -113,8 +114,8 @@ int main(void)
 	s->auth_keylen = 8;
 	ktx_cfg_for(s, NOW, &c, &k);
 	report("auth-usable-is-carried",
-	       c.enable != 1 || c.auth_type != BFD_AUTH_KEYED_SHA1 ||
-	       c.auth_keyid != 3, "keyed sha1 rides the fast path");
+	       c.enable != 1 || c.auth_type != BFD_AUTH_KEYED_SHA1 || c.auth_keyid != 3,
+	       "keyed sha1 rides the fast path");
 
 	/* --- the accept list at a lifetime boundary --- */
 	s = arm();
@@ -125,11 +126,11 @@ int main(void)
 	s->auth_keys[0].key_id = 1;
 	s->auth_keys[0].keylen = 4;
 	s->auth_keys[0].accept_start = 1;
-	s->auth_keys[0].accept_end = NOW - 1;          /* expired */
+	s->auth_keys[0].accept_end = NOW - 1; /* expired */
 	s->auth_keys[1].type = BFD_AUTH_KEYED_SHA1;
 	s->auth_keys[1].key_id = 2;
 	s->auth_keys[1].keylen = 4;
-	s->auth_keys[1].accept_start = NOW + 100;      /* not open yet */
+	s->auth_keys[1].accept_start = NOW + 100; /* not open yet */
 	s->auth_keys[1].accept_end = -1;
 
 	ktx_cfg_for(s, NOW, &c, &k);
@@ -137,17 +138,16 @@ int main(void)
 	       "one expired, one not yet open");
 
 	ktx_cfg_for(s, NOW - 10, &c, &k);
-	report("accept-list-before-the-boundary",
-	       c.auth_nkeys != 1 || c.auth_accept[0].key_id != 1,
+	report("accept-list-before-the-boundary", c.auth_nkeys != 1 || c.auth_accept[0].key_id != 1,
 	       "only the key whose period is open");
 
 	ktx_cfg_for(s, NOW + 200, &c, &k);
-	report("accept-list-after-the-boundary",
-	       c.auth_nkeys != 1 || c.auth_accept[0].key_id != 2,
+	report("accept-list-after-the-boundary", c.auth_nkeys != 1 || c.auth_accept[0].key_id != 2,
 	       "the rollover key, once its period opens");
 
 	/* A session that does not authenticate hands over no keys at all,
-	 * whatever a stale key chain left behind. */
+	 * whatever a stale key chain left behind.
+	 */
 	s->auth_present = 0;
 	ktx_cfg_for(s, NOW - 10, &c, &k);
 	report("accept-list-empty-without-auth", c.auth_nkeys != 0, "");
@@ -163,8 +163,7 @@ int main(void)
 	s->demand = 1;
 	s->r_state = ST_DOWN;
 	ktx_cfg_for(s, NOW, &c, &k);
-	report("demand-bits-need-the-peer-up", c.demand || c.demand_hold,
-	       "");
+	report("demand-bits-need-the-peer-up", c.demand || c.demand_hold, "");
 
 	s = arm();
 	s->polling = 1;
@@ -177,8 +176,7 @@ int main(void)
 	s->poll_seq = 9;
 	s->state = ST_DOWN;
 	ktx_cfg_for(s, NOW, &c, &k);
-	report("poll-not-carried-while-down", c.poll != 0,
-	       "a Poll belongs to an Up session");
+	report("poll-not-carried-while-down", c.poll != 0, "a Poll belongs to an Up session");
 
 	printf("\n%d failure(s)\n", fails);
 	return fails ? 1 : 0;

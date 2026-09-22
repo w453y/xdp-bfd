@@ -32,7 +32,7 @@
 /* ---------- rig ---------- */
 
 static int fails;
-static int cli = -1;                 /* our end, standing in for bfdd */
+static int cli = -1; /* our end, standing in for bfdd */
 static char sockpath[64];
 
 static int rig_up(void)
@@ -59,7 +59,7 @@ static int rig_up(void)
 		return 0;
 	}
 
-	dp_accept();       /* the engine's own accept path installs dp_conn */
+	dp_accept(); /* the engine's own accept path installs dp_conn */
 	return 1;
 }
 
@@ -72,7 +72,8 @@ static void rig_down(void)
 }
 
 /* Is the connection still up? dp_fds hands back the current pair, so a
- * dropped connection is visible without reaching into dplane.c. */
+ * dropped connection is visible without reaching into dplane.c.
+ */
 static int conn_alive(void)
 {
 	int l = -1, c = -1;
@@ -99,9 +100,9 @@ static void sessions_clear(void)
 /* ---------- message building ---------- */
 
 /* A DP_ADD_SESSION for one v4 peer. bfddp carries both families as in6_addr;
- * SESSION_IPV6 clear means v4 in the first four bytes. */
-static size_t build_add(unsigned char *buf, uint32_t lid, const char *local,
-			const char *peer)
+ * SESSION_IPV6 clear means v4 in the first four bytes.
+ */
+static size_t build_add(unsigned char *buf, uint32_t lid, const char *local, const char *peer)
 {
 	struct bfddp_message_header *h = (void *)buf;
 	struct bfddp_session_msg *s = (void *)(h + 1);
@@ -109,30 +110,31 @@ static size_t build_add(unsigned char *buf, uint32_t lid, const char *local,
 
 	memset(buf, 0, len);
 	h->version = 1;
-	h->type    = htons(DP_ADD_SESSION);
-	h->length  = htons((uint16_t)len);
+	h->type = htons(DP_ADD_SESSION);
+	h->length = htons((uint16_t)len);
 
-	s->lid   = htonl(lid);
-	s->flags = htonl(0);            /* v4: SESSION_IPV6 clear */
+	s->lid = htonl(lid);
+	s->flags = htonl(0); /* v4: SESSION_IPV6 clear */
 	{
 		/* sm_addrs builds the v4-mapped form; here the address goes in
-		 * the first four bytes. */
+		 * the first four bytes.
+		 */
 		uint32_t a = inet_addr(local), b = inet_addr(peer);
 
 		memcpy(&s->src.s6_addr[0], &a, 4);
 		memcpy(&s->dst.s6_addr[0], &b, 4);
 	}
-	s->min_tx      = htonl(10000);
-	s->min_rx      = htonl(10000);
-	s->ttl         = 255;
+	s->min_tx = htonl(10000);
+	s->min_rx = htonl(10000);
+	s->ttl = 255;
 	s->detect_mult = 3;
 	return len;
 }
 
 /* Same message, IPv6, which reaches the session table through a separate
- * branch of sm_addrs. */
-static size_t build_add6(unsigned char *buf, uint32_t lid, const char *local,
-			 const char *peer)
+ * branch of sm_addrs.
+ */
+static size_t build_add6(unsigned char *buf, uint32_t lid, const char *local, const char *peer)
 {
 	struct bfddp_message_header *h = (void *)buf;
 	struct bfddp_session_msg *s = (void *)(h + 1);
@@ -140,16 +142,16 @@ static size_t build_add6(unsigned char *buf, uint32_t lid, const char *local,
 
 	memset(buf, 0, len);
 	h->version = 1;
-	h->type    = htons(DP_ADD_SESSION);
-	h->length  = htons((uint16_t)len);
+	h->type = htons(DP_ADD_SESSION);
+	h->length = htons((uint16_t)len);
 
-	s->lid   = htonl(lid);
+	s->lid = htonl(lid);
 	s->flags = htonl(SESSION_IPV6);
 	inet_pton(AF_INET6, local, &s->src);
 	inet_pton(AF_INET6, peer, &s->dst);
-	s->min_tx      = htonl(10000);
-	s->min_rx      = htonl(10000);
-	s->ttl         = 255;
+	s->min_tx = htonl(10000);
+	s->min_rx = htonl(10000);
+	s->ttl = 255;
 	s->detect_mult = 3;
 	return len;
 }
@@ -171,8 +173,7 @@ static void report(const char *name, int bad, const char *detail)
 }
 
 /* An ADD that says the session authenticates. */
-static size_t build_add_auth(unsigned char *buf, uint32_t lid,
-			     const char *local, const char *peer)
+static size_t build_add_auth(unsigned char *buf, uint32_t lid, const char *local, const char *peer)
 {
 	struct bfddp_message_header *h = (void *)buf;
 	struct bfddp_session_msg *s = (void *)(h + 1);
@@ -184,7 +185,8 @@ static size_t build_add_auth(unsigned char *buf, uint32_t lid,
 }
 
 /* A two-key chain handing over at t=2000. Key 2 is acceptable from 1500 and
- * key 1 until 3000; that overlap is the rollover. */
+ * key 1 until 3000; that overlap is the rollover.
+ */
 static size_t build_session_auth(unsigned char *buf, uint32_t lid)
 {
 	struct bfddp_message_header *h = (void *)buf;
@@ -224,7 +226,8 @@ static size_t build_session_auth(unsigned char *buf, uint32_t lid)
 /* ---------- cases ---------- */
 
 /* One whole message in one read: the baseline everything else is measured
- * against. */
+ * against.
+ */
 static void case_whole(void)
 {
 	unsigned char buf[256];
@@ -236,8 +239,7 @@ static void case_whole(void)
 	dp_read();
 
 	if (used_sessions() != 1) {
-		printf("     %d sessions after one ADD, want 1\n",
-		       used_sessions());
+		printf("     %d sessions after one ADD, want 1\n", used_sessions());
 		bad = 1;
 	}
 	if (!conn_alive()) {
@@ -248,7 +250,8 @@ static void case_whole(void)
 }
 
 /* The same message split at every byte boundary. A parser that assumes a
- * message arrives in one piece fails somewhere in here. */
+ * message arrives in one piece fails somewhere in here.
+ */
 static void case_torn(void)
 {
 	unsigned char buf[256];
@@ -264,14 +267,12 @@ static void case_torn(void)
 		dp_read();
 
 		if (used_sessions() != 1) {
-			printf("     split at %zu: %d sessions, want 1\n",
-			       split, used_sessions());
+			printf("     split at %zu: %d sessions, want 1\n", split, used_sessions());
 			bad = 1;
 			break;
 		}
 		if (!conn_alive()) {
-			printf("     split at %zu dropped the connection\n",
-			       split);
+			printf("     split at %zu dropped the connection\n", split);
 			bad = 1;
 			break;
 		}
@@ -295,15 +296,15 @@ static void case_batched(void)
 	dp_read();
 
 	if (used_sessions() != 3) {
-		printf("     %d sessions after three ADDs in one read\n",
-		       used_sessions());
+		printf("     %d sessions after three ADDs in one read\n", used_sessions());
 		bad = 1;
 	}
 	report("three-in-one-read", bad, "3 sessions");
 }
 
 /* A length field that cannot be honoured drops the connection, so bfdd
- * reconnects on a clean boundary. The rig is rebuilt afterwards. */
+ * reconnects on a clean boundary. The rig is rebuilt afterwards.
+ */
 static void case_bad_length(uint16_t mlen, const char *name)
 {
 	unsigned char buf[256];
@@ -322,8 +323,7 @@ static void case_bad_length(uint16_t mlen, const char *name)
 		bad = 1;
 	}
 	if (used_sessions() != 0) {
-		printf("     %d sessions built from a bad frame\n",
-		       used_sessions());
+		printf("     %d sessions built from a bad frame\n", used_sessions());
 		bad = 1;
 	}
 	report(name, bad, "dropped");
@@ -334,7 +334,8 @@ static void case_bad_length(uint16_t mlen, const char *name)
 }
 
 /* Session lifecycle: bfdd re-sends an ADD on every config change, so an ADD
- * may create, update or adopt. */
+ * may create, update or adopt.
+ */
 
 /* A fresh ADD builds a session whose wire discriminator is its lid. */
 static void case_fresh(void)
@@ -370,7 +371,7 @@ static void case_fresh_v6(void)
 {
 	unsigned char buf[256];
 	size_t n = build_add6(buf, 0x4002, "fd00::1", "fd00::2");
-	struct bfd_addr want = {0};
+	struct bfd_addr want = { 0 };
 	struct session *s;
 	int bad = 0;
 
@@ -399,7 +400,8 @@ static void case_fresh_v6(void)
 
 /* A second ADD for the same lid updates in place and keeps wire_disc:
  * RFC 5880 requires the discriminator to stay constant while Up, so an
- * adopted session must not get a new one. */
+ * adopted session must not get a new one.
+ */
 static void case_update_keeps_disc(void)
 {
 	unsigned char buf[256];
@@ -414,11 +416,11 @@ static void case_update_keeps_disc(void)
 
 	s = sess_by_lid(0x4003);
 	if (s)
-		s->wire_disc = 0xdeadbeef;   /* stand in for one already Up */
+		s->wire_disc = 0xdeadbeef; /* stand in for one already Up */
 
 	n = build_add(buf, 0x4003, "10.0.0.1", "10.0.0.32");
-	((struct bfddp_session_msg *)(buf + sizeof(struct bfddp_message_header)))
-		->min_tx = htonl(50000);
+	((struct bfddp_session_msg *)(buf + sizeof(struct bfddp_message_header)))->min_tx =
+		htonl(50000);
 	feed(buf, n);
 	dp_read();
 
@@ -428,32 +430,29 @@ static void case_update_keeps_disc(void)
 		bad = 1;
 	} else {
 		if (s->wire_disc != 0xdeadbeef) {
-			printf("     wire_disc changed to %u on update\n",
-			       s->wire_disc);
+			printf("     wire_disc changed to %u on update\n", s->wire_disc);
 			bad = 1;
 		}
 		if (s->min_tx_us != 50000) {
-			printf("     min_tx_us %u, the update did not apply\n",
-			       s->min_tx_us);
+			printf("     min_tx_us %u, the update did not apply\n", s->min_tx_us);
 			bad = 1;
 		}
 	}
 	if (used_sessions() != 1) {
-		printf("     %d sessions, the update allocated a new one\n",
-		       used_sessions());
+		printf("     %d sessions, the update allocated a new one\n", used_sessions());
 		bad = 1;
 	}
 	report("add-update-keeps-wire-disc", bad, "1 session");
 }
 
 /* An ADD of BFDDP_SESSION_MSG_MIN bytes and no DP_SESSION_AUTH gives an
- * unauthenticated session. */
+ * unauthenticated session.
+ */
 static void case_add_without_auth(void)
 {
 	unsigned char buf[256];
 	size_t full = build_add(buf, 0x5150, "10.0.0.1", "10.0.0.2");
-	size_t short_len = sizeof(struct bfddp_message_header) +
-			   BFDDP_SESSION_MSG_MIN;
+	size_t short_len = sizeof(struct bfddp_message_header) + BFDDP_SESSION_MSG_MIN;
 	struct bfddp_message_header *h = (void *)buf;
 	struct session *s;
 
@@ -479,7 +478,8 @@ static void case_add_without_auth(void)
 
 /* ktx_push_needed compares the key as well as the value, since an address move
  * changes no tx_cfg field. The predicate is tested directly because ktx_mirror
- * is stubbed here. */
+ * is stubbed here.
+ */
 static void case_mirror_cache_tracks_key(void)
 {
 	struct session_key k1 = {}, k2 = {};
@@ -525,7 +525,8 @@ static void case_mirror_cache_tracks_key(void)
 }
 
 /* A repeated ADD must not slow transmission mid-Poll: s6.8.3 keeps the old
- * interval until the peer's Final. */
+ * interval until the peer's Final.
+ */
 static void case_repeated_add_during_poll(void)
 {
 	unsigned char buf[256];
@@ -535,8 +536,8 @@ static void case_repeated_add_during_poll(void)
 
 	sessions_clear();
 	n = build_add(buf, 0x4009, "10.0.0.1", "10.0.0.40");
-	((struct bfddp_session_msg *)(buf + sizeof(struct bfddp_message_header)))
-		->min_tx = htonl(10000);
+	((struct bfddp_session_msg *)(buf + sizeof(struct bfddp_message_header)))->min_tx =
+		htonl(10000);
 	feed(buf, n);
 	dp_read();
 
@@ -552,8 +553,8 @@ static void case_repeated_add_during_poll(void)
 
 	/* Raise it: poll opens, the applied rate stays where it was. */
 	n = build_add(buf, 0x4009, "10.0.0.1", "10.0.0.40");
-	((struct bfddp_session_msg *)(buf + sizeof(struct bfddp_message_header)))
-		->min_tx = htonl(50000);
+	((struct bfddp_session_msg *)(buf + sizeof(struct bfddp_message_header)))->min_tx =
+		htonl(50000);
 	feed(buf, n);
 	dp_read();
 
@@ -563,15 +564,14 @@ static void case_repeated_add_during_poll(void)
 		bad = 1;
 	}
 	if (s->applied_tx_us != 10000) {
-		printf("     applied_tx_us %u after the increase, want 10000\n",
-		       s->applied_tx_us);
+		printf("     applied_tx_us %u after the increase, want 10000\n", s->applied_tx_us);
 		bad = 1;
 	}
 
 	/* The same message again, before any Final. */
 	n = build_add(buf, 0x4009, "10.0.0.1", "10.0.0.40");
-	((struct bfddp_session_msg *)(buf + sizeof(struct bfddp_message_header)))
-		->min_tx = htonl(50000);
+	((struct bfddp_session_msg *)(buf + sizeof(struct bfddp_message_header)))->min_tx =
+		htonl(50000);
 	feed(buf, n);
 	dp_read();
 
@@ -581,8 +581,7 @@ static void case_repeated_add_during_poll(void)
 		bad = 1;
 	}
 	if (s->applied_tx_us != 10000) {
-		printf("     applied_tx_us %u after the repeat, want 10000\n",
-		       s->applied_tx_us);
+		printf("     applied_tx_us %u after the repeat, want 10000\n", s->applied_tx_us);
 		bad = 1;
 	}
 
@@ -590,8 +589,7 @@ static void case_repeated_add_during_poll(void)
 	s->polling = 0;
 	s->applied_tx_us = s->min_tx_us;
 	if (s->applied_tx_us != 50000) {
-		printf("     applied_tx_us %u after the final, want 50000\n",
-		       s->applied_tx_us);
+		printf("     applied_tx_us %u after the final, want 50000\n", s->applied_tx_us);
 		bad = 1;
 	}
 
@@ -599,17 +597,17 @@ static void case_repeated_add_during_poll(void)
 		printf("FAIL %-44s\n", "repeated-add-holds-applied-tx");
 		fails++;
 	} else {
-		printf("ok   %-44s held 10000 until the final\n",
-		       "repeated-add-holds-applied-tx");
+		printf("ok   %-44s held 10000 until the final\n", "repeated-add-holds-applied-tx");
 	}
 }
 
 /* An ADD for an existing lid may move the address pair; the old pair's
- * map entries must be cleared. */
+ * map entries must be cleared.
+ */
 static void case_address_move(void)
 {
 	unsigned char buf[256];
-	struct bfd_addr want = {0};
+	struct bfd_addr want = { 0 };
 	uint32_t a = inet_addr("10.0.0.42");
 	struct session *s;
 	size_t n;
@@ -637,21 +635,20 @@ static void case_address_move(void)
 		bad = 1;
 	}
 	if (used_sessions() != 1) {
-		printf("     %d sessions after an address move\n",
-		       used_sessions());
+		printf("     %d sessions after an address move\n", used_sessions());
 		bad = 1;
 	}
 	report("add-moves-address-pair", bad, "1 session, new pair");
 }
 
 /* Flags map straight through: passive, shutdown and multihop each land in
- * their own field rather than being conflated. */
+ * their own field rather than being conflated.
+ */
 static void case_flags(void)
 {
 	unsigned char buf[256];
 	size_t n = build_add(buf, 0x4005, "10.0.0.1", "10.0.0.51");
-	struct bfddp_session_msg *m =
-		(void *)(buf + sizeof(struct bfddp_message_header));
+	struct bfddp_session_msg *m = (void *)(buf + sizeof(struct bfddp_message_header));
 	struct session *s;
 	int bad = 0;
 
@@ -678,7 +675,8 @@ static void case_flags(void)
 }
 
 /* The chain arrives once and key choice follows the clock; checked at three
- * instants. */
+ * instants.
+ */
 static void case_auth_rollover(void)
 {
 	unsigned char buf[2048];
@@ -700,17 +698,16 @@ static void case_auth_rollover(void)
 		return;
 	}
 	if (!s->auth_present || s->auth_nkeys != 2) {
-		printf("     present=%u nkeys=%u, want 1 and 2\n",
-		       s->auth_present, s->auth_nkeys);
+		printf("     present=%u nkeys=%u, want 1 and 2\n", s->auth_present, s->auth_nkeys);
 		bad = 1;
 	}
 
 	/* Before the handover the first key signs, and the second is
-	 * already acceptable so the peer may move first. */
+	 * already acceptable so the peer may move first.
+	 */
 	session_auth_evaluate(s, 1500);
 	if (s->auth_keyid != 1) {
-		printf("     at 1500 signing with key %u, want 1\n",
-		       s->auth_keyid);
+		printf("     at 1500 signing with key %u, want 1\n", s->auth_keyid);
 		bad = 1;
 	}
 	if (!session_auth_key_for(s, 2, 1500)) {
@@ -719,11 +716,11 @@ static void case_auth_rollover(void)
 	}
 
 	/* After it the second signs, and the first is still accepted so a
-	 * packet already in flight is not refused. */
+	 * packet already in flight is not refused.
+	 */
 	session_auth_evaluate(s, 2500);
 	if (s->auth_keyid != 2) {
-		printf("     at 2500 signing with key %u, want 2\n",
-		       s->auth_keyid);
+		printf("     at 2500 signing with key %u, want 2\n", s->auth_keyid);
 		bad = 1;
 	}
 	if (!session_auth_key_for(s, 1, 2500)) {
@@ -741,7 +738,8 @@ static void case_auth_rollover(void)
 }
 
 /* A message claiming more keys than it carries must be refused rather
- * than read past its end. */
+ * than read past its end.
+ */
 static void case_auth_short(void)
 {
 	unsigned char buf[2048];
@@ -759,15 +757,14 @@ static void case_auth_short(void)
 		struct bfddp_message_header *h = (void *)buf;
 		struct bfddp_session_auth *a = (void *)(h + 1);
 
-		a->key_count = htons(8);   /* only two are there */
+		a->key_count = htons(8); /* only two are there */
 	}
 	feed(buf, n);
 	dp_read();
 
 	s = sess_by_lid(0x2002);
 	if (!s || s->auth_nkeys != 0) {
-		printf("     took %u keys from a message carrying two\n",
-		       s ? s->auth_nkeys : 0);
+		printf("     took %u keys from a message carrying two\n", s ? s->auth_nkeys : 0);
 		bad = 1;
 	}
 	report("auth-short-message", bad, "refused");
@@ -775,22 +772,29 @@ static void case_auth_short(void)
 
 /* A notification storm overflows the output queue. The connection survives
  * and, once bfdd reads again, the session's final state is delivered. bfdd's
- * end is not drained during the flood. */
+ * end is not drained during the flood.
+ */
 static void case_notify_coalesce(void)
 {
 	struct msg {
 		struct bfddp_message_header h;
-		struct bfddp_state_change   sc;
+		struct bfddp_state_change sc;
 	} __attribute__((packed));
 	static char buf[1 << 20];
 	int alive, hit_overflow = 0, last_state = -1, bad = 0;
 	size_t carry = 0;
 	ssize_t n;
 
-	if (!rig_up()) { printf("FAIL notify-coalesce (rig)\n"); fails++; rig_down(); return; }
+	if (!rig_up()) {
+		printf("FAIL notify-coalesce (rig)\n");
+		fails++;
+		rig_down();
+		return;
+	}
 	sessions_clear();
 
 	struct session *s = &sessions[0];
+
 	s->used = 1;
 	s->lid = 0xABCD;
 	s->state = ST_DOWN;
@@ -801,19 +805,22 @@ static void case_notify_coalesce(void)
 		if (s->notify_pending)
 			hit_overflow = 1;
 	}
-	s->state = ST_UP;              /* the state that must win */
+	s->state = ST_UP; /* the state that must win */
 	dp_notify_state(s);
 
 	alive = conn_alive();
 
 	/* Drain bfdd's end and flush the deferred notification, tracking the
-	 * last fully-received state_change. */
+	 * last fully-received state_change.
+	 */
 	for (int round = 0; round < 400; round++) {
 		n = recv(cli, buf + carry, sizeof(buf) - carry, MSG_DONTWAIT);
 		if (n > 0) {
 			size_t total = carry + (size_t)n, off = 0;
+
 			while (total - off >= sizeof(struct msg)) {
 				struct msg *mm = (void *)(buf + off);
+
 				last_state = mm->sc.state;
 				off += sizeof(struct msg);
 			}
@@ -826,13 +833,29 @@ static void case_notify_coalesce(void)
 			break;
 	}
 
-	if (!hit_overflow) { printf("     never overflowed (test ineffective)\n"); bad = 1; }
-	if (!alive)        { printf("     connection dropped on overflow\n"); bad = 1; }
-	if (s->notify_pending) { printf("     deferred notification never delivered\n"); bad = 1; }
-	if (last_state != ST_UP) { printf("     last delivered state %d, want UP %d\n", last_state, ST_UP); bad = 1; }
+	if (!hit_overflow) {
+		printf("     never overflowed (test ineffective)\n");
+		bad = 1;
+	}
+	if (!alive) {
+		printf("     connection dropped on overflow\n");
+		bad = 1;
+	}
+	if (s->notify_pending) {
+		printf("     deferred notification never delivered\n");
+		bad = 1;
+	}
+	if (last_state != ST_UP) {
+		printf("     last delivered state %d, want UP %d\n", last_state, ST_UP);
+		bad = 1;
+	}
 
-	if (bad) { printf("FAIL notify-coalesce-survives-overflow\n"); fails++; }
-	else printf("ok   %-40s conn alive, final state UP\n", "notify-coalesce-survives-overflow");
+	if (bad) {
+		printf("FAIL notify-coalesce-survives-overflow\n");
+		fails++;
+	} else
+		printf("ok   %-40s conn alive, final state UP\n",
+		       "notify-coalesce-survives-overflow");
 
 	rig_down();
 	sessions_clear();
@@ -840,7 +863,8 @@ static void case_notify_coalesce(void)
 
 
 /* A wildcard local address (no local-address in bfdd) resolves to the source
- * the kernel would use. A loopback peer makes the result deterministic. */
+ * the kernel would use. A loopback peer makes the result deterministic.
+ */
 static void case_local_resolve(void)
 {
 	unsigned char buf[256];
@@ -849,7 +873,11 @@ static void case_local_resolve(void)
 	uint32_t local4 = 0;
 	int bad = 0;
 
-	if (!rig_up()) { report("local-resolve-v4", 1, "rig up"); rig_down(); return; }
+	if (!rig_up()) {
+		report("local-resolve-v4", 1, "rig up");
+		rig_down();
+		return;
+	}
 	sessions_clear();
 	feed(buf, n);
 	dp_read();
@@ -865,6 +893,7 @@ static void case_local_resolve(void)
 			bad = 1;
 		} else if (local4 != inet_addr("127.0.0.1")) {
 			char a[32];
+
 			inet_ntop(AF_INET, &local4, a, sizeof(a));
 			printf("     resolved local %s, want 127.0.0.1\n", a);
 			bad = 1;
@@ -881,7 +910,11 @@ static void case_local_resolve_v6(void)
 	struct session *s;
 	int bad = 0;
 
-	if (!rig_up()) { report("local-resolve-v6", 1, "rig up"); rig_down(); return; }
+	if (!rig_up()) {
+		report("local-resolve-v6", 1, "rig up");
+		rig_down();
+		return;
+	}
 	sessions_clear();
 	feed(buf, n);
 	dp_read();
@@ -892,10 +925,12 @@ static void case_local_resolve_v6(void)
 		bad = 1;
 	} else {
 		struct in6_addr want, got;
+
 		inet_pton(AF_INET6, "::1", &want);
 		memcpy(&got, s->local.b, 16);
 		if (memcmp(&got, &want, 16) != 0) {
 			char a[64];
+
 			inet_ntop(AF_INET6, &got, a, sizeof(a));
 			printf("     resolved local %s, want ::1\n", a);
 			bad = 1;
@@ -919,7 +954,11 @@ static void case_local_resolve_mhop(void)
 	sm->flags = htonl(SESSION_MULTIHOP);
 	sm->ttl = 250;
 
-	if (!rig_up()) { report("local-resolve-mhop", 1, "rig up"); rig_down(); return; }
+	if (!rig_up()) {
+		report("local-resolve-mhop", 1, "rig up");
+		rig_down();
+		return;
+	}
 	sessions_clear();
 	feed(buf, n);
 	dp_read();
@@ -935,6 +974,7 @@ static void case_local_resolve_mhop(void)
 		memcpy(&local4, &s->local.b[12], 4);
 		if (local4 != inet_addr("127.0.0.1")) {
 			char a[32];
+
 			inet_ntop(AF_INET, &local4, a, sizeof(a));
 			printf("     resolved local %s, want 127.0.0.1\n", a);
 			bad = 1;
@@ -971,8 +1011,7 @@ int main(void)
 	case_local_resolve_mhop();
 
 	/* Below the header, and above the buffer. */
-	case_bad_length(sizeof(struct bfddp_message_header) - 1,
-			"bad-length-under-header");
+	case_bad_length(sizeof(struct bfddp_message_header) - 1, "bad-length-under-header");
 	case_bad_length(0, "bad-length-zero");
 	case_bad_length(65535, "bad-length-over-buffer");
 

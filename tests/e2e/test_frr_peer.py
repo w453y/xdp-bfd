@@ -19,9 +19,21 @@ import time
 
 import pytest
 
-from conftest import (RUNTIME, FRR_IMAGE, NAME_A, NAME_B, DAEMONS, DPLANE_OPT,
-                      sh, frr_rm, frr_start, frr_ns, frr_vtysh,
-                      frr_conf_dir, frr_daemon_pid)
+from conftest import (
+    RUNTIME,
+    FRR_IMAGE,
+    NAME_A,
+    NAME_B,
+    DAEMONS,
+    DPLANE_OPT,
+    sh,
+    frr_rm,
+    frr_start,
+    frr_ns,
+    frr_vtysh,
+    frr_conf_dir,
+    frr_daemon_pid,
+)
 from lib.netns import bpf_map_for_dev
 
 pytestmark = pytest.mark.frr
@@ -29,13 +41,15 @@ pytestmark = pytest.mark.frr
 IP_A, IP_B = "10.78.0.1", "10.78.0.2"
 UP_WAIT = 25.0
 
-CONF = ("hostname %s\n"
-        "bfd\n"
-        " peer %s local-address %s interface %s\n"
-        "  no shutdown\n"
-        " exit\n"
-        "exit\n"
-        "line vty\n")
+CONF = (
+    "hostname %s\n"
+    "bfd\n"
+    " peer %s local-address %s interface %s\n"
+    "  no shutdown\n"
+    " exit\n"
+    "exit\n"
+    "line vty\n"
+)
 
 
 def _brief_up(name):
@@ -63,14 +77,16 @@ def frr_pair(request):
             frr_ns(pid, "ip link set %s up" % dev)
             frr_ns(pid, "ip link set lo up")
 
-        sh("sudo nsenter -t %d -n nohup %s/bfd_tx --dplane 50700"
-           " --kernel-tx eth-a --xdp-mode generic --bpf-obj %s/bfd_xdp.o"
-           " --stats-dump /tmp/frr_rig.json >/tmp/frr_rig_engine.log 2>&1 &"
-           % (pa, root, root), capture=False)
+        sh(
+            "sudo nsenter -t %d -n nohup %s/bfd_tx --dplane 50700"
+            " --kernel-tx eth-a --xdp-mode generic --bpf-obj %s/bfd_xdp.o"
+            " --stats-dump /tmp/frr_rig.json >/tmp/frr_rig_engine.log 2>&1 &"
+            % (pa, root, root),
+            capture=False,
+        )
         yield pa, pb
     finally:
-        sh("sudo pkill -f 'bfd_tx --dplane 50700 --kernel-tx eth-a'",
-           check=False)
+        sh("sudo pkill -f 'bfd_tx --dplane 50700 --kernel-tx eth-a'", check=False)
         frr_rm(NAME_A)
         frr_rm(NAME_B)
         sh("sudo ip link del eth-a", check=False)
@@ -82,12 +98,13 @@ def test_engine_accepts_the_bfddp_connection(frr_pair):
     """
     end = time.time() + UP_WAIT
     while time.time() < end:
-        if "bfdd connected" in sh("cat /tmp/frr_rig_engine.log",
-                                  check=False):
+        if "bfdd connected" in sh("cat /tmp/frr_rig_engine.log", check=False):
             return
         time.sleep(0.5)
-    pytest.fail("bfdd never connected over bfddp\n%s"
-                % sh("tail -20 /tmp/frr_rig_engine.log", check=False))
+    pytest.fail(
+        "bfdd never connected over bfddp\n%s"
+        % sh("tail -20 /tmp/frr_rig_engine.log", check=False)
+    )
 
 
 def test_both_sides_reach_up(frr_pair):
@@ -96,10 +113,14 @@ def test_both_sides_reach_up(frr_pair):
         if _brief_up(NAME_A) and _brief_up(NAME_B):
             return
         time.sleep(1.0)
-    pytest.fail("not both up\nA: %s\nB: %s\nengine:\n%s"
-                % (frr_vtysh(NAME_A, "show bfd peers brief"),
-                   frr_vtysh(NAME_B, "show bfd peers brief"),
-                   sh("tail -20 /tmp/frr_rig_engine.log", check=False)))
+    pytest.fail(
+        "not both up\nA: %s\nB: %s\nengine:\n%s"
+        % (
+            frr_vtysh(NAME_A, "show bfd peers brief"),
+            frr_vtysh(NAME_B, "show bfd peers brief"),
+            sh("tail -20 /tmp/frr_rig_engine.log", check=False),
+        )
+    )
 
 
 # ---- --dp-hold lifecycle ------------------------------------------------
@@ -127,11 +148,13 @@ def frr_hold(request):
             frr_ns(pid, "ip addr add %s/24 dev %s" % (ip, dev))
             frr_ns(pid, "ip link set %s up" % dev)
             frr_ns(pid, "ip link set lo up")
-        sh("sudo nsenter -t %d -n nohup %s/bfd_tx --dplane 50700"
-           " --dp-hold %d --kernel-tx eth-a --xdp-mode generic"
-           " --bpf-obj %s/bfd_xdp.o --stats-dump /tmp/frr_hold.json"
-           " >/tmp/frr_hold_engine.log 2>&1 &"
-           % (pa, root, HOLD_S, root), capture=False)
+        sh(
+            "sudo nsenter -t %d -n nohup %s/bfd_tx --dplane 50700"
+            " --dp-hold %d --kernel-tx eth-a --xdp-mode generic"
+            " --bpf-obj %s/bfd_xdp.o --stats-dump /tmp/frr_hold.json"
+            " >/tmp/frr_hold_engine.log 2>&1 &" % (pa, root, HOLD_S, root),
+            capture=False,
+        )
         end = time.time() + UP_WAIT
         while time.time() < end:
             if _brief_up(NAME_A) and _brief_up(NAME_B):
@@ -166,10 +189,13 @@ def test_without_dp_hold_the_peer_goes_down(request):
             frr_ns(pid, "ip addr add %s/24 dev %s" % (ip, dev))
             frr_ns(pid, "ip link set %s up" % dev)
             frr_ns(pid, "ip link set lo up")
-        sh("sudo nsenter -t %d -n nohup %s/bfd_tx --dplane 50700"
-           " --kernel-tx eth-a --xdp-mode generic --bpf-obj %s/bfd_xdp.o"
-           " --stats-dump /tmp/frr_nohold.json >/tmp/frr_nohold.log 2>&1 &"
-           % (pa, root, root), capture=False)
+        sh(
+            "sudo nsenter -t %d -n nohup %s/bfd_tx --dplane 50700"
+            " --kernel-tx eth-a --xdp-mode generic --bpf-obj %s/bfd_xdp.o"
+            " --stats-dump /tmp/frr_nohold.json >/tmp/frr_nohold.log 2>&1 &"
+            % (pa, root, root),
+            capture=False,
+        )
         end = time.time() + UP_WAIT
         while time.time() < end:
             if _brief_up(NAME_A) and _brief_up(NAME_B):
@@ -184,11 +210,12 @@ def test_without_dp_hold_the_peer_goes_down(request):
             if not _brief_up(NAME_B):
                 return
             time.sleep(1.0)
-        pytest.fail("peer stayed Up without --dp-hold; the hold test proves"
-                    " nothing\n%s" % frr_vtysh(NAME_B, "show bfd peers brief"))
+        pytest.fail(
+            "peer stayed Up without --dp-hold; the hold test proves"
+            " nothing\n%s" % frr_vtysh(NAME_B, "show bfd peers brief")
+        )
     finally:
-        sh("sudo pkill -f 'bfd_tx --dplane 50700 --kernel-tx eth-a'",
-           check=False)
+        sh("sudo pkill -f 'bfd_tx --dplane 50700 --kernel-tx eth-a'", check=False)
         frr_rm(NAME_A)
         frr_rm(NAME_B)
         sh("sudo ip link del eth-a", check=False)
@@ -215,16 +242,23 @@ def test_dp_hold_survives_a_bfdd_crash(frr_hold):
             break
         time.sleep(0.5)
     else:
-        pytest.fail("engine never logged the orphan hold\n%s"
-                    % sh("tail -20 /tmp/frr_hold_engine.log", check=False))
+        pytest.fail(
+            "engine never logged the orphan hold\n%s"
+            % sh("tail -20 /tmp/frr_hold_engine.log", check=False)
+        )
 
     time.sleep(5.0)
-    assert _brief_up(NAME_B), (
-        "peer went down after bfdd was killed; --dp-hold did not hold\n%s"
-        % frr_vtysh(NAME_B, "show bfd peers brief"))
-    assert _peer_downs(NAME_B) == before, (
-        "peer recorded a down event across the crash (%d -> %d)"
-        % (before, _peer_downs(NAME_B)))
+    assert _brief_up(
+        NAME_B
+    ), "peer went down after bfdd was killed; --dp-hold did not hold\n%s" % frr_vtysh(
+        NAME_B, "show bfd peers brief"
+    )
+    assert (
+        _peer_downs(NAME_B) == before
+    ), "peer recorded a down event across the crash (%d -> %d)" % (
+        before,
+        _peer_downs(NAME_B),
+    )
 
 
 # ---- renegotiation, Poll/Final ------------------------------------------
@@ -270,10 +304,12 @@ def test_renegotiation_completes_a_poll_sequence(frr_pair):
     seq0, tx0 = before["poll_seq"], before["min_tx_us"]
     assert tx0 != RAISED_MS * 1000, "session already at the raised interval"
 
-    sh("sudo %s exec %s vtysh -c 'configure terminal' -c 'bfd'"
-       " -c 'peer %s local-address %s interface eth-a'"
-       " -c 'transmit-interval %d'" % (RUNTIME, NAME_A, IP_B, IP_A, RAISED_MS),
-       check=False)
+    sh(
+        "sudo %s exec %s vtysh -c 'configure terminal' -c 'bfd'"
+        " -c 'peer %s local-address %s interface eth-a'"
+        " -c 'transmit-interval %d'" % (RUNTIME, NAME_A, IP_B, IP_A, RAISED_MS),
+        check=False,
+    )
 
     end = time.time() + 20.0
     seq1 = final = None
@@ -287,12 +323,18 @@ def test_renegotiation_completes_a_poll_sequence(frr_pair):
 
     assert seq1 is not None, (
         "poll_seq never advanced from %d; did the interval change apply?"
-        " min_tx_us is %d" % (seq0, _cfg(pa)["min_tx_us"]))
+        " min_tx_us is %d" % (seq0, _cfg(pa)["min_tx_us"])
+    )
     assert final == seq1, (
         "poll_seq advanced to %d but final_seq stayed at %s: the peer never"
-        " answered with F" % (seq1, final))
-    assert _cfg(pa)["min_tx_us"] == RAISED_MS * 1000, (
-        "min_tx_us is %d, want %d" % (_cfg(pa)["min_tx_us"], RAISED_MS * 1000))
+        " answered with F" % (seq1, final)
+    )
+    assert _cfg(pa)["min_tx_us"] == RAISED_MS * 1000, "min_tx_us is %d, want %d" % (
+        _cfg(pa)["min_tx_us"],
+        RAISED_MS * 1000,
+    )
     assert _brief_up(NAME_B), "peer went down across the renegotiation"
-    print("poll_seq %d -> %d, final_seq caught up, min_tx_us %d -> %d"
-          % (seq0, seq1, tx0, _cfg(pa)["min_tx_us"]))
+    print(
+        "poll_seq %d -> %d, final_seq caught up, min_tx_us %d -> %d"
+        % (seq0, seq1, tx0, _cfg(pa)["min_tx_us"])
+    )

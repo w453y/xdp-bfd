@@ -6,8 +6,18 @@ import time
 
 import pytest
 
-from conftest import (NS_A, NS_B, STATS, STATS_B, DOWN_WAIT, sh, ns_pids,
-                      start_engine, dump, wait_both_up)
+from conftest import (
+    NS_A,
+    NS_B,
+    STATS,
+    STATS_B,
+    DOWN_WAIT,
+    sh,
+    ns_pids,
+    start_engine,
+    dump,
+    wait_both_up,
+)
 
 
 @pytest.mark.parametrize("family", [4, 6])
@@ -54,10 +64,16 @@ def test_two_static_engines_reach_up_authenticated(rig, binary, family, auth):
 def test_mismatched_key_never_comes_up(rig, binary, auth):
     """The negative arm, without which the rows above would pass even if
     the digest were never checked."""
-    start_engine(binary, 4, ns=NS_A, stats=STATS,
-                 extra=["--auth", "%s:5:%s" % (auth, AUTH_KEY)])
-    start_engine(binary, 4, ns=NS_B, stats=STATS_B,
-                 extra=["--auth", "%s:5:a-different-key" % auth])
+    start_engine(
+        binary, 4, ns=NS_A, stats=STATS, extra=["--auth", "%s:5:%s" % (auth, AUTH_KEY)]
+    )
+    start_engine(
+        binary,
+        4,
+        ns=NS_B,
+        stats=STATS_B,
+        extra=["--auth", "%s:5:a-different-key" % auth],
+    )
 
     end = time.time() + 6
     while time.time() < end:
@@ -69,8 +85,9 @@ def test_mismatched_key_never_comes_up(rig, binary, auth):
 def test_one_side_unauthenticated_never_comes_up(rig, binary):
     """A peer must not be able to strip authentication by not offering
     it: the A bit and the session have to agree in both directions."""
-    start_engine(binary, 4, ns=NS_A, stats=STATS,
-                 extra=["--auth", "keyed-sha1:5:%s" % AUTH_KEY])
+    start_engine(
+        binary, 4, ns=NS_A, stats=STATS, extra=["--auth", "keyed-sha1:5:%s" % AUTH_KEY]
+    )
     start_engine(binary, 4, ns=NS_B, stats=STATS_B)
 
     end = time.time() + 6

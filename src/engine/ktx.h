@@ -18,8 +18,7 @@ extern int echo_disc_fd;
 extern int stats_fd;
 
 void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip);
-void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local,
-		   uint32_t wire_disc);
+void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local, uint32_t wire_disc);
 
 int ktx_load(void);
 int ktx_attach(const char *ifname);
@@ -28,9 +27,9 @@ int ktx_covers(int ifindex);
 void ktx_update_mhop_flag(void);
 /* The program's view of a session, derived from it and the clock alone.
  * Split from ktx_mirror so it can be driven without a loaded program;
- * \see ktx_cfg.c. */
-void ktx_cfg_for(const struct session *s, int64_t now, struct tx_cfg *c,
-		 struct session_key *k);
+ * \see ktx_cfg.c.
+ */
+void ktx_cfg_for(const struct session *s, int64_t now, struct tx_cfg *c, struct session_key *k);
 
 void ktx_mirror(struct session *s);
 void ktx_clear(struct session *s);
@@ -39,7 +38,6 @@ int ktx_events_fd(void);
 void ktx_drain_events(void);
 const char *ktx_poll_mode(void);
 void ktx_poll_map(struct session *s, uint64_t t);
-void ktx_session_counters(const struct session *s, uint64_t *rx,
-			  uint64_t *tx);
+void ktx_session_counters(const struct session *s, uint64_t *rx, uint64_t *tx);
 
 #endif /* BFD_ENGINE_KTX_H */

@@ -17,12 +17,24 @@
 
 /* ---------- stubs: what session.o refers to and this does not use ---- */
 int use_ktx;
-void ktx_clear(struct session *s) { (void)s; }
-void ktx_clear_key(const struct bfd_addr *p, const struct bfd_addr *l,
-		   uint32_t d) { (void)p; (void)l; (void)d; }
+void ktx_clear(struct session *s)
+{
+	(void)s;
+}
+void ktx_clear_key(const struct bfd_addr *p, const struct bfd_addr *l, uint32_t d)
+{
+	(void)p;
+	(void)l;
+	(void)d;
+}
 void echo_peer_refresh(const struct bfd_addr *p, struct session *s)
-{ (void)p; (void)s; }
-void ktx_update_mhop_flag(void) {}
+{
+	(void)p;
+	(void)s;
+}
+void ktx_update_mhop_flag(void)
+{
+}
 
 static int fails;
 
@@ -39,28 +51,34 @@ static void report(const char *name, int bad, const char *detail)
 static const char *vname(enum rx_verdict v)
 {
 	switch (v) {
-	case RX_ACCEPT:     return "ACCEPT";
-	case RX_MALFORMED:  return "MALFORMED";
-	case RX_TTL:        return "TTL";
-	case RX_NO_SESSION: return "NO_SESSION";
-	case RX_AUTH:       return "AUTH";
+	case RX_ACCEPT:
+		return "ACCEPT";
+	case RX_MALFORMED:
+		return "MALFORMED";
+	case RX_TTL:
+		return "TTL";
+	case RX_NO_SESSION:
+		return "NO_SESSION";
+	case RX_AUTH:
+		return "AUTH";
 	}
 	return "?";
 }
 
 /* ---------- fixtures ---------- */
-#define PEER4  "10.0.0.2"
-#define LOCAL4 "10.0.0.1"
-#define MY_DISC   0x11111111u
+#define PEER4	  "10.0.0.2"
+#define LOCAL4	  "10.0.0.1"
+#define MY_DISC	  0x11111111u
 #define PEER_DISC 0x22222222u
-#define KEY_ID 7
+#define KEY_ID	  7
 static const char KEY[] = "correcthorse";
 
 static struct bfd_addr A_PEER, A_LOCAL, A_OTHER;
 
 /* One session in the table: ours, Up, single-hop unless min_ttl says
  * otherwise. `auth` arms the accept key the peer is expected to sign
- * with. */
+ * with.
+ */
 static struct session *arm(int auth, uint8_t min_ttl)
 {
 	struct session *s = &sessions[0];
@@ -86,7 +104,7 @@ static struct session *arm(int auth, uint8_t min_ttl)
 		k->key_id = KEY_ID;
 		k->keylen = (uint8_t)strlen(KEY);
 		memcpy(k->kpad, KEY, strlen(KEY));
-		k->accept_start = 0;   /* 0 means always, as bfdd spells it */
+		k->accept_start = 0; /* 0 means always, as bfdd spells it */
 		k->send_start = 0;
 	}
 	return s;
@@ -94,7 +112,8 @@ static struct session *arm(int auth, uint8_t min_ttl)
 
 /* A control packet in the receive buffer's shape: BFD_MAX_LEN, zeroed,
  * so a short datagram still leaves every header field defined. Returns
- * the datagram length a socket would have reported. */
+ * the datagram length a socket would have reported.
+ */
 static size_t build(__u8 *buf, uint8_t state, uint32_t your_disc)
 {
 	struct bfd_ctrl_pkt *h = (void *)buf;
@@ -112,38 +131,38 @@ static size_t build(__u8 *buf, uint8_t state, uint32_t your_disc)
 }
 
 /* The same packet signed the way the peer would sign it. `seq` and the
- * key id are the two things a forger has to get right and cannot. */
-static size_t build_auth(__u8 *buf, uint8_t state, uint32_t your_disc,
-			 uint8_t key_id, const char *key, uint32_t seq)
+ * key id are the two things a forger has to get right and cannot.
+ */
+static size_t build_auth(__u8 *buf, uint8_t state, uint32_t your_disc, uint8_t key_id,
+			 const char *key, uint32_t seq)
 {
 	struct bfd_ctrl_pkt *h = (void *)buf;
-	__u8 kpad[64] = {0};
+	__u8 kpad[64] = { 0 };
 	__u8 len;
 
 	build(buf, state, your_disc);
 	memcpy(kpad, key, strlen(key));
 
 	/* Set the A bit and length before signing: the digest covers the
-	 * header. */
+	 * header.
+	 */
 	h->flags |= BFD_F_AUTH;
 	h->len = bfd_auth_pkt_len(BFD_AUTH_KEYED_SHA1, (__u8)strlen(key));
-	len = bfd_auth_build(buf, BFD_AUTH_KEYED_SHA1, key_id,
-			     kpad, (__u8)strlen(key), kpad, seq);
+	len = bfd_auth_build(buf, BFD_AUTH_KEYED_SHA1, key_id, kpad, (__u8)strlen(key), kpad, seq);
 	return len;
 }
 
 /* ---------- the table ---------- */
-static void check(const char *name, const __u8 *pkt, size_t n, int ttl,
-		  const struct bfd_addr *from, const struct bfd_addr *to,
-		  int mhop, enum rx_verdict want, const char *detail)
+static void check(const char *name, const __u8 *pkt, size_t n, int ttl, const struct bfd_addr *from,
+		  const struct bfd_addr *to, int mhop, enum rx_verdict want, const char *detail)
 {
-	enum rx_verdict got = (enum rx_verdict)-1;
+	enum rx_verdict got = (enum rx_verdict)(-1);
 	struct session *s = rx_accept(pkt, n, ttl, from, to, mhop, &got);
 	char msg[160];
 
 	if (got != want || (want == RX_ACCEPT) != (s != NULL)) {
-		snprintf(msg, sizeof(msg), "got %s%s, want %s",
-			 vname(got), s ? " (session)" : " (none)", vname(want));
+		snprintf(msg, sizeof(msg), "got %s%s, want %s", vname(got),
+			 s ? " (session)" : " (none)", vname(want));
 		report(name, 1, msg);
 		return;
 	}
@@ -162,104 +181,101 @@ int main(void)
 	/* --- the happy path, and the demux --- */
 	arm(0, 255);
 	n = build(buf, ST_UP, MY_DISC);
-	check("accept-single-hop", buf, n, 255, &A_PEER, &A_LOCAL, 0,
-	      RX_ACCEPT, "your_disc names us, ttl 255");
+	check("accept-single-hop", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_ACCEPT,
+	      "your_disc names us, ttl 255");
 
 	n = build(buf, ST_UP, 0xdeadbeef);
-	check("demux-wrong-your-disc", buf, n, 255, &A_PEER, &A_LOCAL, 0,
-	      RX_NO_SESSION, "a discriminator we never issued");
+	check("demux-wrong-your-disc", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_NO_SESSION,
+	      "a discriminator we never issued");
 
 	/* your_disc 0 with the peer Down may match on the address pair; Up
-	 * with 0 may not, or a forger knowing the pair could feed any session. */
+	 * with 0 may not, or a forger knowing the pair could feed any session.
+	 */
 	n = build(buf, ST_DOWN, 0);
-	check("demux-zero-disc-down-falls-back", buf, n, 255,
-	      &A_PEER, &A_LOCAL, 0, RX_ACCEPT, "peer lost state: pair answers");
+	check("demux-zero-disc-down-falls-back", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_ACCEPT,
+	      "peer lost state: pair answers");
 	n = build(buf, ST_UP, 0);
-	check("demux-zero-disc-up-refused", buf, n, 255, &A_PEER, &A_LOCAL, 0,
-	      RX_NO_SESSION, "no fallback for a peer claiming Up");
+	check("demux-zero-disc-up-refused", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_NO_SESSION,
+	      "no fallback for a peer claiming Up");
 	n = build(buf, ST_DOWN, 0);
-	check("demux-wrong-pair", buf, n, 255, &A_OTHER, &A_LOCAL, 0,
-	      RX_NO_SESSION, "");
+	check("demux-wrong-pair", buf, n, 255, &A_OTHER, &A_LOCAL, 0, RX_NO_SESSION, "");
 
 	/* --- the header predicate --- */
 	n = build(buf, ST_UP, MY_DISC);
-	buf[0] = (0 << 5);                       /* version 0 */
-	check("malformed-version", buf, n, 255, &A_PEER, &A_LOCAL, 0,
-	      RX_MALFORMED, "");
+	buf[0] = (0 << 5); /* version 0 */
+	check("malformed-version", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_MALFORMED, "");
 	n = build(buf, ST_UP, MY_DISC);
-	((struct bfd_ctrl_pkt *)buf)->len = BFD_MIN_LEN + 8;   /* lies long */
-	check("malformed-length-lies", buf, n, 255, &A_PEER, &A_LOCAL, 0,
-	      RX_MALFORMED, "len past the datagram");
+	((struct bfd_ctrl_pkt *)buf)->len = BFD_MIN_LEN + 8; /* lies long */
+	check("malformed-length-lies", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_MALFORMED,
+	      "len past the datagram");
 	n = build(buf, ST_UP, MY_DISC);
 	((struct bfd_ctrl_pkt *)buf)->detect_mult = 0;
-	check("malformed-mult-zero", buf, n, 255, &A_PEER, &A_LOCAL, 0,
-	      RX_MALFORMED, "");
+	check("malformed-mult-zero", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_MALFORMED, "");
 
 	/* --- GTSM --- */
 	n = build(buf, ST_UP, MY_DISC);
-	check("gtsm-single-hop-254", buf, n, 254, &A_PEER, &A_LOCAL, 0,
-	      RX_TTL, "single hop wants exactly 255");
-	check("gtsm-single-hop-no-cmsg", buf, n, -1, &A_PEER, &A_LOCAL, 0,
-	      RX_TTL, "a missing cmsg is a refusal, not a pass");
+	check("gtsm-single-hop-254", buf, n, 254, &A_PEER, &A_LOCAL, 0, RX_TTL,
+	      "single hop wants exactly 255");
+	check("gtsm-single-hop-no-cmsg", buf, n, -1, &A_PEER, &A_LOCAL, 0, RX_TTL,
+	      "a missing cmsg is a refusal, not a pass");
 
 	arm(0, 200);
-	check("gtsm-multihop-at-minimum", buf, n, 200, &A_PEER, &A_LOCAL, 1,
-	      RX_ACCEPT, "ttl 200, minimum 200");
-	check("gtsm-multihop-above-minimum", buf, n, 240, &A_PEER, &A_LOCAL, 1,
-	      RX_ACCEPT, "");
-	check("gtsm-multihop-below-minimum", buf, n, 199, &A_PEER, &A_LOCAL, 1,
-	      RX_TTL, "");
-	check("gtsm-multihop-no-cmsg", buf, n, -1, &A_PEER, &A_LOCAL, 1,
-	      RX_TTL, "");
+	check("gtsm-multihop-at-minimum", buf, n, 200, &A_PEER, &A_LOCAL, 1, RX_ACCEPT,
+	      "ttl 200, minimum 200");
+	check("gtsm-multihop-above-minimum", buf, n, 240, &A_PEER, &A_LOCAL, 1, RX_ACCEPT, "");
+	check("gtsm-multihop-below-minimum", buf, n, 199, &A_PEER, &A_LOCAL, 1, RX_TTL, "");
+	check("gtsm-multihop-no-cmsg", buf, n, -1, &A_PEER, &A_LOCAL, 1, RX_TTL, "");
 	/* The multihop minimum is the session's, so demux runs first: a
-	 * low-TTL packet naming nothing is RX_NO_SESSION. */
+	 * low-TTL packet naming nothing is RX_NO_SESSION.
+	 */
 	n = build(buf, ST_UP, 0xdeadbeef);
-	check("gtsm-multihop-unknown-session-first", buf, n, 1,
-	      &A_PEER, &A_LOCAL, 1, RX_NO_SESSION, "demux before the minimum");
+	check("gtsm-multihop-unknown-session-first", buf, n, 1, &A_PEER, &A_LOCAL, 1,
+	      RX_NO_SESSION, "demux before the minimum");
 
 	/* --- authentication (RFC 5880 s6.7) --- */
 	arm(1, 255);
 	n = build(buf, ST_UP, MY_DISC);
-	check("auth-bare-packet-on-authed-session", buf, n, 255,
-	      &A_PEER, &A_LOCAL, 0, RX_AUTH,
+	check("auth-bare-packet-on-authed-session", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_AUTH,
 	      "no A bit where the session requires one");
 
 	arm(1, 255);
 	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, KEY, 1);
-	check("auth-signed-accepted", buf, n, 255, &A_PEER, &A_LOCAL, 0,
-	      RX_ACCEPT, "correct key and digest");
+	check("auth-signed-accepted", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_ACCEPT,
+	      "correct key and digest");
 
 	arm(1, 255);
 	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, KEY, 1);
-	buf[BFD_MIN_LEN + 8] ^= 0xff;            /* one digest byte */
-	check("auth-bad-digest", buf, n, 255, &A_PEER, &A_LOCAL, 0,
-	      RX_AUTH, "one flipped digest byte");
+	buf[BFD_MIN_LEN + 8] ^= 0xff; /* one digest byte */
+	check("auth-bad-digest", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_AUTH,
+	      "one flipped digest byte");
 
 	arm(1, 255);
 	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, "wrongkey", 1);
-	check("auth-wrong-key", buf, n, 255, &A_PEER, &A_LOCAL, 0,
-	      RX_AUTH, "signed with a key we do not hold");
+	check("auth-wrong-key", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_AUTH,
+	      "signed with a key we do not hold");
 
 	arm(1, 255);
 	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID + 1, KEY, 1);
-	check("auth-unknown-key-id", buf, n, 255, &A_PEER, &A_LOCAL, 0,
-	      RX_AUTH, "names a key id we never configured");
+	check("auth-unknown-key-id", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_AUTH,
+	      "names a key id we never configured");
 
 	/* A key outside its accept period is not an answer, which is the
-	 * other half of the rollover rule. */
+	 * other half of the rollover rule.
+	 */
 	arm(1, 255);
 	sessions[0].auth_keys[0].accept_start = (int64_t)time(NULL) + 3600;
 	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, KEY, 1);
-	check("auth-key-not-yet-acceptable", buf, n, 255, &A_PEER, &A_LOCAL, 0,
-	      RX_AUTH, "accept period has not opened");
+	check("auth-key-not-yet-acceptable", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_AUTH,
+	      "accept period has not opened");
 
 	/* An A bit on a session that does not authenticate is refused in
 	 * the other direction: a peer must not be able to strip or add
-	 * authentication by choosing what it sends. */
+	 * authentication by choosing what it sends.
+	 */
 	arm(0, 255);
 	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, KEY, 1);
-	check("auth-signed-on-bare-session", buf, n, 255, &A_PEER, &A_LOCAL, 0,
-	      RX_AUTH, "A bit where the session has no key");
+	check("auth-signed-on-bare-session", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_AUTH,
+	      "A bit where the session has no key");
 
 	printf("\n%d failure(s)\n", fails);
 	return fails ? 1 : 0;

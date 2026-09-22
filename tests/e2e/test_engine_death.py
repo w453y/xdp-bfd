@@ -12,9 +12,22 @@ import time
 
 import pytest
 
-from conftest import (NS_A, NS_B, STATS, STATS_B, DOWN_WAIT, sh, setup,
-                      teardown, ns_pids, start_engine, wait_both_up,
-                      xdp_progs, only_session, engine_tails)
+from conftest import (
+    NS_A,
+    NS_B,
+    STATS,
+    STATS_B,
+    DOWN_WAIT,
+    sh,
+    setup,
+    teardown,
+    ns_pids,
+    start_engine,
+    wait_both_up,
+    xdp_progs,
+    only_session,
+    engine_tails,
+)
 
 OVERSHOOT_SANITY_US = 50_000
 
@@ -30,9 +43,15 @@ def death(request):
 
     setup()
     try:
-        start_engine(binary, 4, ns=NS_A, stats=STATS,
-                     kernel_tx="rig-a", xdp_mode="generic",
-                     extra=("--bpf-obj", obj))
+        start_engine(
+            binary,
+            4,
+            ns=NS_A,
+            stats=STATS,
+            kernel_tx="rig-a",
+            xdp_mode="generic",
+            extra=("--bpf-obj", obj),
+        )
         start_engine(binary, 4, ns=NS_B, stats=STATS_B)
         wait_both_up()
 
@@ -66,24 +85,30 @@ def death(request):
 
 def test_link_detaches_on_death(death):
     assert len(death["before"]) == 1, (
-        "expected one attached program before the kill, got %r"
-        % death["before"])
+        "expected one attached program before the kill, got %r" % death["before"]
+    )
     assert death["after"] == [], (
-        "program still attached after SIGKILL: %r" % death["after"])
+        "program still attached after SIGKILL: %r" % death["after"]
+    )
 
 
 def test_peer_detects_on_own_budget(death):
-    assert death["down"], (
-        "peer still Up %.0fs after the engine died\n%s"
-        % (DOWN_WAIT, death.get("tails", "")))
+    assert death["down"], "peer still Up %.0fs after the engine died\n%s" % (
+        DOWN_WAIT,
+        death.get("tails", ""),
+    )
     s = death["session"]
-    assert s["diag"] == 1, (
-        "expected diag 1 (control detection expired), got %s (%s)"
-        % (s["diag"], s.get("last_reason")))
+    assert (
+        s["diag"] == 1
+    ), "expected diag 1 (control detection expired), got %s (%s)" % (
+        s["diag"],
+        s.get("last_reason"),
+    )
     overshoot = s["last_overshoot_us"]
-    assert 0 < overshoot < OVERSHOOT_SANITY_US, (
-        "implausible overshoot %sus" % overshoot)
+    assert 0 < overshoot < OVERSHOOT_SANITY_US, "implausible overshoot %sus" % overshoot
     # elapsed_s is a harness upper bound (SIGUSR1 round trips and sleeps);
     # last_overshoot_us is the engine's own measurement.
-    print("peer Down within %.0fms (harness-bound), overshoot %.2fms"
-          % (death["elapsed_s"] * 1000, overshoot / 1000.0))
+    print(
+        "peer Down within %.0fms (harness-bound), overshoot %.2fms"
+        % (death["elapsed_s"] * 1000, overshoot / 1000.0)
+    )

@@ -21,10 +21,13 @@
 /* ---------- stubs ---------- */
 
 struct session sessions[MAX_SESSIONS];
-int use_ktx;                 /* 0: the kernel-TX gate in fsm_tx stays shut */
+int use_ktx; /* 0: the kernel-TX gate in fsm_tx stays shut */
 
 /* No program, so no sweep ring: fsm_detect keeps the whole budget. */
-int ktx_events_fd(void) { return -1; }
+int ktx_events_fd(void)
+{
+	return -1;
+}
 
 static int notify_calls;
 
@@ -39,7 +42,8 @@ void dp_notify_state(struct session *s)
 static int fails;
 
 /* Sessions must live in the global array: fsm.c derives a slot index from the
- * pointer. Every case uses slot 0. */
+ * pointer. Every case uses slot 0.
+ */
 #define TEST_SLOT 0
 
 /* A session in a chosen state with the peer known; 10ms timers. */
@@ -48,54 +52,59 @@ static struct session *sess_init(uint8_t state)
 	struct session *s = &sessions[TEST_SLOT];
 
 	memset(s, 0, sizeof(*s));
-	s->used         = 1;
-	s->lid          = 0x11111111;
-	s->wire_disc    = s->lid;
-	s->state        = state;
-	s->min_tx_us    = 10000;
+	s->used = 1;
+	s->lid = 0x11111111;
+	s->wire_disc = s->lid;
+	s->state = state;
+	s->min_tx_us = 10000;
 	s->applied_tx_us = 10000;
-	s->min_rx_us    = 10000;
-	s->detect_mult  = 3;
-	s->r_min_tx     = 10000;
-	s->r_min_rx     = 10000;
-	s->r_mult       = 3;
+	s->min_rx_us = 10000;
+	s->detect_mult = 3;
+	s->r_min_tx = 10000;
+	s->r_min_rx = 10000;
+	s->r_mult = 3;
 	s->detect_iv_us = 10000;
-	s->last_rx_us   = 1000000;
+	s->last_rx_us = 1000000;
 	return s;
 }
 
 static struct bfd_ctrl_pkt pkt(uint8_t peer_state, uint8_t extra_flags)
 {
-	struct bfd_ctrl_pkt p = {0};
+	struct bfd_ctrl_pkt p = { 0 };
 
-	p.vers_diag   = 1 << 5;
-	p.flags       = (peer_state << 6) | extra_flags;
+	p.vers_diag = 1 << 5;
+	p.flags = (peer_state << 6) | extra_flags;
 	p.detect_mult = 3;
-	p.len         = 24;
-	p.my_disc     = htonl(0x22222222);
-	p.your_disc   = htonl(0x11111111);
-	p.min_tx      = htonl(10000);
-	p.min_rx      = htonl(10000);
+	p.len = 24;
+	p.my_disc = htonl(0x22222222);
+	p.your_disc = htonl(0x11111111);
+	p.min_tx = htonl(10000);
+	p.min_rx = htonl(10000);
 	return p;
 }
 
 static const char *st_name(uint8_t s)
 {
 	switch (s) {
-	case ST_ADMINDOWN: return "AdminDown";
-	case ST_DOWN:      return "Down";
-	case ST_INIT:      return "Init";
-	case ST_UP:        return "Up";
-	default:           return "?";
+	case ST_ADMINDOWN:
+		return "AdminDown";
+	case ST_DOWN:
+		return "Down";
+	case ST_INIT:
+		return "Init";
+	case ST_UP:
+		return "Up";
+	default:
+		return "?";
 	}
 }
 
 /* ---------- the table ---------- */
 
 /* One table row: from `ours` with the peer at `theirs`, expect `want` and
- * `want_diag`. Passive and admin_down are separate cases. */
-static void row(uint8_t ours, uint8_t theirs, uint8_t want,
-		uint8_t want_diag, const char *name)
+ * `want_diag`. Passive and admin_down are separate cases.
+ */
+static void row(uint8_t ours, uint8_t theirs, uint8_t want, uint8_t want_diag, const char *name)
 {
 	struct session *s;
 	struct bfd_ctrl_pkt p = pkt(theirs, 0);
@@ -106,8 +115,8 @@ static void row(uint8_t ours, uint8_t theirs, uint8_t want,
 	fsm_rx(s, &p, t);
 
 	if (s->state != want) {
-		printf("     %s + peer %s -> %s, want %s\n", st_name(ours),
-		       st_name(theirs), st_name(s->state), st_name(want));
+		printf("     %s + peer %s -> %s, want %s\n", st_name(ours), st_name(theirs),
+		       st_name(s->state), st_name(want));
 		bad = 1;
 	}
 	if (s->state != ours && s->diag != want_diag) {
@@ -128,7 +137,8 @@ static void row(uint8_t ours, uint8_t theirs, uint8_t want,
 
 /* Drive detect_vectors.h through fsm.c's copy of the rule; xdp_run drives
  * bfd_xdp.c's copy with the same vectors. last_rx_us and detect_iv_us are
- * cleared so step 0 takes the no-prior-interval branch. */
+ * cleared so step 0 takes the no-prior-interval branch.
+ */
 static void dv_row(const struct dv_case *c)
 {
 	struct session *s = sess_init(ST_UP);
@@ -136,8 +146,8 @@ static void dv_row(const struct dv_case *c)
 	int bad = 0;
 
 	s->detect_iv_us = 0;
-	s->last_rx_us   = 0;
-	s->min_rx_us    = c->local_min_rx_us;
+	s->last_rx_us = 0;
+	s->min_rx_us = c->local_min_rx_us;
 
 	for (int i = 0; i < c->nsteps; i++) {
 		const struct dv_step *st = &c->steps[i];
@@ -148,8 +158,8 @@ static void dv_row(const struct dv_case *c)
 		fsm_rx(s, &p, t);
 
 		if (s->detect_iv_us != st->want_iv_us) {
-			printf("     step %d: detect_iv_us %u, want %u\n",
-			       i, s->detect_iv_us, st->want_iv_us);
+			printf("     step %d: detect_iv_us %u, want %u\n", i, s->detect_iv_us,
+			       st->want_iv_us);
 			bad = 1;
 		}
 	}
@@ -172,122 +182,128 @@ static void run_table(void)
 {
 	/* RFC 5880 s6.8.6. Down + peer Down starts the handshake; Down +
 	 * peer Init completes it in one step. Init + peer Down is NOT a
-	 * transition: the peer has not seen us yet. */
+	 * transition: the peer has not seen us yet.
+	 */
 	row(ST_DOWN, ST_DOWN, ST_INIT, 0, "down+down=init");
-	row(ST_DOWN, ST_INIT, ST_UP,   0, "down+init=up");
-	row(ST_DOWN, ST_UP,   ST_DOWN, 0, "down+up=down");
+	row(ST_DOWN, ST_INIT, ST_UP, 0, "down+init=up");
+	row(ST_DOWN, ST_UP, ST_DOWN, 0, "down+up=down");
 
 	row(ST_INIT, ST_DOWN, ST_INIT, 0, "init+down=init");
-	row(ST_INIT, ST_INIT, ST_UP,   0, "init+init=up");
-	row(ST_INIT, ST_UP,   ST_UP,   0, "init+up=up");
+	row(ST_INIT, ST_INIT, ST_UP, 0, "init+init=up");
+	row(ST_INIT, ST_UP, ST_UP, 0, "init+up=up");
 
-	row(ST_UP,   ST_DOWN, ST_DOWN, 3, "up+down=down-diag3");
-	row(ST_UP,   ST_INIT, ST_UP,   0, "up+init=up");
-	row(ST_UP,   ST_UP,   ST_UP,   0, "up+up=up");
+	row(ST_UP, ST_DOWN, ST_DOWN, 3, "up+down=down-diag3");
+	row(ST_UP, ST_INIT, ST_UP, 0, "up+init=up");
+	row(ST_UP, ST_UP, ST_UP, 0, "up+up=up");
 
 	/* AdminDown from the peer tears down from any state, diag 3
 	 * (neighbour signalled session down), and is checked before the
-	 * per-state switch. */
+	 * per-state switch.
+	 */
 	row(ST_DOWN, ST_ADMINDOWN, ST_DOWN, 3, "down+admindown=down");
 	row(ST_INIT, ST_ADMINDOWN, ST_DOWN, 3, "init+admindown=down");
-	row(ST_UP,   ST_ADMINDOWN, ST_DOWN, 3, "up+admindown=down");
+	row(ST_UP, ST_ADMINDOWN, ST_DOWN, 3, "up+admindown=down");
 }
 
 /* Send hook that refuses every datagram. */
-static ssize_t refuse_send(int fd, const void *buf, size_t len,
-			   const struct sockaddr *dst, socklen_t dlen)
+static ssize_t refuse_send(int fd, const void *buf, size_t len, const struct sockaddr *dst,
+			   socklen_t dlen)
 {
-	(void)fd; (void)buf; (void)len; (void)dst; (void)dlen;
+	(void)fd;
+	(void)buf;
+	(void)len;
+	(void)dst;
+	(void)dlen;
 	errno = EPERM;
 	return -1;
 }
 
 /* RFC 5880 s6.8.7: a peer advertising Required Min RX zero stops our periodic
  * TX. A Poll, a pending Final and an unsent D still go out. A session that has
- * heard nothing is never held (s6.8.1). */
+ * heard nothing is never held (s6.8.1).
+ */
 static void case_zero_remote_min_rx_halts_tx(void)
 {
-    struct bfd_ctrl_pkt p = pkt(ST_UP, 0);
-    struct session *s;
-    int bad = 0;
+	struct bfd_ctrl_pkt p = pkt(ST_UP, 0);
+	struct session *s;
+	int bad = 0;
 
-    s = sess_init(ST_UP);
-    s->rdisc = 0x44444444;
-    s->r_state = ST_UP;
+	s = sess_init(ST_UP);
+	s->rdisc = 0x44444444;
+	s->r_state = ST_UP;
 
-    /* Never heard from: must transmit, or it cannot come up. */
-    s->last_rx_us = 0;
-    s->r_min_rx = 0;
-    s->next_tx_us = 0;
-    fsm_tx(s, 2000000);
-    if (!s->tx_pkts) {
-        printf("     silent before hearing a peer at all\n");
-        bad = 1;
-    }
+	/* Never heard from: must transmit, or it cannot come up. */
+	s->last_rx_us = 0;
+	s->r_min_rx = 0;
+	s->next_tx_us = 0;
+	fsm_tx(s, 2000000);
+	if (!s->tx_pkts) {
+		printf("     silent before hearing a peer at all\n");
+		bad = 1;
+	}
 
-    /* The peer says zero. */
-    p.min_rx = htonl(0);
-    fsm_rx(s, &p, 2100000);
-    if (s->r_min_rx != 0) {
-        printf("     r_min_rx %u after the peer advertised zero\n",
-               s->r_min_rx);
-        bad = 1;
-    }
+	/* The peer says zero. */
+	p.min_rx = htonl(0);
+	fsm_rx(s, &p, 2100000);
+	if (s->r_min_rx != 0) {
+		printf("     r_min_rx %u after the peer advertised zero\n", s->r_min_rx);
+		bad = 1;
+	}
 
-    s->tx_pkts = 0;
-    s->next_tx_us = 0;
-    fsm_tx(s, 2200000);
-    if (s->tx_pkts) {
-        printf("     still transmitting against a zero Min RX\n");
-        bad = 1;
-    }
-    if (ktx_answers(s)) {
-        printf("     the fast path is still armed to answer\n");
-        bad = 1;
-    }
+	s->tx_pkts = 0;
+	s->next_tx_us = 0;
+	fsm_tx(s, 2200000);
+	if (s->tx_pkts) {
+		printf("     still transmitting against a zero Min RX\n");
+		bad = 1;
+	}
+	if (ktx_answers(s)) {
+		printf("     the fast path is still armed to answer\n");
+		bad = 1;
+	}
 
-    /* A Final still has to reach it. */
-    s->send_final = 1;
-    s->next_tx_us = 0;
-    fsm_tx(s, 2300000);
-    if (!s->tx_pkts) {
-        printf("     a pending Final was withheld\n");
-        bad = 1;
-    }
+	/* A Final still has to reach it. */
+	s->send_final = 1;
+	s->next_tx_us = 0;
+	fsm_tx(s, 2300000);
+	if (!s->tx_pkts) {
+		printf("     a pending Final was withheld\n");
+		bad = 1;
+	}
 
-    /* And so does a Poll. */
-    s->tx_pkts = 0;
-    s->polling = 1;
-    s->next_tx_us = 0;
-    fsm_tx(s, 2400000);
-    if (!s->tx_pkts) {
-        printf("     a Poll was withheld\n");
-        bad = 1;
-    }
-    s->polling = 0;
+	/* And so does a Poll. */
+	s->tx_pkts = 0;
+	s->polling = 1;
+	s->next_tx_us = 0;
+	fsm_tx(s, 2400000);
+	if (!s->tx_pkts) {
+		printf("     a Poll was withheld\n");
+		bad = 1;
+	}
+	s->polling = 0;
 
-    /* A non-zero advertisement resumes it. */
-    s->tx_pkts = 0;
-    p.min_rx = htonl(50000);
-    fsm_rx(s, &p, 2500000);
-    s->next_tx_us = 0;
-    fsm_tx(s, 2600000);
-    if (!s->tx_pkts) {
-        printf("     still silent after the peer withdrew the zero\n");
-        bad = 1;
-    }
+	/* A non-zero advertisement resumes it. */
+	s->tx_pkts = 0;
+	p.min_rx = htonl(50000);
+	fsm_rx(s, &p, 2500000);
+	s->next_tx_us = 0;
+	fsm_tx(s, 2600000);
+	if (!s->tx_pkts) {
+		printf("     still silent after the peer withdrew the zero\n");
+		bad = 1;
+	}
 
-    if (bad) {
-        printf("FAIL %-44s\n", "zero-remote-min-rx-halts-tx");
-        fails++;
-    } else {
-        printf("ok   %-44s halted, Poll and Final exempt\n",
-               "zero-remote-min-rx-halts-tx");
-    }
+	if (bad) {
+		printf("FAIL %-44s\n", "zero-remote-min-rx-halts-tx");
+		fails++;
+	} else {
+		printf("ok   %-44s halted, Poll and Final exempt\n", "zero-remote-min-rx-halts-tx");
+	}
 }
 
 /* A failed send consumes nothing: a pending Final and the demand
- * announcement quota survive it. */
+ * announcement quota survive it.
+ */
 static void case_failed_send_keeps_pending(void)
 {
 	struct session *s;
@@ -306,8 +322,7 @@ static void case_failed_send_keeps_pending(void)
 	fsm_send_hook = NULL;
 
 	if (s->tx_pkts) {
-		printf("     tx_pkts %llu after a refused send\n",
-		       (unsigned long long)s->tx_pkts);
+		printf("     tx_pkts %llu after a refused send\n", (unsigned long long)s->tx_pkts);
 		bad = 1;
 	}
 	if (!s->tx_fail) {
@@ -343,8 +358,7 @@ static void case_failed_send_keeps_pending(void)
 		printf("FAIL %-44s\n", "failed-send-keeps-pending");
 		fails++;
 	} else {
-		printf("ok   %-44s pending held, then sent\n",
-		       "failed-send-keeps-pending");
+		printf("ok   %-44s pending held, then sent\n", "failed-send-keeps-pending");
 	}
 }
 
@@ -365,8 +379,7 @@ static void case_echo_only_change_notifies(void)
 	fsm_rx(s, &p, 2000000);
 	base = notify_calls;
 	if (base) {
-		printf("     %d notifications for a packet that changed nothing\n",
-		       base);
+		printf("     %d notifications for a packet that changed nothing\n", base);
 		bad = 1;
 	}
 
@@ -395,13 +408,13 @@ static void case_echo_only_change_notifies(void)
 		printf("FAIL %-44s\n", "echo-only-change-notifies");
 		fails++;
 	} else {
-		printf("ok   %-44s notified twice\n",
-		       "echo-only-change-notifies");
+		printf("ok   %-44s notified twice\n", "echo-only-change-notifies");
 	}
 }
 
 /* Passive (RFC 5880 s6.8.7) gates transmission while bfd.RemoteDiscr is
- * zero, not the state machine. */
+ * zero, not the state machine.
+ */
 static void case_passive(void)
 {
 	struct bfd_ctrl_pkt p = pkt(ST_DOWN, 0);
@@ -425,8 +438,7 @@ static void case_passive(void)
 	/* The peer speaks first, as passive requires. */
 	fsm_rx(s, &p, 2000000);
 	if (s->state != ST_INIT) {
-		printf("     passive stayed %s on the peer's Down, want Init\n",
-		       st_name(s->state));
+		printf("     passive stayed %s on the peer's Down, want Init\n", st_name(s->state));
 		bad = 1;
 	}
 
@@ -442,8 +454,7 @@ static void case_passive(void)
 		printf("FAIL %-44s\n", "passive-silent-then-init");
 		fails++;
 	} else {
-		printf("ok   %-44s silent, then Init\n",
-		       "passive-silent-then-init");
+		printf("ok   %-44s silent, then Init\n", "passive-silent-then-init");
 	}
 }
 
@@ -458,8 +469,7 @@ static void case_admin_down(void)
 	fsm_rx(s, &p, 2000000);
 
 	if (s->state != ST_DOWN) {
-		printf("     admin_down session moved to %s\n",
-		       st_name(s->state));
+		printf("     admin_down session moved to %s\n", st_name(s->state));
 		printf("FAIL %-44s\n", "admin-down-ignores-peer");
 		fails++;
 	} else {
@@ -494,8 +504,7 @@ static void case_poll_bits(void)
 		bad = 1;
 	}
 	if (s->applied_tx_us != 50000) {
-		printf("     applied_tx_us is %u, want 50000 after the poll\n",
-		       s->applied_tx_us);
+		printf("     applied_tx_us is %u, want 50000 after the poll\n", s->applied_tx_us);
 		bad = 1;
 	}
 
@@ -508,7 +517,8 @@ static void case_poll_bits(void)
 }
 
 /* dp_notify_state runs only while Up, only when something it reports changed,
- * and after the session is updated. */
+ * and after the session is updated.
+ */
 static void case_notify(void)
 {
 	struct session *s;
@@ -521,8 +531,7 @@ static void case_notify(void)
 	p = pkt(ST_UP, 0);
 	fsm_rx(s, &p, 2000000);
 	if (notify_calls != 0) {
-		printf("     unchanged packet notified %d time(s)\n",
-		       notify_calls);
+		printf("     unchanged packet notified %d time(s)\n", notify_calls);
 		bad = 1;
 	}
 
@@ -533,26 +542,24 @@ static void case_notify(void)
 	p.min_tx = htonl(50000);
 	fsm_rx(s, &p, 2000000);
 	if (notify_calls != 1) {
-		printf("     timer change notified %d time(s), want 1\n",
-		       notify_calls);
+		printf("     timer change notified %d time(s), want 1\n", notify_calls);
 		bad = 1;
 	}
 	if (s->r_min_tx != 50000) {
-		printf("     r_min_tx is %u at notify time, want 50000\n",
-		       s->r_min_tx);
+		printf("     r_min_tx is %u at notify time, want 50000\n", s->r_min_tx);
 		bad = 1;
 	}
 
 	/* Mult-only change: bfdd displays it and it alters the peer's
-	 * budget for us, so it counts. */
+	 * budget for us, so it counts.
+	 */
 	s = sess_init(ST_UP);
 	notify_calls = 0;
 	p = pkt(ST_UP, 0);
 	p.detect_mult = 5;
 	fsm_rx(s, &p, 2000000);
 	if (notify_calls != 1) {
-		printf("     mult change notified %d time(s), want 1\n",
-		       notify_calls);
+		printf("     mult change notified %d time(s), want 1\n", notify_calls);
 		bad = 1;
 	}
 
@@ -563,8 +570,7 @@ static void case_notify(void)
 	p.min_tx = htonl(50000);
 	fsm_rx(s, &p, 2000000);
 	if (notify_calls != 0) {
-		printf("     change while Down notified %d time(s)\n",
-		       notify_calls);
+		printf("     change while Down notified %d time(s)\n", notify_calls);
 		bad = 1;
 	}
 
@@ -577,23 +583,23 @@ static void case_notify(void)
 }
 
 /* fsm_detect: the budget is mult * interval, preferring r_mult over our
- * detect_mult, and max(r_min_tx, min_rx_us) when detect_iv_us is unset. */
-static void case_detect(const char *name, uint32_t iv_us, uint8_t r_mult,
-			uint8_t detect_mult, uint64_t silent_us, uint8_t want)
+ * detect_mult, and max(r_min_tx, min_rx_us) when detect_iv_us is unset.
+ */
+static void case_detect(const char *name, uint32_t iv_us, uint8_t r_mult, uint8_t detect_mult,
+			uint64_t silent_us, uint8_t want)
 {
 	struct session *s;
 
 	s = sess_init(ST_UP);
 	s->detect_iv_us = iv_us;
-	s->r_mult       = r_mult;
-	s->detect_mult  = detect_mult;
-	s->last_rx_us   = 10000000;
+	s->r_mult = r_mult;
+	s->detect_mult = detect_mult;
+	s->last_rx_us = 10000000;
 
 	fsm_detect(s, s->last_rx_us + silent_us);
 
 	if (s->state != want) {
-		printf("     state %s, want %s\n", st_name(s->state),
-		       st_name(want));
+		printf("     state %s, want %s\n", st_name(s->state), st_name(want));
 		printf("FAIL %-44s\n", name);
 		fails++;
 	} else {
@@ -636,8 +642,7 @@ static void case_detect_guards(void)
 	s->last_rx_us = 0;
 	fsm_detect(s, 10000000);
 	if (s->state != ST_UP) {
-		printf("     session with no rx yet moved to %s\n",
-		       st_name(s->state));
+		printf("     session with no rx yet moved to %s\n", st_name(s->state));
 		bad = 1;
 	}
 
@@ -650,9 +655,9 @@ static void case_detect_guards(void)
 }
 
 /* RFC 5880 s6.8.7 jitter: 75-100% of the interval, 75-90% when detect_mult is
- * 1. Checked as a property over many draws. */
-static void case_jitter(uint8_t mult, unsigned lo_pct, unsigned hi_pct,
-			const char *name)
+ * 1. Checked as a property over many draws.
+ */
+static void case_jitter(uint8_t mult, unsigned int lo_pct, unsigned int hi_pct, const char *name)
 {
 	const uint32_t iv = 10000;
 	const int draws = 10000;
@@ -666,13 +671,13 @@ static void case_jitter(uint8_t mult, unsigned lo_pct, unsigned hi_pct,
 		uint64_t t = 100000000ull + (uint64_t)i * iv * 4;
 
 		s = sess_init(ST_UP);
-		s->detect_mult   = mult;
-		s->r_mult        = mult;
-		s->min_tx_us     = iv;
+		s->detect_mult = mult;
+		s->r_mult = mult;
+		s->min_tx_us = iv;
 		s->applied_tx_us = iv;
-		s->r_min_rx      = iv;
-		s->last_rx_us    = t;
-		s->next_tx_us    = t;
+		s->r_min_rx = iv;
+		s->last_rx_us = t;
+		s->next_tx_us = t;
 
 		fsm_tx(s, t);
 
@@ -685,19 +690,18 @@ static void case_jitter(uint8_t mult, unsigned lo_pct, unsigned hi_pct,
 	}
 
 	if (seen_lo < lo) {
-		printf("     min gap %lluus, below %llu%% of %u\n",
-		       (unsigned long long)seen_lo,
+		printf("     min gap %lluus, below %llu%% of %u\n", (unsigned long long)seen_lo,
 		       (unsigned long long)lo_pct, iv);
 		bad = 1;
 	}
 	if (seen_hi > hi) {
-		printf("     max gap %lluus, above %llu%% of %u\n",
-		       (unsigned long long)seen_hi,
+		printf("     max gap %lluus, above %llu%% of %u\n", (unsigned long long)seen_hi,
 		       (unsigned long long)hi_pct, iv);
 		bad = 1;
 	}
 	/* If the jitter were removed the spread would collapse; require it
-	 * to cover at least half the permitted band. */
+	 * to cover at least half the permitted band.
+	 */
 	if (seen_hi - seen_lo < (hi - lo) / 2) {
 		printf("     spread %llu-%lluus is too narrow to be jittered\n",
 		       (unsigned long long)seen_lo, (unsigned long long)seen_hi);
@@ -708,9 +712,8 @@ static void case_jitter(uint8_t mult, unsigned lo_pct, unsigned hi_pct,
 		printf("FAIL %-44s\n", name);
 		fails++;
 	} else {
-		printf("ok   %-44s %llu-%lluus of %u\n", name,
-		       (unsigned long long)seen_lo, (unsigned long long)seen_hi,
-		       iv);
+		printf("ok   %-44s %llu-%lluus of %u\n", name, (unsigned long long)seen_lo,
+		       (unsigned long long)seen_hi, iv);
 	}
 }
 
@@ -726,10 +729,11 @@ static struct session *demand_sess(int we_demand, int peer_demands)
 	struct session *s = sess_init(ST_UP);
 
 	s->r_state = ST_UP;
-	s->demand  = we_demand;
+	s->demand = we_demand;
 	s->r_flags = peer_demands ? BFD_F_DEMAND : 0;
 	/* Past the announcement quota by default: these cases are about
-	 * the steady state, and the one that is not says so. */
+	 * the steady state, and the one that is not says so.
+	 */
 	s->demand_announced = DEMAND_ANNOUNCE_N;
 	return s;
 }
@@ -761,20 +765,19 @@ static void case_demand_bit(void)
 	s->demand_announced = 0;
 	s->next_tx_us = 0;
 	fsm_tx(s, 2000000);
-	check("demand-bit-set-when-both-up", s->demand_announced == 1,
-	      "D on the wire");
+	check("demand-bit-set-when-both-up", s->demand_announced == 1, "D on the wire");
 
 	/* Not configured to demand: never set it, however Up both are. */
 	s = demand_sess(0, 0);
 	s->demand_announced = 0;
 	s->next_tx_us = 0;
 	fsm_tx(s, 2000000);
-	check("demand-bit-absent-when-unconfigured", s->demand_announced == 0,
-	      "no D");
+	check("demand-bit-absent-when-unconfigured", s->demand_announced == 0, "no D");
 }
 
 /* s6.8.7: transmission stops because the PEER demanded, not because we
- * did. */
+ * did.
+ */
 static void case_demand_tx_hold(void)
 {
 	struct session *s;
@@ -783,15 +786,13 @@ static void case_demand_tx_hold(void)
 	s = demand_sess(0, 1);
 	s->next_tx_us = 0;
 	fsm_tx(s, t);
-	check("demand-tx-held-when-peer-demands", s->tx_pkts == 0,
-	      "silent");
+	check("demand-tx-held-when-peer-demands", s->tx_pkts == 0, "silent");
 
 	/* We demand, the peer does not: we keep transmitting. */
 	s = demand_sess(1, 0);
 	s->next_tx_us = 0;
 	fsm_tx(s, t);
-	check("demand-tx-runs-when-only-we-demand", s->tx_pkts == 1,
-	      "still transmitting");
+	check("demand-tx-runs-when-only-we-demand", s->tx_pkts == 1, "still transmitting");
 
 	/* A pending Final outranks the hold: the peer asked for it. */
 	s = demand_sess(0, 1);
@@ -817,7 +818,8 @@ static void case_demand_tx_hold(void)
 
 /* A demanding session verifies its own path (RFC 5880 s6.6). The negatives
  * matter too: no poll right after hearing the peer, and none faster than the
- * detect budget. */
+ * detect budget.
+ */
 static void case_demand_poll(void)
 {
 	struct session *s;
@@ -830,63 +832,59 @@ static void case_demand_poll(void)
 	s = demand_sess(1, 1);
 	s->last_rx_us = t - 10000;
 	fsm_tx(s, t);
-	check("demand-poll-not-when-fresh", !s->polling && !s->demand_polls,
-	      "no poll");
+	check("demand-poll-not-when-fresh", !s->polling && !s->demand_polls, "no poll");
 
 	/* Unverified for the interval: poll. */
 	s = demand_sess(1, 1);
 	s->last_rx_us = t - 1000000;
 	fsm_tx(s, t);
-	check("demand-poll-when-stale", s->polling && s->demand_polls == 1,
-	      "poll started");
+	check("demand-poll-when-stale", s->polling && s->demand_polls == 1, "poll started");
 
 	/* The poll re-arms detection from now. */
-	check("demand-poll-rearms-detection", s->last_rx_us == t,
-	      "clock reset");
+	check("demand-poll-rearms-detection", s->last_rx_us == t, "clock reset");
 
 	/* Only we demand: detection is held, so the poll is what catches a
-	 * dead peer. */
+	 * dead peer.
+	 */
 	s = demand_sess(1, 0);
 	s->last_rx_us = t - 1000000;
 	fsm_tx(s, t);
-	check("demand-poll-when-only-we-demand", s->demand_polls == 1,
-	      "poll started");
+	check("demand-poll-when-only-we-demand", s->demand_polls == 1, "poll started");
 
 	/* The peer demands and we do not: our detection is running, so
-	 * silence is already a fault and there is nothing to verify. */
+	 * silence is already a fault and there is nothing to verify.
+	 */
 	s = demand_sess(0, 1);
 	s->last_rx_us = t - 1000000;
 	fsm_tx(s, t);
-	check("demand-poll-not-when-only-peer-demands", !s->demand_polls,
-	      "no poll");
+	check("demand-poll-not-when-only-peer-demands", !s->demand_polls, "no poll");
 
 	/* Never faster than the detect budget. The knob asks for 10ms; the
-	 * session's budget is 3 x 10ms, so 20ms of silence is not yet due. */
+	 * session's budget is 3 x 10ms, so 20ms of silence is not yet due.
+	 */
 	demand_poll_us = 10000;
 	s = demand_sess(1, 1);
 	s->last_rx_us = t - 20000;
 	fsm_tx(s, t);
-	check("demand-poll-floors-at-detect-budget", !s->demand_polls,
-	      "no poll");
+	check("demand-poll-floors-at-detect-budget", !s->demand_polls, "no poll");
 	s = demand_sess(1, 1);
 	s->last_rx_us = t - 40000;
 	fsm_tx(s, t);
-	check("demand-poll-fires-past-detect-budget", s->demand_polls == 1,
-	      "poll started");
+	check("demand-poll-fires-past-detect-budget", s->demand_polls == 1, "poll started");
 
 	/* Zero turns it off. */
 	demand_poll_us = 0;
 	s = demand_sess(1, 1);
 	s->last_rx_us = t - 60000000;
 	fsm_tx(s, t);
-	check("demand-poll-disarmed", !s->polling && !s->demand_polls,
-	      "no poll");
+	check("demand-poll-disarmed", !s->polling && !s->demand_polls, "no poll");
 
 	demand_poll_us = saved;
 }
 
 /* Both ends demanding: we must get our own D out before going quiet, or
- * the peer never learns to stop and keeps transmitting forever. */
+ * the peer never learns to stop and keeps transmitting forever.
+ */
 static void case_demand_announce(void)
 {
 	struct session *s = demand_sess(1, 1);
@@ -895,61 +893,60 @@ static void case_demand_announce(void)
 
 	s->demand_announced = 0;
 	/* Just heard from the peer, as on arriving here. A stale clock would
-	 * trigger a verification poll, which lifts the hold under test. */
+	 * trigger a verification poll, which lifts the hold under test.
+	 */
 	s->last_rx_us = t;
 	for (int i = 0; i < 20; i++) {
-		s->next_tx_us = 0;          /* due every pass */
+		s->next_tx_us = 0; /* due every pass */
 		fsm_tx(s, t);
 		t += 10000;
 	}
 	sent = (int)s->tx_pkts;
 	check("demand-announces-before-holding", sent == DEMAND_ANNOUNCE_N,
-	      sent == DEMAND_ANNOUNCE_N ? "3 D-marked, then quiet"
-				        : "wrong count");
-	check("demand-announce-counts-only-marked",
-	      s->demand_announced == DEMAND_ANNOUNCE_N, "quota reached");
+	      sent == DEMAND_ANNOUNCE_N ? "3 D-marked, then quiet" : "wrong count");
+	check("demand-announce-counts-only-marked", s->demand_announced == DEMAND_ANNOUNCE_N,
+	      "quota reached");
 
 	/* Coming back round to Up is a fresh negotiation: the peer on the
-	 * other side has not heard our D bit this time. */
+	 * other side has not heard our D bit this time.
+	 */
 	state_transition(s, ST_DOWN, 1, t, "test");
-	check("demand-announce-resets-on-transition",
-	      s->demand_announced == 0, "counter cleared");
+	check("demand-announce-resets-on-transition", s->demand_announced == 0, "counter cleared");
 }
 
 /* s6.8.4: the detection timer does not run while WE are demanding - the
- * peer's silence is what we asked for. */
+ * peer's silence is what we asked for.
+ */
 static void case_demand_detect_hold(void)
 {
 	struct session *s;
 	/* last_rx_us is 1000000 and the budget is 3 x 10ms, so this is far
-	 * past it: without a hold every one of these goes Down. */
+	 * past it: without a hold every one of these goes Down.
+	 */
 	uint64_t t = 1000000 + 500000;
 
 	s = demand_sess(1, 0);
 	fsm_detect(s, t);
-	check("demand-detect-held-when-we-demand", s->state == ST_UP,
-	      "stayed Up through silence");
+	check("demand-detect-held-when-we-demand", s->state == ST_UP, "stayed Up through silence");
 
 	/* The peer demanding does not license US to stop timing it out. */
 	s = demand_sess(0, 1);
 	fsm_detect(s, t);
-	check("demand-detect-runs-when-peer-demands", s->state == ST_DOWN,
-	      "timed out");
+	check("demand-detect-runs-when-peer-demands", s->state == ST_DOWN, "timed out");
 
 	/* Our own Poll re-arms detection: that is what bounds the poll, so
-	 * a lost Final brings the session down instead of hanging. */
+	 * a lost Final brings the session down instead of hanging.
+	 */
 	s = demand_sess(1, 0);
 	s->polling = 1;
 	fsm_detect(s, t);
-	check("demand-detect-runs-while-polling", s->state == ST_DOWN,
-	      "poll is bounded");
+	check("demand-detect-runs-while-polling", s->state == ST_DOWN, "poll is bounded");
 
 	/* And it needs the peer Up, same as the rest. */
 	s = demand_sess(1, 0);
 	s->r_state = ST_INIT;
 	fsm_detect(s, t);
-	check("demand-detect-needs-peer-up", s->state == ST_DOWN,
-	      "timed out");
+	check("demand-detect-needs-peer-up", s->state == ST_DOWN, "timed out");
 }
 
 static void rep(const char *name, int bad, const char *detail)
@@ -963,15 +960,18 @@ static void rep(const char *name, int bad, const char *detail)
 }
 
 /* End to end on the host: the packet tx_one signs, captured through
- * fsm_send_hook, must pass bfd_auth_check. */
+ * fsm_send_hook, must pass bfd_auth_check.
+ */
 static __u8 sent_buf[BFD_MAX_LEN];
 static size_t sent_len;
 static int sent_calls;
 
-static ssize_t capture_send(int fd, const void *buf, size_t len,
-			    const struct sockaddr *dst, socklen_t dlen)
+static ssize_t capture_send(int fd, const void *buf, size_t len, const struct sockaddr *dst,
+			    socklen_t dlen)
 {
-	(void)fd; (void)dst; (void)dlen;
+	(void)fd;
+	(void)dst;
+	(void)dlen;
 	sent_len = len > sizeof(sent_buf) ? sizeof(sent_buf) : len;
 	memcpy(sent_buf, buf, sent_len);
 	sent_calls++;
@@ -989,7 +989,7 @@ static void case_authenticated_output_verifies(void)
 	s = sess_init(ST_UP);
 	s->rdisc = 0x33333333;
 	s->r_state = ST_UP;
-	s->send_final = 1;           /* force one packet out of fsm_tx */
+	s->send_final = 1; /* force one packet out of fsm_tx */
 	s->next_tx_us = 0;
 	s->auth_present = 1;
 	s->auth_type = BFD_AUTH_KEYED_SHA1;
@@ -997,7 +997,8 @@ static void case_authenticated_output_verifies(void)
 	s->auth_keylen = (uint8_t)strlen(key);
 	memcpy(s->auth_key, key, strlen(key));
 	/* kpad is the key in one SHA1 block, zero past it, which is how
-	 * dplane.c hands it over. */
+	 * dplane.c hands it over.
+	 */
 	memset(s->auth_kpad, 0, sizeof(s->auth_kpad));
 	memcpy(s->auth_kpad, key, strlen(key));
 
@@ -1019,42 +1020,44 @@ static void case_authenticated_output_verifies(void)
 	}
 	if (sent_buf[3] != bfd_auth_pkt_len(s->auth_type, s->auth_keylen) ||
 	    sent_len != sent_buf[3]) {
-		printf("     length %u, datagram %zu, want %u\n", sent_buf[3],
-		       sent_len, bfd_auth_pkt_len(s->auth_type, s->auth_keylen));
+		printf("     length %u, datagram %zu, want %u\n", sent_buf[3], sent_len,
+		       bfd_auth_pkt_len(s->auth_type, s->auth_keylen));
 		bad = 1;
 	}
 	if (sent_buf[BFD_MIN_LEN + 2] != s->auth_keyid) {
-		printf("     section names key id %u, sent under %u\n",
-		       sent_buf[BFD_MIN_LEN + 2], s->auth_keyid);
+		printf("     section names key id %u, sent under %u\n", sent_buf[BFD_MIN_LEN + 2],
+		       s->auth_keyid);
 		bad = 1;
 	}
 	/* The receiver's own predicate, over the bytes that would have
 	 * gone out. rx_seen is zero, so this is the first-packet case that
-	 * sets the replay window rather than being judged against it. */
-	if (bfd_auth_check(sent_buf, sent_buf[3], s->auth_type, s->auth_keyid,
-			   s->auth_kpad, s->auth_keylen, s->auth_kpad,
-			   &rx_seq, &rx_seen, sent_buf[2]) != BFD_AUTH_OK) {
+	 * sets the replay window rather than being judged against it.
+	 */
+	if (bfd_auth_check(sent_buf, sent_buf[3], s->auth_type, s->auth_keyid, s->auth_kpad,
+			   s->auth_keylen, s->auth_kpad, &rx_seq, &rx_seen,
+			   sent_buf[2]) != BFD_AUTH_OK) {
 		printf("     the receiver refused our own signed packet\n");
 		bad = 1;
 	}
 	rep("auth-output-verifies", bad, "tx_one signs what rx accepts");
 
 	/* And the same bytes with one digest byte moved must not verify,
-	 * or the check above proves nothing. */
+	 * or the check above proves nothing.
+	 */
 	sent_buf[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF] ^= 0xff;
 	rx_seq = 0;
 	rx_seen = 0;
 	rep("auth-output-tamper-refused",
-	       bfd_auth_check(sent_buf, sent_buf[3], s->auth_type,
-			      s->auth_keyid, s->auth_kpad, s->auth_keylen,
-			      s->auth_kpad, &rx_seq, &rx_seen,
-			      sent_buf[2]) == BFD_AUTH_OK,
-	       "one flipped digest byte");
+	    bfd_auth_check(sent_buf, sent_buf[3], s->auth_type, s->auth_keyid, s->auth_kpad,
+			   s->auth_keylen, s->auth_kpad, &rx_seq, &rx_seen,
+			   sent_buf[2]) == BFD_AUTH_OK,
+	    "one flipped digest byte");
 }
 
 /* A session that must authenticate and has no key it may send under
  * sends nothing at all: a bare packet there is the one thing the peer
- * must reject. The counterpart of the tx_cfg rule in ktx_cfg_run. */
+ * must reject. The counterpart of the tx_cfg rule in ktx_cfg_run.
+ */
 static void case_no_sendable_key_sends_nothing(void)
 {
 	struct session *s = sess_init(ST_UP);
@@ -1064,7 +1067,7 @@ static void case_no_sendable_key_sends_nothing(void)
 	s->send_final = 1;
 	s->next_tx_us = 0;
 	s->auth_present = 1;
-	s->auth_type = 0;            /* nothing sendable right now */
+	s->auth_type = 0; /* nothing sendable right now */
 
 	sent_calls = 0;
 	fsm_send_hook = capture_send;
@@ -1072,7 +1075,7 @@ static void case_no_sendable_key_sends_nothing(void)
 	fsm_send_hook = NULL;
 
 	rep("auth-no-sendable-key-sends-nothing", sent_calls != 0,
-	       "silence beats a packet the peer must reject");
+	    "silence beats a packet the peer must reject");
 }
 
 int main(void)
@@ -1091,17 +1094,17 @@ int main(void)
 
 	/* 10ms basis, mult 3: 30ms budget */
 	case_detect("detect-under-budget", 10000, 3, 3, 20000, ST_UP);
-	case_detect("detect-past-budget",  10000, 3, 3, 40000, ST_DOWN);
+	case_detect("detect-past-budget", 10000, 3, 3, 40000, ST_DOWN);
 	/* r_mult wins over detect_mult: budget 10ms, not 50ms */
 	case_detect("detect-uses-peer-mult", 10000, 1, 5, 20000, ST_DOWN);
 	/* detect_iv_us unset falls back to max(r_min_tx, min_rx_us) = 10ms */
 	case_detect("detect-iv-fallback-under", 0, 3, 3, 20000, ST_UP);
-	case_detect("detect-iv-fallback-past",  0, 3, 3, 40000, ST_DOWN);
+	case_detect("detect-iv-fallback-past", 0, 3, 3, 40000, ST_DOWN);
 	case_detect_negative();
 	case_detect_guards();
 
 	case_jitter(3, 75, 100, "jitter-mult3-75-100pct");
-	case_jitter(1, 75,  90, "jitter-mult1-75-90pct");
+	case_jitter(1, 75, 90, "jitter-mult1-75-90pct");
 
 	case_demand_bit();
 	case_demand_tx_hold();

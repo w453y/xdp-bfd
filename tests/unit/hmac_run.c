@@ -25,8 +25,7 @@ static void case_vec(const struct hmac_vec *v)
 	char a[64], b[64];
 
 	if (!hmac_sha1(v->key, v->keylen, v->msg, v->msglen, got)) {
-		printf("FAIL %-28s refused key %u msg %u\n",
-		       v->name, v->keylen, v->msglen);
+		printf("FAIL %-28s refused key %u msg %u\n", v->name, v->keylen, v->msglen);
 		fails++;
 		return;
 	}
@@ -41,7 +40,8 @@ static void case_vec(const struct hmac_vec *v)
 }
 
 /* The block API is what the fast path calls, so it is checked directly
- * rather than only through the padding wrapper above. */
+ * rather than only through the padding wrapper above.
+ */
 static void case_blocks(const struct hmac_vec *v)
 {
 	__u8 kpad[SHA1_BLOCK_LEN] = {}, mblk[SHA1_BLOCK_LEN] = {};
@@ -52,8 +52,7 @@ static void case_blocks(const struct hmac_vec *v)
 	memcpy(mblk, v->msg, v->msglen);
 	if (!hmac_sha1_blocks(kpad, mblk, v->msglen, got, tmp) ||
 	    memcmp(v->want, got, SHA1_DIGEST_LEN)) {
-		printf("FAIL %-28s block API disagrees with the wrapper\n",
-		       v->name);
+		printf("FAIL %-28s block API disagrees with the wrapper\n", v->name);
 		fails++;
 		return;
 	}

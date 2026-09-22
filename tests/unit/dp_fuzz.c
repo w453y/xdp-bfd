@@ -32,7 +32,7 @@ static ssize_t feed_recv(int fd, void *buf, size_t len)
 {
 	(void)fd;
 	if (!feed_left)
-		return 0;			/* EOF: peer went away */
+		return 0; /* EOF: peer went away */
 	if (len > feed_left)
 		len = feed_left;
 	memcpy(buf, feed_p, len);
@@ -44,15 +44,18 @@ static ssize_t feed_recv(int fd, void *buf, size_t len)
 int LLVMFuzzerInitialize(int *argc, char ***argv)
 {
 	/* Let an ADD on any interface attach, so the stub does not steer the
-	 * parser into the uncovered branch. */
+	 * parser into the uncovered branch.
+	 */
 	ktx_stub_attach_rc = 0;
 
-	(void)argc; (void)argv;
+	(void)argc;
+	(void)argv;
 	dp_recv_hook = feed_recv;
 
 	/* Send the engine's error lines to /dev/null, since "bad frame length"
 	 * dominates random input. Sanitizer and libFuzzer output still go to
-	 * stderr. */
+	 * stderr.
+	 */
 	bfd_log_err_fp = fopen("/dev/null", "w");
 	return 0;
 }
@@ -63,7 +66,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 		return 0;
 
 	/* dp_conn is static and only dp_accept assigns it. Any non-negative
-	 * value gets dp_read past its guard; the hook never touches the fd. */
+	 * value gets dp_read past its guard; the hook never touches the fd.
+	 */
 	dp_set_conn_for_test(1);
 
 	feed_p = data;
@@ -71,10 +75,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
 	/* Drive until the parser stops consuming: EOF drops the connection,
 	 * a bad frame drops it too. Bounded so a parser that neither
-	 * consumes nor drops cannot spin. */
+	 * consumes nor drops cannot spin.
+	 */
 	for (int i = 0; i < 64 && feed_left; i++)
 		dp_read();
-	dp_read();				/* the EOF that tears down */
+	dp_read(); /* the EOF that tears down */
 
 	return 0;
 }

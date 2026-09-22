@@ -34,7 +34,8 @@ static int fails;
 /* ---------- frame building ---------- */
 
 /* Enough for an Ethernet + IPv4 + UDP + BFD control packet with room for
- * the trailing bytes some cases append. */
+ * the trailing bytes some cases append.
+ */
 #define FRAME_MAX 256
 
 struct frame {
@@ -50,10 +51,11 @@ static int echo_peers_fd = -1, echo_disc_fd = -1;
 static struct bpf_object *sweep_obj;
 static int sweep_prog_fd = -1, sweep_sess_fd = -1, sweep_cfg_fd = -1;
 static int hmac_prog_fd = -1, hmac_map_fd = -1;
-#define FLAG_PROMISC	1u
-#define FLAG_MHOP	2u
+#define FLAG_PROMISC 1u
+#define FLAG_MHOP    2u
 /* Local detect multiplier for the next armed session; cases vary it to
- * show the replay window uses the packet's Detect Mult. */
+ * show the replay window uses the packet's Detect Mult.
+ */
 static __u8 arm_local_mult = 3;
 /* Second key in the accept set, as a rollover leaves; 0 means none. */
 static __u8 arm_extra_keyid;
@@ -77,15 +79,15 @@ int main(void)
 		return 1;
 	}
 
-	struct bpf_program *pr =
-		bpf_object__find_program_by_name(obj, "bfd_observer");
+	struct bpf_program *pr = bpf_object__find_program_by_name(obj, "bfd_observer");
+
 	if (!pr) {
 		fprintf(stderr, "bfd_observer not found in %s\n", path);
 		return 1;
 	}
 	prog_fd = bpf_program__fd(pr);
 
-	cfg_fd  = bpf_object__find_map_fd_by_name(obj, "tx_config");
+	cfg_fd = bpf_object__find_map_fd_by_name(obj, "tx_config");
 	sess_fd = bpf_object__find_map_fd_by_name(obj, "bfd_sessions");
 	stats_fd = bpf_object__find_map_fd_by_name(obj, "bfd_stats");
 	tune_fd = bpf_object__find_map_fd_by_name(obj, "tunables");
@@ -100,21 +102,17 @@ int main(void)
 
 	sweep_obj = bpf_object__open_file("tests/unit/bfd_xdp_test.o", NULL);
 	if (sweep_obj && !bpf_object__load(sweep_obj)) {
-		struct bpf_program *sp =
-			bpf_object__find_program_by_name(sweep_obj, "sweep_once");
+		struct bpf_program *sp = bpf_object__find_program_by_name(sweep_obj, "sweep_once");
 
 		if (sp) {
 			sweep_prog_fd = bpf_program__fd(sp);
-			sweep_sess_fd = bpf_object__find_map_fd_by_name(sweep_obj,
-								"bfd_sessions");
-			sweep_cfg_fd = bpf_object__find_map_fd_by_name(sweep_obj,
-							       "tx_config");
-			sp = bpf_object__find_program_by_name(sweep_obj,
-							      "hmac_once");
+			sweep_sess_fd = bpf_object__find_map_fd_by_name(sweep_obj, "bfd_sessions");
+			sweep_cfg_fd = bpf_object__find_map_fd_by_name(sweep_obj, "tx_config");
+			sp = bpf_object__find_program_by_name(sweep_obj, "hmac_once");
 			if (sp) {
 				hmac_prog_fd = bpf_program__fd(sp);
-				hmac_map_fd = bpf_object__find_map_fd_by_name(
-						sweep_obj, "hmac_scratch");
+				hmac_map_fd = bpf_object__find_map_fd_by_name(sweep_obj,
+									      "hmac_scratch");
 			}
 		}
 	} else {

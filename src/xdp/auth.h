@@ -4,7 +4,8 @@
  *
  * Keyed SHA1 packets are a fixed 52 bytes; simple-password ones vary with the
  * key (28-43), so the packet is copied into a zero-padded scratch block first
- * and everything after works on fixed sizes. Include after maps.h. */
+ * and everything after works on fixed sizes. Include after maps.h.
+ */
 #ifndef BFD_XDP_AUTH_H
 #define BFD_XDP_AUTH_H
 
@@ -13,30 +14,29 @@
 
 /* Offset of the BFD payload: constant per family, since IPv4 options are
  * rejected. Computed, as the verifier will not do arithmetic that reaches
- * pkt_end. */
-#define BFD_OFF_V4 (sizeof(struct ethhdr) + sizeof(struct iphdr) + \
-		    sizeof(struct udphdr))
-#define BFD_OFF_V6 (sizeof(struct ethhdr) + sizeof(struct ipv6hdr) + \
-		    sizeof(struct udphdr))
+ * pkt_end.
+ */
+#define BFD_OFF_V4 (sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct udphdr))
+#define BFD_OFF_V6 (sizeof(struct ethhdr) + sizeof(struct ipv6hdr) + sizeof(struct udphdr))
 
 /* Can the program authenticate for this session? Must agree with the engine's
- * auth_fast_capable. */
+ * auth_fast_capable.
+ */
 static __always_inline int xdp_auth_fast(const struct tx_cfg *cfg)
 {
-	return cfg->auth_type == BFD_AUTH_SIMPLE ||
-	       cfg->auth_type == BFD_AUTH_KEYED_SHA1 ||
+	return cfg->auth_type == BFD_AUTH_SIMPLE || cfg->auth_type == BFD_AUTH_KEYED_SHA1 ||
 	       cfg->auth_type == BFD_AUTH_METICULOUS_SHA1;
 }
 
 /* How long a packet of this session's type is, 0 if we cannot make one.
- * Bounded to BFD_MAX_LEN so the verifier can use it as a length. */
+ * Bounded to BFD_MAX_LEN so the verifier can use it as a length.
+ */
 static __always_inline __u32 xdp_auth_len(const struct tx_cfg *cfg)
 {
 	__u32 n;
 
 	if (cfg->auth_type == BFD_AUTH_SIMPLE) {
-		if (!cfg->auth_keylen ||
-		    cfg->auth_keylen > BFD_AUTH_SIMPLE_MAXKEY)
+		if (!cfg->auth_keylen || cfg->auth_keylen > BFD_AUTH_SIMPLE_MAXKEY)
 			return 0;
 		n = BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR + cfg->auth_keylen;
 	} else if (cfg->auth_type == BFD_AUTH_KEYED_SHA1 ||
@@ -54,7 +54,8 @@ static __always_inline __u32 xdp_auth_len(const struct tx_cfg *cfg)
  * bpf_xdp_load_bytes and bpf_xdp_store_bytes take ARG_CONST_SIZE, which needs
  * a non-zero umin. On a 6.1 verifier the spilled value loses it and the load
  * fails with "invalid access to map value, value_size=168 off=0 size=0". Same
- * trick as sha1_barrier in hmac_sha1.h. */
+ * trick as sha1_barrier in hmac_sha1.h.
+ */
 static __always_inline __u32 xdp_len_pin(__u32 len)
 {
 	__asm__ __volatile__("" : "+r"(len));
@@ -63,9 +64,9 @@ static __always_inline __u32 xdp_len_pin(__u32 len)
 
 /* Copy the packet into the zero-padded scratch block. bpf_xdp_load_bytes,
  * because a loop bounded by a runtime length does not survive the
- * optimiser and verifier. */
-static __always_inline int xdp_auth_load(struct xdp_md *ctx, __u32 off,
-					 __u32 len, __u8 *blk)
+ * optimiser and verifier.
+ */
+static __always_inline int xdp_auth_load(struct xdp_md *ctx, __u32 off, __u32 len, __u8 *blk)
 {
 	int i;
 
@@ -82,12 +83,11 @@ static __always_inline int xdp_auth_load(struct xdp_md *ctx, __u32 off,
 
 /* Verify a received packet's auth section and advance the replay window on
  * success. The digest covers the packet with its digest field zeroed, hence
- * the copy. The window is kernel-owned while the fast path answers. */
+ * the copy. The window is kernel-owned while the fast path answers.
+ */
 static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
-					   const struct bfd_ctrl_pkt *bfd,
-					   const struct tx_cfg *cfg,
-					   struct session_state *st,
-					   struct auth_scratch *sc)
+					   const struct bfd_ctrl_pkt *bfd, const struct tx_cfg *cfg,
+					   struct session_state *st, struct auth_scratch *sc)
 {
 	__u8 *blk = sc->blk;
 	__u8 *dig = sc->dig;
@@ -99,7 +99,8 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 	int i, found = -1;
 
 	/* Bounded before anything is read, so a packet claiming a shape we
-	 * could not hold never reaches the copy. */
+	 * could not hold never reaches the copy.
+	 */
 	if (len < BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR || len > BFD_MAX_LEN)
 		return 0;
 	if (!xdp_auth_load(ctx, boff, len, blk))
@@ -111,12 +112,12 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 		return 0;
 
 	/* Find the key the peer names among those acceptable now; during a
-	 * rollover that includes the one we stopped sending with. */
+	 * rollover that includes the one we stopped sending with.
+	 */
 	for (i = 0; i < BFD_AUTH_ACCEPT_MAX; i++) {
 		if (i >= cfg->auth_nkeys)
 			break;
-		if (cfg->auth_accept[i].key_id == key_id &&
-		    cfg->auth_accept[i].type == type) {
+		if (cfg->auth_accept[i].key_id == key_id && cfg->auth_accept[i].type == type) {
 			found = i;
 			break;
 		}
@@ -125,38 +126,41 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 		return 0;
 
 	/* Masked rather than merely bounded by the loop, so the verifier
-	 * can see the access is in range without tracking the search. */
+	 * can see the access is in range without tracking the search.
+	 */
 	idx = (__u32)found & (BFD_AUTH_ACCEPT_MAX - 1);
 	k = &cfg->auth_accept[idx];
 
 	/* Copied out before it is used, so everything below works from a
-	 * fixed offset. \see auth_scratch.kpad */
+	 * fixed offset. \see auth_scratch.kpad
+	 */
 	for (i = 0; i < SHA1_BLOCK_LEN; i++)
 		sc->kpad[i] = k->kpad[i];
 
 	/* The length the named key produces, which is what the packet must
-	 * have claimed. */
+	 * have claimed.
+	 */
 	if (type == BFD_AUTH_SIMPLE) {
 		if (!k->keylen || k->keylen > BFD_AUTH_SIMPLE_MAXKEY)
 			return 0;
 		want = BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR + k->keylen;
-	} else if (type == BFD_AUTH_KEYED_SHA1 ||
-		   type == BFD_AUTH_METICULOUS_SHA1) {
+	} else if (type == BFD_AUTH_KEYED_SHA1 || type == BFD_AUTH_METICULOUS_SHA1) {
 		want = BFD_MIN_LEN + BFD_AUTH_SHA1_LEN;
 	} else {
 		/* Keyed MD5 (types 2 and 3) is not supported; refuse it
-		 * explicitly, as bfd_auth_pkt_len does. */
+		 * explicitly, as bfd_auth_pkt_len does.
+		 */
 		return 0;
 	}
 	if (len != want)
 		return 0;
 
 	/* Simple password (RFC 5880 s6.7.1): compare the whole padded field in
-	 * constant time. */
+	 * constant time.
+	 */
 	if (type == BFD_AUTH_SIMPLE) {
 		for (i = 0; i < BFD_AUTH_SIMPLE_MAXKEY; i++)
-			diff |= (__u8)(blk[BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR + i] ^
-				       sc->kpad[i]);
+			diff |= (__u8)(blk[BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR + i] ^ sc->kpad[i]);
 		return diff == 0;
 	}
 
@@ -165,10 +169,10 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 
 	/* RFC 5880 s6.7.4, the same window the slow path applies. The first
 	 * packet has nothing to be judged against and sets the window
-	 * instead, which is what lets a peer that restarted resynchronise. */
+	 * instead, which is what lets a peer that restarted resynchronise.
+	 */
 	if (st->auth_rx_seen &&
-	    !bfd_auth_seq_ok(seq, st->auth_rx_seq,
-			     type == BFD_AUTH_METICULOUS_SHA1,
+	    !bfd_auth_seq_ok(seq, st->auth_rx_seq, type == BFD_AUTH_METICULOUS_SHA1,
 			     bfd->detect_mult))
 		return 0;
 
@@ -176,8 +180,7 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 		sc->rcv[i] = blk[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF + i];
 		blk[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF + i] = 0;
 	}
-	if (!hmac_sha1_blocks(sc->kpad, blk,
-			      BFD_MIN_LEN + BFD_AUTH_SHA1_LEN, dig, sc->tmp))
+	if (!hmac_sha1_blocks(sc->kpad, blk, BFD_MIN_LEN + BFD_AUTH_SHA1_LEN, dig, sc->tmp))
 		return 0;
 
 	/* Constant-time compare. */
@@ -193,7 +196,8 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 
 /* 16-bit word sum of the assembled payload, read the same way as the rest of
  * the checksum fold; mixing byte orders breaks the v6 checksum. 26 words
- * covers the longest payload, and the zero tail adds nothing. */
+ * covers the longest payload, and the zero tail adds nothing.
+ */
 static __always_inline __u32 xdp_auth_sum(const __u8 *blk)
 {
 	const __u16 *w = (const __u16 *)blk;
@@ -211,12 +215,11 @@ static __always_inline __u32 xdp_auth_sum(const __u8 *blk)
  * verification.
  *
  * Returns 0 if no section could be built, and the caller must then send
- * nothing. */
+ * nothing.
+ */
 static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
-					  const struct bfd_ctrl_pkt *bfd,
-					  const struct tx_cfg *cfg,
-					  struct session_state *st,
-					  struct auth_scratch *sc,
+					  const struct bfd_ctrl_pkt *bfd, const struct tx_cfg *cfg,
+					  struct session_state *st, struct auth_scratch *sc,
 					  __u32 *psum)
 {
 	__u8 *blk = sc->blk;
@@ -226,7 +229,8 @@ static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 	int i;
 
 	/* Assembled in the scratch block and written back in one store, for
-	 * the same verifier reason as the load. */
+	 * the same verifier reason as the load.
+	 */
 	if (want < BFD_MIN_LEN || want > BFD_MAX_LEN)
 		return 0;
 	for (i = 0; i < SHA1_BLOCK_LEN; i++)
@@ -234,14 +238,13 @@ static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 	if (bpf_xdp_load_bytes(ctx, boff, blk, BFD_MIN_LEN))
 		return 0;
 
-	blk[BFD_MIN_LEN]     = cfg->auth_type;
+	blk[BFD_MIN_LEN] = cfg->auth_type;
 	blk[BFD_MIN_LEN + 1] = (__u8)(want - BFD_MIN_LEN);
 	blk[BFD_MIN_LEN + 2] = cfg->auth_keyid;
 
 	if (cfg->auth_type == BFD_AUTH_SIMPLE) {
 		for (i = 0; i < BFD_AUTH_SIMPLE_MAXKEY; i++)
-			blk[BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR + i] =
-				cfg->auth_kpad[i];
+			blk[BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR + i] = cfg->auth_kpad[i];
 		want = xdp_len_pin(want);
 		if (want < BFD_MIN_LEN || want > BFD_MAX_LEN)
 			return 0;
@@ -255,15 +258,14 @@ static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 	st->auth_tx_seq = seq;
 
 	blk[BFD_MIN_LEN + 3] = 0;
-	blk[BFD_MIN_LEN + BFD_AUTH_SHA1_SEQ_OFF]     = (__u8)(seq >> 24);
+	blk[BFD_MIN_LEN + BFD_AUTH_SHA1_SEQ_OFF] = (__u8)(seq >> 24);
 	blk[BFD_MIN_LEN + BFD_AUTH_SHA1_SEQ_OFF + 1] = (__u8)(seq >> 16);
 	blk[BFD_MIN_LEN + BFD_AUTH_SHA1_SEQ_OFF + 2] = (__u8)(seq >> 8);
 	blk[BFD_MIN_LEN + BFD_AUTH_SHA1_SEQ_OFF + 3] = (__u8)seq;
 	for (i = 0; i < SHA1_DIGEST_LEN; i++)
 		blk[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF + i] = 0;
 
-	if (!hmac_sha1_blocks(cfg->auth_kpad, blk,
-			      BFD_MIN_LEN + BFD_AUTH_SHA1_LEN, dig, sc->tmp))
+	if (!hmac_sha1_blocks(cfg->auth_kpad, blk, BFD_MIN_LEN + BFD_AUTH_SHA1_LEN, dig, sc->tmp))
 		return 0;
 	for (i = 0; i < SHA1_DIGEST_LEN; i++)
 		blk[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF + i] = dig[i];

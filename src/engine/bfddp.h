@@ -25,45 +25,50 @@ enum bfddp_message_type {
 };
 
 /* Longest key a DP_SESSION_AUTH carries; must match bfdd's
- * BFDDP_AUTH_KEY_MAX or every key is misread. */
+ * BFDDP_AUTH_KEY_MAX or every key is misread.
+ */
 #define BFDDP_AUTH_KEY_MAX 64
 
 /* Most keys one DP_SESSION_AUTH carries; must match bfdd's
  * BFDDP_AUTH_KEY_COUNT_MAX. The message is variable length, but the
- * array is declared in full so a message can be read in place. */
+ * array is declared in full so a message can be read in place.
+ */
 #define BFDDP_AUTH_KEY_COUNT_MAX 16
 
 /* Minimum session message length: the whole struct. Keys travel separately in
- * DP_SESSION_AUTH. */
+ * DP_SESSION_AUTH.
+ */
 #define BFDDP_SESSION_MSG_MIN sizeof(struct bfddp_session_msg)
 
 enum bfddp_session_flag {
 	SESSION_MULTIHOP = (1 << 0),
-	SESSION_DEMAND   = (1 << 1),
-	SESSION_CBIT     = (1 << 2),
-	SESSION_ECHO     = (1 << 3),
-	SESSION_IPV6     = (1 << 4),
-	SESSION_PASSIVE  = (1 << 5),
+	SESSION_DEMAND = (1 << 1),
+	SESSION_CBIT = (1 << 2),
+	SESSION_ECHO = (1 << 3),
+	SESSION_IPV6 = (1 << 4),
+	SESSION_PASSIVE = (1 << 5),
 	SESSION_SHUTDOWN = (1 << 6),
 	/* The session authenticates; keys follow in DP_SESSION_AUTH. Clearing
-	 * it withdraws them. */
-	SESSION_AUTH     = (1 << 7),
+	 * it withdraws them.
+	 */
+	SESSION_AUTH = (1 << 7),
 };
 
 /* Peer's bits as bfdd expects them in bfddp_state_change.remote_flags.
- * These are NOT the wire flag positions; see rflags_from_wire(). */
+ * These are NOT the wire flag positions; see rflags_from_wire().
+ */
 enum bfd_remote_flags {
-	RBIT_CPI    = (1 << 0),
+	RBIT_CPI = (1 << 0),
 	RBIT_DEMAND = (1 << 1),
-	RBIT_MP     = (1 << 2),
+	RBIT_MP = (1 << 2),
 };
 
 struct bfddp_message_header {
-	uint8_t  version;      /* 1 */
-	uint8_t  zero;
+	uint8_t version; /* 1 */
+	uint8_t zero;
 	uint16_t type;
-	uint16_t id;           /* 0 = async */
-	uint16_t length;       /* total, including this header */
+	uint16_t id;	 /* 0 = async */
+	uint16_t length; /* total, including this header */
 } __attribute__((packed));
 
 struct bfddp_echo {
@@ -81,34 +86,37 @@ struct bfddp_session_msg {
 	uint32_t min_echo_tx;
 	uint32_t min_echo_rx;
 	uint32_t hold_time;
-	uint8_t  ttl;
-	uint8_t  detect_mult;
+	uint8_t ttl;
+	uint8_t detect_mult;
 	uint16_t zero;
 	uint32_t ifindex;
-	char     ifname[64];
+	char ifname[64];
 } __attribute__((packed));
 
 /* Seconds since the epoch; a start of 0 means always, an end of -1 never
- * expires. */
+ * expires.
+ */
 struct bfddp_key_lifetime {
 	int64_t start;
 	int64_t end;
 } __attribute__((packed));
 
 /* One key and its periods. Sending stops before accepting does, so in-flight
- * packets still verify during a rollover. */
+ * packets still verify during a rollover.
+ */
 struct bfddp_auth_key {
-	uint8_t  type;
-	uint8_t  key_id;
-	uint8_t  key_len;
-	uint8_t  zero[5];
+	uint8_t type;
+	uint8_t key_id;
+	uint8_t key_len;
+	uint8_t zero[5];
 	struct bfddp_key_lifetime send;
 	struct bfddp_key_lifetime accept;
-	char     key[BFDDP_AUTH_KEY_MAX];
+	char key[BFDDP_AUTH_KEY_MAX];
 } __attribute__((packed));
 
 /* DP_SESSION_AUTH payload: the session's key chain. Only key_count entries are
- * on the wire. */
+ * on the wire.
+ */
 struct bfddp_session_auth {
 	uint32_t lid;
 	uint16_t key_count;
@@ -126,14 +134,14 @@ struct bfddp_state_change {
 	uint32_t desired_tx;
 	uint32_t required_rx;
 	uint32_t required_echo_rx;
-	uint8_t  state;
-	uint8_t  diagnostics;
-	uint8_t  detection_multiplier;
+	uint8_t state;
+	uint8_t diagnostics;
+	uint8_t detection_multiplier;
 } __attribute__((packed));
 
 struct bfddp_counters {
 	uint32_t lid;
-	uint32_t pad;   /* FRR struct is unpacked: u64s are 8-aligned */
+	uint32_t pad; /* FRR struct is unpacked: u64s are 8-aligned */
 	uint64_t control_input_bytes;
 	uint64_t control_input_packets;
 	uint64_t control_output_bytes;

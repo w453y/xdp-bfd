@@ -15,8 +15,7 @@ import os
 
 PEER_HOST = os.environ.get("BFD_PEER_HOST", "w453y@10.66.0.2")
 IFACE = os.environ.get("BFD_IFACE", "ens19")
-_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))))
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ENGINE = os.environ.get("BFD_ENGINE", os.path.join(_ROOT, "bfd_tx"))
 STATS = os.environ.get("BFD_STATS", "/tmp/bfd_tx_stats.json")
 DPLANE = os.environ.get("BFD_DPLANE", "50700")

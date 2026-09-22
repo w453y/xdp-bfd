@@ -1,32 +1,34 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Part of xdp_run, split by subject; compiled as one unit via
- * tests/unit/xdp_run.c. */
+ * tests/unit/xdp_run.c.
+ */
 
 /* The v4 echo reflector: five dispositions, five counters. The own-echo
  * exception at TTL 254 must also require self-addressing, or it is a TTL
- * bypass; the not-self-at-254 arm checks that. */
-static void build_echo(struct frame *f, uint8_t ttl, const char *src,
-		       const char *dst, uint32_t my_disc, uint32_t nonce)
+ * bypass; the not-self-at-254 arm checks that.
+ */
+static void build_echo(struct frame *f, uint8_t ttl, const char *src, const char *dst,
+		       uint32_t my_disc, uint32_t nonce)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
 
-	p.my_disc     = htonl(my_disc);
+	p.my_disc = htonl(my_disc);
 	p.min_echo_rx = htonl(nonce);
 	build_v4(f, ttl, BFD_ECHO_PORT, &p, 0);
 
 	struct iphdr *ip = (void *)(f->b + sizeof(struct ethhdr));
+
 	ip->saddr = inet_addr(src);
 	ip->daddr = inet_addr(dst);
 	ip->check = 0;
 	ip->check = csum16(ip, sizeof(*ip), 0);
 }
 
-static void case_echo(const char *name, uint8_t ttl, const char *src,
-		      const char *dst, int arm_peer, int arm_disc,
-		      int want_v, int slot)
+static void case_echo(const char *name, uint8_t ttl, const char *src, const char *dst,
+		      int arm_peer, int arm_disc, int want_v, int slot)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
-	struct bfd_addr peer = {0};
+	struct bfd_addr peer = { 0 };
 	unsigned long long before;
 	struct frame f;
 	int v, bad = 0;
@@ -38,7 +40,8 @@ static void case_echo(const char *name, uint8_t ttl, const char *src,
 	if (arm_peer) {
 		__u32 a = inet_addr(src);
 
-		peer.b[10] = 0xff; peer.b[11] = 0xff;
+		peer.b[10] = 0xff;
+		peer.b[11] = 0xff;
 		memcpy(&peer.b[12], &a, 4);
 		bpf_map_update_elem(echo_peers_fd, &peer, &one, BPF_ANY);
 	}
@@ -51,8 +54,7 @@ static void case_echo(const char *name, uint8_t ttl, const char *src,
 	v = run_frame(&f, NULL, NULL);
 
 	if (v != want_v) {
-		printf("     verdict %s, want %s\n",
-		       v < 0 ? "syscall-error" : verdict_str(v),
+		printf("     verdict %s, want %s\n", v < 0 ? "syscall-error" : verdict_str(v),
 		       verdict_str(want_v));
 		bad = 1;
 	}
@@ -78,47 +80,48 @@ static void case_echo(const char *name, uint8_t ttl, const char *src,
 static void run_echo_matrix(void)
 {
 	/* our own echo returning: 254 and self-addressed, consumed */
-	case_echo("echo-returns", 254, "10.0.0.1", "10.0.0.1", 0, 1,
-		  XDP_DROP, BFD_STAT_ECHO_RETURNS);
+	case_echo("echo-returns", 254, "10.0.0.1", "10.0.0.1", 0, 1, XDP_DROP,
+		  BFD_STAT_ECHO_RETURNS);
 	/* 254 but not self-addressed: rejected by the parser's GTSM, so the
-	 * exception is no general bypass. */
-	case_echo("echo-254-not-self-rejected", 254, "10.0.0.2", "10.0.0.1",
-		  1, 0, XDP_DROP, BFD_STAT_REJECTED);
+	 * exception is no general bypass.
+	 */
+	case_echo("echo-254-not-self-rejected", 254, "10.0.0.2", "10.0.0.1", 1, 0, XDP_DROP,
+		  BFD_STAT_REJECTED);
 	/* Off-link echo: same parser GTSM; echo.h's own ECHO_TTL check is
-	 * never reached. */
-	case_echo("echo-off-link-rejected", 200, "10.0.0.2", "10.0.0.2", 1, 0,
-		  XDP_DROP, BFD_STAT_REJECTED);
+	 * never reached.
+	 */
+	case_echo("echo-off-link-rejected", 200, "10.0.0.2", "10.0.0.2", 1, 0, XDP_DROP,
+		  BFD_STAT_REJECTED);
 	/* not self-addressed at 255 */
-	case_echo("echo-not-self", 255, "10.0.0.2", "10.0.0.1", 1, 0,
-		  XDP_PASS, BFD_STAT_NOT_SELF);
+	case_echo("echo-not-self", 255, "10.0.0.2", "10.0.0.1", 1, 0, XDP_PASS, BFD_STAT_NOT_SELF);
 	/* self-addressed but the peer is not echo-active: no amplifier */
-	case_echo("echo-declined", 255, "10.0.0.2", "10.0.0.2", 0, 0,
-		  XDP_PASS, BFD_STAT_DECLINED);
+	case_echo("echo-declined", 255, "10.0.0.2", "10.0.0.2", 0, 0, XDP_PASS, BFD_STAT_DECLINED);
 	/* self-addressed and echo-active: reflected */
-	case_echo("echo-reflect", 255, "10.0.0.2", "10.0.0.2", 1, 0,
-		  XDP_TX, BFD_STAT_REFLECTED);
+	case_echo("echo-reflect", 255, "10.0.0.2", "10.0.0.2", 1, 0, XDP_TX, BFD_STAT_REFLECTED);
 }
 
 /* The v6 reflector and return path, mirroring the v4 matrix, including the
- * not-self-at-254 arm. */
-static void build_echo_v6(struct frame *f, uint8_t hlim, const char *src,
-			  const char *dst, uint32_t my_disc, uint32_t nonce)
+ * not-self-at-254 arm.
+ */
+static void build_echo_v6(struct frame *f, uint8_t hlim, const char *src, const char *dst,
+			  uint32_t my_disc, uint32_t nonce)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
 
-	p.my_disc     = htonl(my_disc);
+	p.my_disc = htonl(my_disc);
 	p.min_echo_rx = htonl(nonce);
 	build_v6(f, hlim, BFD_ECHO_PORT, &p, 0);
 
 	struct ipv6hdr *ip6 = (void *)(f->b + sizeof(struct ethhdr));
+
 	inet_pton(AF_INET6, src, &ip6->saddr);
 	inet_pton(AF_INET6, dst, &ip6->daddr);
 }
 
-static void case_echo_v6(const char *name, uint8_t hlim, const char *src,
-			 const char *dst, int arm_peer, int want_v, int slot)
+static void case_echo_v6(const char *name, uint8_t hlim, const char *src, const char *dst,
+			 int arm_peer, int want_v, int slot)
 {
-	struct bfd_addr peer = {0};
+	struct bfd_addr peer = { 0 };
 	unsigned long long before;
 	struct frame f;
 	int v, bad = 0;
@@ -138,8 +141,7 @@ static void case_echo_v6(const char *name, uint8_t hlim, const char *src,
 	v = run_frame(&f, NULL, NULL);
 
 	if (v != want_v) {
-		printf("     verdict %s, want %s\n",
-		       v < 0 ? "syscall-error" : verdict_str(v),
+		printf("     verdict %s, want %s\n", v < 0 ? "syscall-error" : verdict_str(v),
 		       verdict_str(want_v));
 		bad = 1;
 	}
@@ -162,7 +164,8 @@ static void case_echo_v6(const char *name, uint8_t hlim, const char *src,
 
 /* Our own v6 echo returning: with the discriminator in echo_disc the frame is
  * consumed and the echo fields move; with an unknown one it passes and they
- * stay. */
+ * stay.
+ */
 static void case_echo_v6_return(int arm_disc, int want_v, const char *name)
 {
 	struct session_key k = key_v6("fd00::2", "fd00::1");
@@ -184,8 +187,7 @@ static void case_echo_v6_return(int arm_disc, int want_v, const char *name)
 	v = run_frame(&f, NULL, NULL);
 
 	if (v != want_v) {
-		printf("     verdict %s, want %s\n",
-		       v < 0 ? "syscall-error" : verdict_str(v),
+		printf("     verdict %s, want %s\n", v < 0 ? "syscall-error" : verdict_str(v),
 		       verdict_str(want_v));
 		bad = 1;
 	}
@@ -202,8 +204,8 @@ static void case_echo_v6_return(int arm_disc, int want_v, const char *name)
 			bad = 1;
 		}
 		if (arm_disc && st.echo_last_nonce != nonce) {
-			printf("     echo_last_nonce is %08x, want %08x\n",
-			       st.echo_last_nonce, nonce);
+			printf("     echo_last_nonce is %08x, want %08x\n", st.echo_last_nonce,
+			       nonce);
 			bad = 1;
 		}
 		if (arm_disc && !st.echo_last_seen_ns) {
@@ -233,20 +235,19 @@ static void run_echo_v6_matrix(void)
 	/* same frame, a discriminator we never sent: not ours, hands off */
 	case_echo_v6_return(0, XDP_PASS, "echo-v6-return-unknown-disc");
 	/* 254 but not self-addressed: the exception requires both, so the
-	 * parser's GTSM rejects it before the echo path runs */
-	case_echo_v6("echo-v6-254-not-self-rejected", 254, "fd00::2", "fd00::1",
-		     1, XDP_DROP, BFD_STAT_REJECTED);
+	 * parser's GTSM rejects it before the echo path runs
+	 */
+	case_echo_v6("echo-v6-254-not-self-rejected", 254, "fd00::2", "fd00::1", 1, XDP_DROP,
+		     BFD_STAT_REJECTED);
 	/* off-link echo: same parser GTSM, same disposition */
-	case_echo_v6("echo-v6-off-link-rejected", 200, "fd00::2", "fd00::2",
-		     1, XDP_DROP, BFD_STAT_REJECTED);
+	case_echo_v6("echo-v6-off-link-rejected", 200, "fd00::2", "fd00::2", 1, XDP_DROP,
+		     BFD_STAT_REJECTED);
 	/* not self-addressed at 255 */
-	case_echo_v6("echo-v6-not-self", 255, "fd00::2", "fd00::1",
-		     1, XDP_PASS, BFD_STAT_NOT_SELF);
+	case_echo_v6("echo-v6-not-self", 255, "fd00::2", "fd00::1", 1, XDP_PASS, BFD_STAT_NOT_SELF);
 	/* self-addressed but the peer is not echo-active: no amplifier */
-	case_echo_v6("echo-v6-declined", 255, "fd00::2", "fd00::2",
-		     0, XDP_PASS, BFD_STAT_DECLINED);
+	case_echo_v6("echo-v6-declined", 255, "fd00::2", "fd00::2", 0, XDP_PASS, BFD_STAT_DECLINED);
 	/* self-addressed and echo-active: reflected. Guards the reflect path
-	 * against being swallowed by the return branch above it. */
-	case_echo_v6("echo-v6-reflect", 255, "fd00::2", "fd00::2",
-		     1, XDP_TX, BFD_STAT_REFLECTED);
+	 * against being swallowed by the return branch above it.
+	 */
+	case_echo_v6("echo-v6-reflect", 255, "fd00::2", "fd00::2", 1, XDP_TX, BFD_STAT_REFLECTED);
 }

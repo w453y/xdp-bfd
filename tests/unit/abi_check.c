@@ -1,17 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * Layout pins for every struct shared between the XDP program and the
- * engine. A field added on one side is a silent map misread; these turn
- * that into a compile error.
- *
- * Compiled twice, by the host compiler and by clang for the BPF target,
- * so a divergence between them fails the build rather than corrupting a
- * map at runtime. No runtime component: if it compiles, it passes.
- *
- * The numbers come from the compiler. If a deliberate layout change makes
- * one wrong, read the new offset off the compiler rather than editing it
- * by hand.
- */
+/* Layout pins for every struct the XDP program and engine share, compiled by
+ * both the host compiler and clang for BPF; if it compiles, it passes. After a
+ * deliberate change, read the new offsets off the compiler. */
 #include <bfd_shared.h>
 #include <hmac_sha1.h>
 #include <stddef.h>
@@ -133,20 +123,14 @@ _Static_assert(offsetof(struct bfd_ctrl_pkt, my_disc) == 4,
 _Static_assert(offsetof(struct bfd_ctrl_pkt, min_echo_rx) == 20,
 	       "offsetof(struct bfd_ctrl_pkt, min_echo_rx)");
 
-/* The authentication section's shape, which both planes lay out and
- * neither may lay out differently. BFD_MAX_LEN also bounds the digest:
- * a keyed-SHA1 packet has to fit what hmac_sha1.h will hash in one go,
- * or authenticated packets fail on a length rather than a key. */
+/* The auth section's shape. A keyed-SHA1 packet must fit what hmac_sha1.h
+ * hashes in one go. */
 _Static_assert(BFD_AUTH_SHA1_LEN == 28, "BFD_AUTH_SHA1_LEN");
 _Static_assert(BFD_MAX_LEN == 52, "BFD_MAX_LEN");
 _Static_assert(BFD_MAX_LEN <= HMAC_SHA1_MAX_MSG + SHA1_DIGEST_LEN,
 	       "a keyed-SHA1 packet must fit the shared digest");
 
-/* Enum values cross the plane boundary the same way struct offsets do: the
- * engine writes tunables and reads stat slots by number, and the XDP program
- * indexes the same arrays. A reorder misreads silently. Pinned by value, not
- * by count, so inserting a member in the middle fails rather than shifting
- * everything below it. */
+/* Enum values are indices on both planes, so they are pinned by value. */
 _Static_assert(BFD_TUNE_SWEEP_NS == 0, "BFD_TUNE_SWEEP_NS");
 _Static_assert(BFD_TUNE_MAX == 2, "BFD_TUNE_MAX");
 _Static_assert(ST_ADMINDOWN == 0, "ST_ADMINDOWN");
@@ -154,10 +138,7 @@ _Static_assert(ST_DOWN == 1, "ST_DOWN");
 _Static_assert(ST_INIT == 2, "ST_INIT");
 _Static_assert(ST_UP == 3, "ST_UP");
 
-/* Stat slots are indexed by number on both sides: the program bumps a
- * per-CPU array element, the engine sums the same index and prints the
- * name from BFD_STAT_LIST. Reordering the list renames every number
- * below the change without any type error. */
+/* Stat slots, pinned by value for the same reason. */
 _Static_assert(BFD_STAT_SEEN == 0, "BFD_STAT_SEEN");
 _Static_assert(BFD_STAT_WELL_FORMED == 1, "BFD_STAT_WELL_FORMED");
 _Static_assert(BFD_STAT_MALFORMED == 2, "BFD_STAT_MALFORMED");

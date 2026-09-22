@@ -7,26 +7,13 @@
 #include "tunables.h"
 #include "stats.h"
 
-/* Control-packet validation (RFC 5880 s6.8.6 and the overread guard).
- * Returns an XDP verdict to bail with, or -1 to mean carry on - the same
- * sentinel idiom parse_l3 uses.
+/* Control-packet validation (RFC 5880 s6.8.6). Returns an XDP verdict, or -1
+ * to carry on.
  *
- * Every disposition here drops. The BFD ports have no consumer on this
- * host but our own socket, so
- * a header the fast path will not honour has nowhere useful to go:
- * passing it only costs a syscall and, at a flood, evicts datagrams for
- * real sessions from the shared socket queue. A MALFORMED header is
- * counted to slot 2 and dropped; a well-formed header we cannot honour is
- * dropped for the same reason and counted to its own slot.
- *
- * Every check bails before any session lookup or state write.
- *
- * my_disc goes in without a byte swap on purpose: the shared predicate
- * only tests it against zero, which reads the same either way.
- *
- * The bfd + 1 bounds check stays in the caller: the verifier must see it
- * before bfd is dereferenced here or after this returns.
- */
+ * Everything refused is dropped, since nothing but our socket consumes the BFD
+ * ports. Runs before any session lookup or state write. my_disc is only tested
+ * against zero, so it needs no byte swap. The caller does the bfd + 1 bounds
+ * check. */
 static __always_inline int bfd_hdr_verdict(const struct bfd_ctrl_pkt *bfd,
 					   const struct udphdr *udp,
 					   __u8 auth_expected)
@@ -34,9 +21,8 @@ static __always_inline int bfd_hdr_verdict(const struct bfd_ctrl_pkt *bfd,
 	__u16 udp_len = bpf_ntohs(udp->len);
 	__u32 payload = udp_len >= sizeof(*udp) ? udp_len - sizeof(*udp) : 0;
 
-	/* Guarded before the subtraction because udp_len is attacker-set:
-	 * an under-8 value would wrap and hand bfd_ctrl_check a payload
-	 * length of nearly 4G, which every length test would then pass. */
+	/* payload is guarded above: udp_len is attacker-set, and under 8 it
+	 * would wrap to nearly 4G. */
 	switch (bfd_ctrl_check(bfd->vers_diag, bfd->flags, bfd->detect_mult,
 			       bfd->len, bfd->my_disc, payload, auth_expected)) {
 	case BFD_CTRL_MALFORMED:
@@ -48,11 +34,7 @@ static __always_inline int bfd_hdr_verdict(const struct bfd_ctrl_pkt *bfd,
 		count(BFD_STAT_UNSUPPORTED_FLAGS);
 		return XDP_DROP;
 	case BFD_CTRL_AUTH_MISMATCH:
-		/* The A bit and the session disagree, in either direction.
-		 * Dropped rather than passed: a packet claiming
-		 * authentication we cannot check, or omitting the
-		 * authentication we require, is not something the stack
-		 * should get a second opinion on. */
+		/* The A bit and the session disagree, either way. */
 		count(BFD_STAT_AUTH_MISMATCH);
 		return XDP_DROP;
 	}

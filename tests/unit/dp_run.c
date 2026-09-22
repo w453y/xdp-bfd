@@ -1,18 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
 /* dp_run.c - the bfddp framing parser, fed by hand.
  *
- * dp_read() is the only part of this engine that faces a network daemon
- * across a byte stream, so it must survive any split: a header arriving
- * one byte at a time, a message spanning two reads, several messages in
- * one read, and a length field that is a lie.
- *
- * No seam was added. The test opens a real Unix socket and lets the
- * engine's own accept path install the connection, so the recv, the
- * buffer carry-over and the drop-connection policy are all in the path
- * being tested.
- *
- * Links the real dplane.o, session.o and fsm.o. Only the ktx group is
- * stubbed, and use_ktx stays 0 so none of it runs.
+ * dp_read() must survive any split of the byte stream: a header one byte
+ * at a time, a message across two reads, several in one read, a lying
+ * length. Uses a real Unix socket through the engine's own accept path;
+ * only the ktx group is stubbed.
  *
  *     make test-dp
  */
@@ -106,11 +98,8 @@ static void sessions_clear(void)
 
 /* ---------- message building ---------- */
 
-/* A DP_ADD_SESSION for one v4 peer.
- *
- * bfddp.h carries addresses as struct in6_addr for both families and
- * marks the family by the SESSION_IPV6 flag. For v4 that bit is clear
- * and sm_addrs takes the first four bytes. */
+/* A DP_ADD_SESSION for one v4 peer. bfddp carries both families as in6_addr;
+ * SESSION_IPV6 clear means v4 in the first four bytes. */
 static size_t build_add(unsigned char *buf, uint32_t lid, const char *local,
 			const char *peer)
 {
@@ -126,9 +115,8 @@ static size_t build_add(unsigned char *buf, uint32_t lid, const char *local,
 	s->lid   = htonl(lid);
 	s->flags = htonl(0);            /* v4: SESSION_IPV6 clear */
 	{
-		/* sm_addrs reads a v4 address from the FIRST four bytes of the
-		 * in6_addr and runs it through key_set_v4; the v4-mapped form
-		 * is built there, not here. */
+		/* sm_addrs builds the v4-mapped form; here the address goes in
+		 * the first four bytes. */
 		uint32_t a = inet_addr(local), b = inet_addr(peer);
 
 		memcpy(&s->src.s6_addr[0], &a, 4);
@@ -141,9 +129,8 @@ static size_t build_add(unsigned char *buf, uint32_t lid, const char *local,
 	return len;
 }
 
-/* Same message, IPv6. sm_addrs takes a straight 16-byte copy for v6 and
- * runs the v4 branch through key_set_v4, so the two families reach the
- * session table by different code and only one of them was covered. */
+/* Same message, IPv6, which reaches the session table through a separate
+ * branch of sm_addrs. */
 static size_t build_add6(unsigned char *buf, uint32_t lid, const char *local,
 			 const char *peer)
 {
@@ -196,11 +183,8 @@ static size_t build_add_auth(unsigned char *buf, uint32_t lid,
 	return len;
 }
 
-/* A key chain of two keys that hand over at t=2000.
- *
- * The second is acceptable from 1500, before it is ever sent, and the
- * first stays acceptable until 3000, after it has stopped being sent.
- * That overlap is what a rollover rides on. */
+/* A two-key chain handing over at t=2000. Key 2 is acceptable from 1500 and
+ * key 1 until 3000; that overlap is the rollover. */
 static size_t build_session_auth(unsigned char *buf, uint32_t lid)
 {
 	struct bfddp_message_header *h = (void *)buf;
@@ -318,10 +302,8 @@ static void case_batched(void)
 	report("three-in-one-read", bad, "3 sessions");
 }
 
-/* A length field that cannot be honoured. The policy is deliberate: reset
- * the buffer and keep going would resync onto arbitrary mid-stream bytes,
- * so the connection is dropped and bfdd reconnects from a clean boundary.
- * The rig is rebuilt afterwards because the connection is gone. */
+/* A length field that cannot be honoured drops the connection, so bfdd
+ * reconnects on a clean boundary. The rig is rebuilt afterwards. */
 static void case_bad_length(uint16_t mlen, const char *name)
 {
 	unsigned char buf[256];
@@ -351,9 +333,8 @@ static void case_bad_length(uint16_t mlen, const char *name)
 		printf("     rig rebuild failed\n");
 }
 
-/* Session lifecycle. bfdd re-sends an ADD for every config touch, so the
- * same message type has to mean create, update and adopt depending on what
- * is already in the table. */
+/* Session lifecycle: bfdd re-sends an ADD on every config change, so an ADD
+ * may create, update or adopt. */
 
 /* A fresh ADD builds a session whose wire discriminator is its lid. */
 static void case_fresh(void)
@@ -465,18 +446,8 @@ static void case_update_keeps_disc(void)
 	report("add-update-keeps-wire-disc", bad, "1 session");
 }
 
-/* A session message from a control plane that predates the
- * authentication fields.
- *
- * The header carries the length and that is the contract: the fields
- * after BFDDP_SESSION_MSG_MIN are optional. Requiring the whole struct
- * makes every ADD from an older daemon unparseable, and the failure is
- * silence - no session, no error, nothing on the wire - which is the
- * worst shape a compatibility break can take.
- *
- * Sent at exactly the pre-extension length, so this fails the moment
- * anything new is added to the message and treated as mandatory.
- */
+/* An ADD of BFDDP_SESSION_MSG_MIN bytes and no DP_SESSION_AUTH gives an
+ * unauthenticated session. */
 static void case_add_without_auth(void)
 {
 	unsigned char buf[256];
@@ -506,31 +477,9 @@ static void case_add_without_auth(void)
 	report("add-without-auth", bad, "session up, unauthenticated");
 }
 
-/* An ADD for an existing lid may move the address pair. The old pair's
- * map entries would otherwise stay behind with enable=1 and keep being
- * answered by the fast path. */
-/* A repeated ADD must not slow transmission mid-Poll.
- *
- * Raising min_tx on an Up session starts a Poll sequence and deliberately
- * keeps transmitting at the old interval until the peer answers with a
- * Final, which is what s6.8.3 requires. A second ADD carrying the same
- * values compares equal against what the first one stored, so it misses
- * the parameter-change branch entirely and used to fall through to a bare
- * assignment, applying the slower rate while the poll was still open. The
- * peer would then time out against an interval it had not agreed to.
- */
-/* The mirror cache is keyed as well as valued.
- *
- * ktx_mirror skips the map write when what it would push equals what it
- * last pushed. An UPDATE that moves the address pair changes no tx_cfg
- * field at all, so on the value alone the answer is "nothing to do" while
- * the old entry has already been cleared and the new key has none. The
- * session keeps running in userspace with nobody saying why.
- *
- * ktx_mirror itself is stubbed here, which is precisely how the address
- * move case above passed while this went unnoticed, so the predicate is
- * tested rather than the caller.
- */
+/* ktx_push_needed compares the key as well as the value, since an address move
+ * changes no tx_cfg field. The predicate is tested directly because ktx_mirror
+ * is stubbed here. */
 static void case_mirror_cache_tracks_key(void)
 {
 	struct session_key k1 = {}, k2 = {};
@@ -575,6 +524,8 @@ static void case_mirror_cache_tracks_key(void)
 	report("mirror-cache-tracks-key", bad, "key and value both count");
 }
 
+/* A repeated ADD must not slow transmission mid-Poll: s6.8.3 keeps the old
+ * interval until the peer's Final. */
 static void case_repeated_add_during_poll(void)
 {
 	unsigned char buf[256];
@@ -653,6 +604,8 @@ static void case_repeated_add_during_poll(void)
 	}
 }
 
+/* An ADD for an existing lid may move the address pair; the old pair's
+ * map entries must be cleared. */
 static void case_address_move(void)
 {
 	unsigned char buf[256];
@@ -724,11 +677,8 @@ static void case_flags(void)
 	report("add-flags-map-through", bad, "passive + shutdown");
 }
 
-/* The whole chain arrives once and this side follows the clock.
- *
- * Checked at three instants rather than by waiting: which key may be sent
- * moves at the handover, and which may be accepted is wider than that on
- * both sides. */
+/* The chain arrives once and key choice follows the clock; checked at three
+ * instants. */
 static void case_auth_rollover(void)
 {
 	unsigned char buf[2048];
@@ -823,13 +773,9 @@ static void case_auth_short(void)
 	report("auth-short-message", bad, "refused");
 }
 
-/* A notification storm on one session overflows the output queue. The
- * old behaviour tore the connection down, taking every other session's
- * control channel with it. Now it coalesces: the connection survives, and
- * once bfdd reads again the session's CURRENT (final) state is delivered.
- *
- * The bfdd end is deliberately not drained during the flood, so the socket
- * buffer fills and then dp_out does. */
+/* A notification storm overflows the output queue. The connection survives
+ * and, once bfdd reads again, the session's final state is delivered. bfdd's
+ * end is not drained during the flood. */
 static void case_notify_coalesce(void)
 {
 	struct msg {
@@ -893,12 +839,8 @@ static void case_notify_coalesce(void)
 }
 
 
-/* A peer configured without a local-address makes bfdd register the
- * offloaded session with local 0.0.0.0 (v4) or :: (v6). The engine must
- * resolve the concrete source the kernel would use to reach the peer, so
- * the fast path can key the session and the unknown-session drop does
- * not strand it. A loopback peer resolves to a loopback source in any
- * environment, so the expected result is deterministic. */
+/* A wildcard local address (no local-address in bfdd) resolves to the source
+ * the kernel would use. A loopback peer makes the result deterministic. */
 static void case_local_resolve(void)
 {
 	unsigned char buf[256];
@@ -963,11 +905,7 @@ static void case_local_resolve_v6(void)
 	rig_down();
 }
 
-/* A multihop session (SESSION_MULTIHOP, ttl < 255, peer off-link) with a
- * wildcard local must resolve too: the source is a property of the route
- * to the peer, which connect()+getsockname reads regardless of hop count
- * or the control port the probe socket uses. A loopback peer resolves to a
- * loopback source in any environment, so this is deterministic. */
+/* A multihop session with a wildcard local resolves the same way. */
 static void case_local_resolve_mhop(void)
 {
 	unsigned char buf[256];

@@ -9,11 +9,8 @@ static __always_inline void count(__u32 idx)
 {
 	__u64 *v = bpf_map_lookup_elem(&bfd_stats, &idx);
 	if (v)
-		/* Plain increment: the value is this CPU's own slot in a
-		 * PERCPU_ARRAY, and XDP runs in softirq with preemption off,
-		 * so nothing else can be inside this counter. The locked
-		 * add was paying for contention that cannot happen, on
-		 * every frame the interface receives. */
+		/* Plain increment: a per-CPU slot, and XDP runs with
+		 * preemption off. */
 		*v += 1;
 }
 

@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * xdp_run.c - run the XDP program in the kernel with no NIC and no testbed.
- *
- * BPF_PROG_TEST_RUN hands the program a synthetic frame and returns the
- * verdict plus the (possibly rewritten) frame, so it can be tested as
- * what it is: a pure function of (frame bytes, map state) to (verdict,
- * frame bytes, map state). tests/testbed/inject_matrix.py reaches the same
- * program only through the wire and cannot set map state directly.
+ * xdp_run.c - the XDP program under BPF_PROG_TEST_RUN, as a function of
+ * (frame, map state) to (verdict, frame, map state). No NIC or testbed.
  *
  * Needs root. Run from the repo root so the default object path resolves.
  *
@@ -57,7 +52,10 @@ static int sweep_prog_fd = -1, sweep_sess_fd = -1, sweep_cfg_fd = -1;
 static int hmac_prog_fd = -1, hmac_map_fd = -1;
 #define FLAG_PROMISC	1u
 #define FLAG_MHOP	2u
+/* Local detect multiplier for the next armed session; cases vary it to
+ * show the replay window uses the packet's Detect Mult. */
 static __u8 arm_local_mult = 3;
+/* Second key in the accept set, as a rollover leaves; 0 means none. */
 static __u8 arm_extra_keyid;
 static const char *arm_extra_key = "";
 

@@ -1,16 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* ktx_cfg.c - what the fast path is told about a session.
- *
- * Everything ktx_mirror does before the map write is a pure function of
- * struct session and the clock: which discriminators and intervals the
- * program transmits under, whether it answers at all, whether the demand
- * bits go out, and which authentication keys are acceptable right now.
- * One of the last round's findings lived in that derivation, and reaching
- * it needed a loaded program and a live map.
- *
- * Split out so it can be driven directly (tests/unit/ktx_cfg_run.c). No
- * libbpf here: the map write stays in ktx.c.
- */
+/* ktx_cfg.c - what the fast path is told about a session. A pure function of
+ * the session and the clock, split from ktx_mirror so tests/unit/ktx_cfg_run.c
+ * can drive it. */
 #define _GNU_SOURCE
 #include <string.h>
 
@@ -18,19 +9,13 @@
 #include "session.h"
 #include "ktx.h"
 
-/* Derive the program's view of this session: `c` is what tx_config
- * carries and `k` the address pair it is keyed on. `now` is seconds, the
- * clock the key lifetimes are judged against, passed in so the caller
- * owns it and a test can sit on either side of a boundary. */
+/* `c` is what tx_config carries and `k` its key. `now` is in seconds, for key
+ * lifetimes. */
 void ktx_cfg_for(const struct session *s, int64_t now, struct tx_cfg *c,
 		 struct session_key *k)
 {
-	/* RX-clocked TX answers every accepted packet, so leaving it armed
-	 * while the peer is demanding would transmit at exactly the pace
-	 * s6.8.7 says to stop - the peer's. Disarming hands those frames to
-	 * userspace instead, which still answers a Poll with a Final and
-	 * stays silent otherwise. Polls are rare and the session is idle by
-	 * construction, so the slow path is the right place for them. */
+	/* RX-clocked TX is disarmed while the peer is demanding (s6.8.7);
+	 * userspace then answers Polls. */
 	*c = (struct tx_cfg){
 		.echo_iv_us = s->echo_tx_us,
 		.min_echo_rx_us = s->min_echo_rx_us,
@@ -55,10 +40,8 @@ void ktx_cfg_for(const struct session *s, int64_t now, struct tx_cfg *c,
 	};
 	memcpy(c->auth_kpad, s->auth_kpad, sizeof(c->auth_kpad));
 
-	/* Leave the program every key a packet may currently be signed
-	 * with, not just the one we transmit under. The lifetimes are
-	 * evaluated here because the program has no clock: it can compare
-	 * a key id, it cannot decide whether a period has passed. */
+	/* Every key a packet may be signed with now. Lifetimes are evaluated
+	 * here since the program has no clock. */
 	{
 		unsigned i;
 

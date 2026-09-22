@@ -38,10 +38,8 @@ runs:
           chmod +x /tmp/llvm.sh
           sudo /tmp/llvm.sh ${{ inputs.version }}
         fi
-        # After llvm.sh, not with the packages above: anything versioned to
-        # match this clang lives on apt.llvm.org, and that repository is not
-        # in the sources list until llvm.sh puts it there. Installed in the
-        # first apt call, clang-tools-21 is simply "unable to locate".
+        # After llvm.sh, which adds the apt.llvm.org repository these versioned
+        # packages come from.
         if [ -n "${{ inputs.packages }}" ]; then
           sudo apt-get install -y ${{ inputs.packages }}
         fi

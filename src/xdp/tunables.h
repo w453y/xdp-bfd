@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-/* tunables.h - observer-path constants.
- *
- * The wire format itself lives in include/bfd_shared.h, shared with
- * the userspace engine; only these two knobs are kernel-side. */
+/* tunables.h - kernel-side constants. The wire format is in
+ * include/bfd_shared.h. */
 #ifndef BFD_XDP_TUNABLES_H
 #define BFD_XDP_TUNABLES_H
 

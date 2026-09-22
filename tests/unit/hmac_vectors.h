@@ -1,23 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * hmac_vectors.h - known answers for the shared HMAC-SHA1.
+ * hmac_vectors.h - known answers for the shared HMAC-SHA1, checked by
+ * hmac_run on the host and xdp_run in the kernel.
  *
- * The digest in include/hmac_sha1.h is compiled into both the engine and
- * the XDP program, and a wrong one is indistinguishable at runtime from a
- * wrong key: every packet just fails to authenticate. So both builds are
- * checked against the same fixed answers, hmac_run on the host and
- * xdp_run through the kernel.
- *
- * The first four are RFC 2202's own test cases, which is what makes this
- * a check against the standard rather than against whichever library
- * generated the rest. Case 3 and 4 carry 50 of their 50 data bytes; the
- * RFC's remaining cases use keys longer than a block, which this
- * implementation refuses rather than hashing down, and messages longer
- * than one block will hold.
- *
- * The rest are the shapes BFD actually produces: a 52-byte control packet
- * with a keyed-SHA1 auth section, at the key and message lengths where
- * the padding and the key handling change behaviour.
+ * The first four are RFC 2202 test cases; its others need keys or
+ * messages longer than a block, which this refuses. The rest are the
+ * shapes BFD produces: a 52-byte keyed-SHA1 packet at the key and message
+ * lengths where the padding changes.
  */
 #ifndef BFD_HMAC_VECTORS_H
 #define BFD_HMAC_VECTORS_H

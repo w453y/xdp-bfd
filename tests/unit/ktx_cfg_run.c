@@ -1,15 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* ktx_cfg_run.c - what the fast path is told about a session.
- *
- * ktx_mirror derives a tx_cfg and a session_key from a session and the
- * clock, then writes them to a map. Everything before the write is
- * ktx_cfg_for, and this drives it directly: no program loaded, no map,
- * no root. One of the last round's findings lived in that derivation
- * (a session that must authenticate but has nothing to sign with was
- * still told to answer), and reaching it needed the whole kernel rig.
- *
- * The clock is a parameter, so the key-lifetime rows can sit on either
- * side of a boundary without waiting for one.
+/* ktx_cfg_run.c - ktx_cfg_for, the tx_cfg and key ktx_mirror would push,
+ * driven directly: no program, no map, no root. The clock is a parameter,
+ * so key-lifetime rows sit either side of a boundary.
  *
  *     make test-ktxcfg
  */
@@ -98,15 +90,14 @@ int main(void)
 	report("enable-off-while-peer-demands", c.enable != 0,
 	       "RX-clocked TX disarmed for a demanding peer");
 
-	/* A peer advertising Required Min RX of zero has asked for silence
-	 * in the other spelling. */
+	/* Required Min RX zero is the other way to ask for silence. */
 	s = arm();
 	s->r_min_rx = 0;
 	s->last_rx_us = 1;
 	ktx_cfg_for(s, NOW, &c, &k);
 	report("enable-off-on-zero-min-rx", c.enable != 0, "");
 
-	/* --- auth_present versus auth_type: the finding --- */
+	/* --- auth_present versus auth_type --- */
 	s = arm();
 	s->auth_present = 1;
 	s->auth_type = 0;          /* must authenticate, nothing to sign with */

@@ -1,9 +1,7 @@
 #!/bin/bash
-# Build the xdp-bfd .deb (and .rpm where mock is available) for each
-# target in clean containers. Each .deb target installs clang-21 from
-# apt.llvm.org first: stock debian/ubuntu clang is below the floor and
-# builds a BPF object the kernel verifier rejects, so the object would
-# ship broken and only fail at postinst --check.
+# Build the .deb, and the .rpm where mock is available, for each target in
+# clean containers. clang-21 comes from apt.llvm.org, since some targets' stock
+# clang is below the floor of 17.
 #
 # Usage: tools/build-packages.sh [deb|rpm|all]
 set -euo pipefail
@@ -40,9 +38,8 @@ build_deb() {
             build-essential libbpf-dev debhelper dpkg-dev devscripts \
             ca-certificates wget gnupg lsb-release linux-libc-dev \
             make gcc pkgconf llvm >/dev/null
-        # clang-21 from apt.llvm.org. The repo is set up by hand rather
-        # than with llvm.sh, which needs software-properties-common: that
-        # package is not in the base set on Debian trixie.
+        # Set up apt.llvm.org by hand: llvm.sh needs
+        # software-properties-common, absent on Debian trixie.
         . /etc/os-release
         wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
             | gpg --dearmor > /usr/share/keyrings/llvm.gpg
@@ -52,10 +49,8 @@ build_deb() {
         apt-get install -y -qq --no-install-recommends clang-21 >/dev/null
         mkdir -p /src && tar -x -C /src
         cd /src/xdp-bfd
-        # dch signs the entry with DEBEMAIL, and inside a container that
-        # resolves to root@<container id>, which lintian rejects outright
-        # (bogus-mail-host-in-debian-changelog). Sign as the maintainer the
-        # control file already names.
+        # Sign as the maintainer: in a container DEBEMAIL defaults to
+        # root@<container id>, which lintian rejects.
         export DEBFULLNAME="Abdul Wasey"
         export DEBEMAIL="w453y.me@gmail.com"
         dch --create --package xdp-bfd -v "${VERSION}-1" --distribution unstable \

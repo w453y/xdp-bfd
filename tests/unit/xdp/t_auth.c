@@ -1,24 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of the xdp_run test, split by subject.
- * Compiled as one unit via tests/unit/xdp_run.c, which carries the
- * includes, the shared globals and main; include order there is the
- * dependency order (harness first, sweep last). */
+/* Part of xdp_run, split by subject; compiled as one unit via
+ * tests/unit/xdp_run.c. */
 
-/* A session that must authenticate but has no key it may SEND under.
- *
- * A key chain whose send lifetimes have a gap puts a session here, and so
- * does a DP_ADD_SESSION carrying SESSION_AUTH that arrives before its
- * DP_SESSION_AUTH. The peer goes on transmitting under a key that is still
- * within its own accept period, so those packets carry the A bit and the
- * accept set can verify them. Refusing them is refusing exactly what the
- * overlap exists to take.
- *
- * The program judged this by auth_type, which is the SEND key, so it saw a
- * session with no authentication, called the A bit unacceptable and dropped
- * the packet in the driver - where userspace, which has always read this
- * from auth_present, could not see what it would have accepted. The session
- * then timed out with the peer transmitting correctly throughout.
- */
+/* A session that must authenticate but has no key it may send under, as with a
+ * gap in send lifetimes or keys not yet arrived. Packets the accept set can
+ * verify must still be accepted. */
 static void case_auth_present_without_send_key(void)
 {
 	const char *name = "auth-accepted-with-no-send-key";
@@ -60,13 +46,8 @@ static void case_auth_present_without_send_key(void)
 		printf("ok   %-40s accepted, not an A-bit mismatch\n", name);
 	}
 
-	/* And the digest is still checked, which the arm above cannot show:
-	 * a packet accepted without verification also reaches userspace, so
-	 * PASS alone is equally consistent with having skipped the digest.
-	 * That is not hypothetical. Gating verification on the send key did
-	 * exactly that, and fixing only the A-bit rule would have turned
-	 * "refuses what it should take" into "takes it unverified", which is
-	 * the worse of the two by a long way. */
+	/* The digest is still checked: PASS alone is equally consistent with
+	 * skipping verification. */
 	name = "auth-verified-with-no-send-key";
 	{
 		unsigned long long bad = stat_get(BFD_STAT_AUTH_BAD);
@@ -86,6 +67,9 @@ static void case_auth_present_without_send_key(void)
 	map_reset();
 }
 
+/* Rejection paths: a keyed-SHA1 packet damaged in exactly one way
+ * (digest, sequence, key id) must be refused without touching the
+ * session. */
 static void case_auth_reject(const char *name, __u8 type, const char *key,
 			     __u8 keyid, __u32 seq, int corrupt_digest,
 			     __u32 pre_seq, int want_accept)
@@ -151,9 +135,8 @@ static void case_auth_reject(const char *name, __u8 type, const char *key,
 	map_reset();
 }
 
-/* The shared HMAC-SHA1 through the kernel, on the vectors hmac_run
- * checks on the host. The BPF build inlines differently and answers to
- * the verifier, so agreeing with the host is not something to assume. */
+/* The shared HMAC-SHA1 in the kernel, on the vectors hmac_run checks on the
+ * host. */
 struct hmac_scratch_u {
 	__u8  kpad[SHA1_BLOCK_LEN];
 	__u8  mblk[SHA1_BLOCK_LEN];
@@ -214,11 +197,9 @@ static void case_hmac(const struct hmac_vec *v)
 	printf("ok   %-40s key %2u msg %2u\n", v->name, v->keylen, v->msglen);
 }
 
-/* Bound the forced HMAC. Feed a session more corrupt-digest packets
- * than BFD_AUTH_FAIL_MAX inside one detect interval: the first
- * BFD_AUTH_FAIL_MAX reach the digest and fail (auth-bad), the rest are
- * dropped before it (auth-ratelimited). The interval is pinned wide so the
- * test cannot straddle a window turnover. */
+/* Bound the forced HMAC: of more than BFD_AUTH_FAIL_MAX bad digests in one
+ * interval, the first BFD_AUTH_FAIL_MAX fail (auth-bad) and the rest are
+ * dropped before the digest (auth-ratelimited). */
 static void case_auth_ratelimit(void)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");

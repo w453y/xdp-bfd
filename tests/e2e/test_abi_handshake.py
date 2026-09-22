@@ -1,19 +1,6 @@
-"""The engine refuses a kernel program built against a different ABI.
-
-tests/unit/abi_check.c pins every shared struct at compile time and cannot
-see this failure: bfd_tx and bfd_xdp.o are separate artifacts, built at
-separate times, paired at runtime by a path. An engine built against a
-newer bfd_shared.h loading an older object gets no complaint from anyone -
-the verifier has no opinion, the map accepts the key, and the two halves
-then read the same bytes as different structs.
-
-Both directions are asserted. The negative arm alone would pass just as
-well against an engine that refuses everything, which is the more likely
-way this breaks: the BTF records that make the comparison possible are
-emitted only for types reachable from a map definition, so two of the five
-are kept alive by a witness in maps.h that is easy to delete by accident.
-Refusing the correct object is the worse outcome of the two and gets the
-first test.
+"""The engine refuses a kernel object built against a different ABI, and
+accepts a matching one. The positive arm matters as much: BTF for two of
+the five structs depends on a witness in maps.h.
 """
 
 import os
@@ -24,27 +11,15 @@ import pytest
 
 from conftest import NS_A, sh, setup, teardown
 
-# One field in tx_cfg, which both halves read out of the config map.
-#
-# Deliberately not session_state, which was the first choice and is the
-# wrong one: growing it by eight bytes pushes the packet path over the
-# verifier's 512-byte combined stack budget, so the skewed object fails to
-# load whether or not anything checks its ABI, and the test would pass
-# against an engine with no check at all. The failure worth pinning is the
-# silent one - an object the kernel is perfectly happy with, whose layout
-# the engine disagrees about. tx_cfg is reached through a map pointer and
-# costs no stack, so a skewed copy loads and runs, and this check is the
-# only thing between it and sheared fields.
+# Skew tx_cfg: it is reached through a map pointer and costs no stack, so the
+# skewed object still loads and only the ABI check stands in the way. Growing
+# session_state instead would fail the verifier's stack limit regardless.
 SKEW = ("	__u32 my_disc;", "	__u32 my_disc;\n	__u32 abi_skew_probe;")
 
 
 def run_engine(binary, obj, secs=8):
-    """Start the engine in the foreground and return what it printed.
-
-    Foreground on purpose: a refusal is a startup-time event and the whole
-    point is that it happens before anything is attached, so there is no
-    running process to interrogate afterwards. The timeout bounds the
-    success case, which does not exit on its own.
+    """Run the engine in the foreground and return its output; a refusal
+    happens at startup. The timeout bounds the success case.
     """
     cmd = ("sudo timeout %d ip netns exec %s %s 10.0.0.1 10.0.0.2"
            " --kernel-tx lo --xdp-mode generic --bpf-obj %s"
@@ -65,11 +40,8 @@ def rig(request):
 
 @pytest.fixture(scope="module")
 def skewed_obj(rig, tmp_path_factory):
-    """A kernel object built from this tree with one struct grown.
-
-    Built from a copy rather than by editing the tree in place: a failure
-    part way through would otherwise leave the working tree carrying a
-    fake field, and the next `make` would install it in the real object.
+    """A kernel object built from a copy of this tree with one struct grown,
+    so a failure cannot leave the fake field in the working tree.
     """
     src = tmp_path_factory.mktemp("abi-skew")
     for item in ("Makefile", "include", "src"):

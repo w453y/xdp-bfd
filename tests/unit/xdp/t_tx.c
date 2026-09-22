@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of the xdp_run test, split by subject.
- * Compiled as one unit via tests/unit/xdp_run.c, which carries the
- * includes, the shared globals and main; include order there is the
- * dependency order (harness first, sweep last). */
+/* Part of xdp_run, split by subject; compiled as one unit via
+ * tests/unit/xdp_run.c. */
 
 /* An Up packet from an armed peer must be bounced, not passed. This is
  * the gate in bfd_xdp.c: cfg->enable and the peer at Init or better. */
@@ -80,14 +78,9 @@ static void case_bounce_v4_frame(void)
 	map_reset();
 }
 
-/* The D bit on an RX-clocked reply. The engine decides whether it goes
- * out - the kernel has no view of the remote state that s6.8.6 requires
- * - so this checks the flag is carried, and that it rides alongside a
- * Final rather than displacing it: only P and F are mutually exclusive
- * (s6.5).
- *
- * in_flags picks what the arriving frame carries, so the D-with-F case
- * comes from a real Poll rather than being constructed. */
+/* The D bit on an RX-clocked reply: the engine decides it, the program carries
+ * it, and it accompanies a Final (s6.5). in_flags sets what the arriving frame
+ * carries. */
 static void case_demand_bit_out(uint8_t cfg_demand, uint8_t in_flags,
 				uint8_t want_set, uint8_t want_final,
 				const char *name)
@@ -146,21 +139,10 @@ static void case_demand_bit_out(uint8_t cfg_demand, uint8_t in_flags,
 	map_reset();
 }
 
-/* The dead-man gate: the fast path answers on the engine's behalf only
- * while the engine is still saying it is there.
- *
- * `age_us` is how stale the heartbeat is made, relative to the bound. The
- * program reads bpf_ktime_get_ns itself, so the heartbeat is written as an
- * offset from the same clock rather than the clock being controlled - the
- * margins here are whole seconds against a test that takes microseconds,
- * so the drift between writing it and the program reading it cannot reach
- * a verdict.
- *
- * A bound of zero is the gate switched off, and a heartbeat of zero is an
- * engine that has not written one yet; both must answer, and both are
- * checked, because they are the two ways the gate could be armed against a
- * healthy system.
- */
+/* Dead-man gate: the fast path answers only while the engine's heartbeat is
+ * fresh. `hb_ns` is the heartbeat written against the program's own clock;
+ * margins are whole seconds. A zero bound and a zero heartbeat must both
+ * answer. */
 static void case_deadman(const char *name, __u64 bound_ns, __u64 hb_ns,
 			 int want_tx)
 {
@@ -188,10 +170,8 @@ static void case_deadman(const char *name, __u64 bound_ns, __u64 hb_ns,
 	v = run_frame(&f, out, &out_len);
 	held1 = stat_get(BFD_STAT_DEADMAN_HOLD);
 
-	/* Withholding the reply is XDP_PASS, which is also what an
-	 * unconfigured session gets, so the verdict alone would pass if the
-	 * gate were deleted and the session simply failed to arm. The
-	 * counter is the witness that this packet reached the gate. */
+	/* Withholding the reply is XDP_PASS, as for an unconfigured session,
+	 * so the counter is the witness. */
 	want = want_tx ? XDP_TX : XDP_PASS;
 	if (v != want || (held1 - held0) != (unsigned long long)!want_tx) {
 		printf("FAIL %-40s want %s hold+%d, got %s hold+%llu\n",
@@ -211,8 +191,7 @@ static void case_deadman(const char *name, __u64 bound_ns, __u64 hb_ns,
 	map_reset();
 }
 
-/* The v6 bounce, and the only independent check the hand-rolled fold in
- * tx.h has ever had. */
+/* The v6 bounce, the independent check on tx.h's checksum fold. */
 static void case_bounce_v6_frame(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -270,15 +249,8 @@ static void case_bounce_v6_frame(void)
 	map_reset_v6();
 }
 
-/* A peer frame carrying more than 24 bytes of BFD (auth section, trailer)
- * must not go back out with the extra bytes attached. tx.h trims with
- * bpf_xdp_adjust_tail after rewriting.
- *
- * The v6 arm is the one worth having. The checksum fold runs BEFORE the
- * trim, because adjust_tail invalidates the pointers it reads, so the
- * fold's claim that it "never reads past payload byte 24, which survives
- * the trim" is only true if the trim removes exactly the excess. This is
- * the only input that can tell. */
+/* A peer frame with more than 24 bytes of BFD must go back out trimmed. The v6
+ * arm checks the checksum fold, which runs before the trim. */
 static void case_trim(int v6, unsigned int extra)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -365,10 +337,8 @@ out:
 		map_reset();
 }
 
-/* RFC 5880 s6.8.4 poll termination. tx_cfg is userspace-owned, so the
- * kernel acks the peer's F by writing the sequence into kernel-owned
- * final_seq rather than clearing cfg->poll in place. Guard is
- * cfg->poll && incoming F, so all three arms below are reachable. */
+/* RFC 5880 s6.8.4 poll termination: the peer's F is acked in final_seq. The
+ * guard is cfg->poll && F, so all three arms are reachable. */
 static void case_poll_final(uint8_t in_flags, uint32_t cfg_poll,
 			    uint32_t poll_seq, uint32_t want_seq,
 			    const char *name)
@@ -473,13 +443,7 @@ static void case_rx_state(void)
 	map_reset();
 }
 
-/* Whatever came in, what goes out says 24 bytes of BFD.
- *
- * The reply is the received frame rewritten in place, so its envelope is
- * the sender's until this overwrites it. Asserting on the reply is the
- * only way to see that: the trim used to be conditional on there being a
- * tail, and a frame with none kept whatever length it arrived with.
- */
+/* Whatever came in, the reply's envelope says 24 bytes of BFD. */
 static void case_bounce_envelope_is_ours(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();

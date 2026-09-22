@@ -1,19 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
-/* bfd_xdp_test.c - test-only entry point into the detection sweep.
+/* bfd_xdp_test.c - test-only entry points: one sweep pass, and the shared
+ * HMAC.
  *
- * check_session() is a pure function of (map state, now), but it runs
- * only from a bpf_timer, and bpf_timer does not fire under
- * BPF_PROG_TEST_RUN. This gives the harness a way in.
- *
- * Not built into bfd_xdp.o and never loaded in production: a test entry
- * point in shipped bytecode is one a loader could attach by mistake, and
- * one more program for the verifier to accept.
- *
- * The include list below must match src/xdp/bfd_xdp.c exactly and in the
- * same order - maps.h before anything referencing a map by symbol,
- * sweep.h before tx.h - so the entry point is the only difference
- * between this object and the real one. Change one, change both.
- */
+ * check_session only runs from a bpf_timer, which does not fire under
+ * BPF_PROG_TEST_RUN. Never part of bfd_xdp.o. The include list must match
+ * src/xdp/bfd_xdp.c exactly, in order. */
 
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
@@ -37,19 +28,8 @@
 #include "echo.h"
 #include "tx.h"
 
-/* Drive one sweep pass over bfd_sessions at a caller-supplied time.
- *
- * The frame carries nothing but a __u64 nanosecond timestamp, which stands
- * in for the bpf_ktime_get_ns() that sweep_fire() would have read. That is
- * the whole reason this is testable: check_session takes its clock through
- * ctx rather than reading it, so a test can place "now" wherever it needs
- * relative to last_seen_ns.
- *
- * Going through bpf_for_each_map_elem rather than calling check_session
- * directly is deliberate. It is the same helper the real sweep uses, so a
- * verifier objection or a callback-convention change shows up here too,
- * and the test is not exercising a path that only exists for the test.
- */
+/* One sweep pass at the time carried in the frame, a __u64 after a dummy
+ * Ethernet header, through bpf_for_each_map_elem like the real sweep. */
 SEC("xdp")
 int sweep_once(struct xdp_md *ctx)
 {
@@ -73,18 +53,8 @@ int sweep_once(struct xdp_md *ctx)
 	return XDP_PASS;
 }
 
-/* The shared HMAC-SHA1, run through the kernel.
- *
- * Same header the engine compiles, same vectors hmac_run checks on the
- * host. Worth its own entry point rather than trusting the host result:
- * the BPF build is a different compilation with different inlining and
- * its own stack and verifier constraints, and it is the one that decides
- * whether an authenticated packet is accepted on the wire.
- *
- * Input and output live in a map because a BFD auth key is not packet
- * data - on the fast path it comes from the session's configuration, and
- * the message block is scratch the reflector assembles.
- */
+/* The shared HMAC-SHA1 compiled for BPF, checked on the host vectors. Input
+ * and output go through a map, since keys are not packet data. */
 struct hmac_scratch {
 	__u8  kpad[SHA1_BLOCK_LEN];
 	__u8  mblk[SHA1_BLOCK_LEN];

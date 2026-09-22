@@ -1,40 +1,26 @@
 // SPDX-License-Identifier: GPL-2.0
-/* auth.h - authentication on the fast path (RFC 5880 s6.7).
+/* auth.h - authentication on the fast path (RFC 5880 s6.7): simple password
+ * and keyed SHA1, plain and meticulous.
  *
- * Every type bfdd can produce: simple password, and keyed SHA1 in its
- * plain and meticulous forms. Which sessions keep RX-clocked TX should
- * not depend on which authentication an operator picked.
- *
- * Keyed SHA1 is the easy one, which is not obvious. Those packets are
- * always 52 bytes, so every bound here is a compile-time constant. A
- * simple-password packet is 24 + 3 + however long the key is - 28 to 43
- * bytes - so its length is a runtime value and the packet reads have to
- * be proven against it. That is what the copy into scratch below is
- * for: one loop carries the whole variable-length problem, and
- * everything after it works on a fixed-size zero-padded block.
- *
- * Include after maps.h.
- */
+ * Keyed SHA1 packets are a fixed 52 bytes; simple-password ones vary with the
+ * key (28-43), so the packet is copied into a zero-padded scratch block first
+ * and everything after works on fixed sizes. Include after maps.h. */
 #ifndef BFD_XDP_AUTH_H
 #define BFD_XDP_AUTH_H
 
 #include "bfd_shared.h"
 #include "bfd_auth.h"
 
-/* Where the BFD payload starts, which is a constant per family: the
- * parser rejects IPv4 options outright, so the v4 header is always
- * twenty bytes. Computed rather than subtracted from the packet
- * pointers, because the verifier will not do arithmetic that reaches
+/* Offset of the BFD payload: constant per family, since IPv4 options are
+ * rejected. Computed, as the verifier will not do arithmetic that reaches
  * pkt_end. */
 #define BFD_OFF_V4 (sizeof(struct ethhdr) + sizeof(struct iphdr) + \
 		    sizeof(struct udphdr))
 #define BFD_OFF_V6 (sizeof(struct ethhdr) + sizeof(struct ipv6hdr) + \
 		    sizeof(struct udphdr))
 
-/* Is this a session the program can authenticate for? Must agree with
- * the engine's ktx_answers: if the two disagree the fast path either
- * answers without a section, or stays quiet while userspace waits for
- * it to answer. */
+/* Can the program authenticate for this session? Must agree with the engine's
+ * auth_fast_capable. */
 static __always_inline int xdp_auth_fast(const struct tx_cfg *cfg)
 {
 	return cfg->auth_type == BFD_AUTH_SIMPLE ||
@@ -62,45 +48,22 @@ static __always_inline __u32 xdp_auth_len(const struct tx_cfg *cfg)
 	return n > BFD_MAX_LEN ? 0 : n;
 }
 
-/* The packet into the zero-padded scratch block, and back again.
+/* Hide a length from the optimiser so the verifier keeps its lower bound at
+ * the helper call.
  *
- * Through bpf_xdp_load_bytes rather than a loop over the packet.
- * A hand-written copy bounded by a runtime length does not survive
- * the optimiser: the compiler unrolls it, the per-iteration bound
- * check folds away with the index, and the verifier is left staring at
- * a constant offset past the range it has proven. The helper takes the
- * length as an argument and does the bounds check in the kernel, which
- * is the whole reason it exists.
- *
- * Everything downstream then reads a fixed-size block whose tail is
- * known to be zero, which is also the shape the digest wants.
- */
-/* Pin a length so the verifier still has its lower bound at the call.
- *
- * bpf_xdp_load_bytes and bpf_xdp_store_bytes take ARG_CONST_SIZE, not
- * ARG_CONST_SIZE_OR_ZERO, so the size register must carry a non-zero
- * umin. The range checks below establish one, and on a 6.1 verifier it
- * does not survive: the value is a u8 widened to u32, clang spills it
- * across the zeroing loop, and the fill comes back carrying only the
- * tnum. umax=255 is kept, umin=0 is not. check_helper_mem_access then
- * tests the destination against a zero-length access, which is why the
- * refusal names the destination register and reads
- * "invalid access to map value, value_size=168 off=0 size=0" rather than
- * saying anything about the length at all.
- *
- * Laundering through an empty asm makes the value opaque, so the check
- * that follows cannot be folded back or hoisted above the spill and lands
- * on the register the helper is handed. Same reason and same shape as
- * sha1_barrier in hmac_sha1.h.
- *
- * Two compare-and-branch pairs on kernels that never needed it.
- */
+ * bpf_xdp_load_bytes and bpf_xdp_store_bytes take ARG_CONST_SIZE, which needs
+ * a non-zero umin. On a 6.1 verifier the spilled value loses it and the load
+ * fails with "invalid access to map value, value_size=168 off=0 size=0". Same
+ * trick as sha1_barrier in hmac_sha1.h. */
 static __always_inline __u32 xdp_len_pin(__u32 len)
 {
 	__asm__ __volatile__("" : "+r"(len));
 	return len;
 }
 
+/* Copy the packet into the zero-padded scratch block. bpf_xdp_load_bytes,
+ * because a loop bounded by a runtime length does not survive the
+ * optimiser and verifier. */
 static __always_inline int xdp_auth_load(struct xdp_md *ctx, __u32 off,
 					 __u32 len, __u8 *blk)
 {
@@ -110,27 +73,16 @@ static __always_inline int xdp_auth_load(struct xdp_md *ctx, __u32 off,
 		return 0;
 	for (i = 0; i < SHA1_BLOCK_LEN; i++)
 		blk[i] = 0;
-	/* After the loop, which is where clang spills it. One pin, not two:
-	 * a second before the loop buys nothing the verifier keeps, and the
-	 * extra live value costs stack this path does not have. */
+	/* After the loop, where clang spills it. One pin is enough. */
 	len = xdp_len_pin(len);
 	if (len < BFD_MIN_LEN || len > BFD_MAX_LEN)
 		return 0;
 	return bpf_xdp_load_bytes(ctx, off, blk, len) == 0;
 }
 
-/* Check the section on a received packet, and advance the replay window
- * on success.
- *
- * The digest covers the packet with its own digest field zeroed, so the
- * whole thing is copied into a scratch block first - which the hash
- * wants in that shape anyway.
- *
- * The window is kernel-owned while the fast path is answering. Two
- * writers would let a stale userspace copy hand the peer a sequence
- * that goes backwards, and a meticulous peer rejects everything after
- * that until the session resets.
- */
+/* Verify a received packet's auth section and advance the replay window on
+ * success. The digest covers the packet with its digest field zeroed, hence
+ * the copy. The window is kernel-owned while the fast path answers. */
 static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 					   const struct bfd_ctrl_pkt *bfd,
 					   const struct tx_cfg *cfg,
@@ -158,9 +110,8 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 	if (blk[BFD_MIN_LEN + 1] != len - BFD_MIN_LEN)
 		return 0;
 
-	/* The peer names the key it signed with. Anything the engine left
-	 * here is acceptable now, which during a rollover includes the key
-	 * we have already stopped transmitting under. */
+	/* Find the key the peer names among those acceptable now; during a
+	 * rollover that includes the one we stopped sending with. */
 	for (i = 0; i < BFD_AUTH_ACCEPT_MAX; i++) {
 		if (i >= cfg->auth_nkeys)
 			break;
@@ -193,24 +144,15 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 		   type == BFD_AUTH_METICULOUS_SHA1) {
 		want = BFD_MIN_LEN + BFD_AUTH_SHA1_LEN;
 	} else {
-		/* Named explicitly rather than falling into the SHA1 arm.
-		 * The accept set carries bfdd's key type byte verbatim, so
-		 * keyed MD5 (2 and 3) can land here, and treating it as
-		 * SHA1 meant measuring a 24 byte section against 28 and
-		 * digesting it with the wrong algorithm. It failed closed,
-		 * but by arithmetic rather than by decision. Userspace says
-		 * the same thing in bfd_auth_pkt_len, which returns 0 for
-		 * anything outside the three types this implements. */
+		/* Keyed MD5 (types 2 and 3) is not supported; refuse it
+		 * explicitly, as bfd_auth_pkt_len does. */
 		return 0;
 	}
 	if (len != want)
 		return 0;
 
-	/* Simple password: no digest and no sequence, just the secret in
-	 * the clear (RFC 5880 s6.7.1). Compared over the whole padded
-	 * field rather than the configured length - both sides are zero
-	 * past the key, and a compare that stops early leaks the password
-	 * a byte at a time to anyone who can time it. */
+	/* Simple password (RFC 5880 s6.7.1): compare the whole padded field in
+	 * constant time. */
 	if (type == BFD_AUTH_SIMPLE) {
 		for (i = 0; i < BFD_AUTH_SIMPLE_MAXKEY; i++)
 			diff |= (__u8)(blk[BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR + i] ^
@@ -238,9 +180,7 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 			      BFD_MIN_LEN + BFD_AUTH_SHA1_LEN, dig, sc->tmp))
 		return 0;
 
-	/* Compared in full rather than bailing on the first difference: an
-	 * early return times out proportionally to how much of the digest
-	 * was right. */
+	/* Constant-time compare. */
 	for (i = 0; i < SHA1_DIGEST_LEN; i++)
 		diff |= (__u8)(dig[i] ^ sc->rcv[i]);
 	if (diff)
@@ -251,28 +191,9 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 	return 1;
 }
 
-/* Write our own section into a reply whose 24-byte header is already
- * built. The caller has set the A bit and the length; this fills what
- * follows and signs it.
- *
- * Returns 0 if the digest could not be produced, which the caller must
- * treat as "send nothing": a packet with the A bit set and a section
- * full of zeroes is worse than no packet at all.
- */
-/* The 16-bit word sum of the assembled payload.
- *
- * Words are read exactly as the rest of the fold reads them - straight
- * out of memory, not assembled byte by byte into a big-endian value.
- * A ones-complement sum is only byte-order agnostic if every term is
- * accumulated the same way; mixing the two conventions byte-swaps this
- * contribution and the checksum comes out wrong. It costs nothing on
- * IPv4, which sends no UDP checksum at all, and breaks every IPv6
- * session, which must.
- *
- * A constant 26 words covers the longest payload. The block is zero
- * past the section, and zeroes add nothing - which is also exactly the
- * pad an odd-length payload needs.
- */
+/* 16-bit word sum of the assembled payload, read the same way as the rest of
+ * the checksum fold; mixing byte orders breaks the v6 checksum. 26 words
+ * covers the longest payload, and the zero tail adds nothing. */
 static __always_inline __u32 xdp_auth_sum(const __u8 *blk)
 {
 	const __u16 *w = (const __u16 *)blk;
@@ -284,17 +205,13 @@ static __always_inline __u32 xdp_auth_sum(const __u8 *blk)
 	return sum;
 }
 
-/* Builds the section, and hands back the 16-bit sum of the whole BFD
- * payload for the v6 checksum.
+/* Build our auth section into a reply whose 24-byte header is already built,
+ * and return the payload's 16-bit sum for the v6 checksum. Summed from the
+ * scratch block, since a loop over packet bytes of runtime length fails
+ * verification.
  *
- * Summed here, off the scratch, rather than in the caller off the
- * packet. The section's length is a runtime value, and a guarded loop
- * over packet bytes does not survive the optimiser - it rewrites
- * `p + i + 1 > end` into arithmetic on pkt_end, which the verifier
- * refuses. The scratch is zero past the section, so a constant sweep of
- * BFD_MAX_LEN bytes covers exactly the payload and nothing else: the
- * trailing zeroes contribute nothing to a ones-complement sum.
- */
+ * Returns 0 if no section could be built, and the caller must then send
+ * nothing. */
 static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 					  const struct bfd_ctrl_pkt *bfd,
 					  const struct tx_cfg *cfg,
@@ -308,10 +225,8 @@ static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 	__u32 seq;
 	int i;
 
-	/* Assembled in the scratch and written back in one store, rather
-	 * than poked into the packet field by field: the section's length
-	 * is a runtime value, and the same optimiser problem that defeats
-	 * a hand-written copy defeats a hand-written write. */
+	/* Assembled in the scratch block and written back in one store, for
+	 * the same verifier reason as the load. */
 	if (want < BFD_MIN_LEN || want > BFD_MAX_LEN)
 		return 0;
 	for (i = 0; i < SHA1_BLOCK_LEN; i++)

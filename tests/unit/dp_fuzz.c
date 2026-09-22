@@ -2,14 +2,10 @@
 /*
  * dp_fuzz.c - libFuzzer target for the bfddp parser.
  *
- * dp_run.c covers the edges a person can enumerate. This targets what
- * nobody does: a header claiming one type with another type's payload
- * length, nonsense type codes at plausible lengths, bodies that parse as
- * one message and mean another.
- *
- * No socket: dp_recv_hook feeds dp_read straight from the fuzzer's
- * buffer. Driving a real socket per iteration finds bugs in the
- * connection lifecycle rather than in the parser under test.
+ * Headers claiming one type with another's payload, unknown types at
+ * plausible lengths, and bodies that parse as one message but mean
+ * another. dp_recv_hook feeds dp_read straight from the fuzzer's buffer;
+ * no socket.
  *
  *     make tests/unit/dp_fuzz
  *     ./tests/unit/dp_fuzz -runs=100000
@@ -47,20 +43,16 @@ static ssize_t feed_recv(int fd, void *buf, size_t len)
 
 int LLVMFuzzerInitialize(int *argc, char ***argv)
 {
-	/* Let an ADD naming any interface succeed, so the parser under test
-	 * is not steered down the uncovered branch by a stub. dp_run wants
-	 * the opposite, and that is the whole of the difference. */
+	/* Let an ADD on any interface attach, so the stub does not steer the
+	 * parser into the uncovered branch. */
 	ktx_stub_attach_rc = 0;
 
 	(void)argc; (void)argv;
 	dp_recv_hook = feed_recv;
 
-	/* Send the engine's error lines to /dev/null. They are not
-	 * level-gated, and "bad frame length" is what most random inputs
-	 * produce, so they dominate the run - exec/s reads 0 with them on.
-	 * Only this stream moves: the sanitizer reports and libFuzzer's
-	 * own stats still go to the real stderr, which is what a finding
-	 * is made of. */
+	/* Send the engine's error lines to /dev/null, since "bad frame length"
+	 * dominates random input. Sanitizer and libFuzzer output still go to
+	 * stderr. */
 	bfd_log_err_fp = fopen("/dev/null", "w");
 	return 0;
 }

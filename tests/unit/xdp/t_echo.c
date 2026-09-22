@@ -1,17 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of the xdp_run test, split by subject.
- * Compiled as one unit via tests/unit/xdp_run.c, which carries the
- * includes, the shared globals and main; include order there is the
- * dependency order (harness first, sweep last). */
+/* Part of xdp_run, split by subject; compiled as one unit via
+ * tests/unit/xdp_run.c. */
 
-/* The v4 echo reflector. Five dispositions, five counters.
- *
- * Ordering is the thing worth pinning. The "our own echo coming back" check
- * runs before GTSM and accepts TTL 254, which is what a neighbour's
- * forwarding plane leaves. It is guarded by self-addressing as well, so a
- * 254 frame that is not self-addressed must fall through to the GTSM check
- * rather than through the exception - otherwise the exception is a general
- * TTL bypass. The not-self-at-254 arm below is that test. */
+/* The v4 echo reflector: five dispositions, five counters. The own-echo
+ * exception at TTL 254 must also require self-addressing, or it is a TTL
+ * bypass; the not-self-at-254 arm checks that. */
 static void build_echo(struct frame *f, uint8_t ttl, const char *src,
 		       const char *dst, uint32_t my_disc, uint32_t nonce)
 {
@@ -87,15 +80,12 @@ static void run_echo_matrix(void)
 	/* our own echo returning: 254 and self-addressed, consumed */
 	case_echo("echo-returns", 254, "10.0.0.1", "10.0.0.1", 0, 1,
 		  XDP_DROP, BFD_STAT_ECHO_RETURNS);
-	/* 254 but not self-addressed: the exception in parse.h requires
-	 * BOTH, so this is rejected by the parser's GTSM before the echo
-	 * path runs. The exception is not a general TTL bypass, which is
-	 * what this arm exists to prove. */
+	/* 254 but not self-addressed: rejected by the parser's GTSM, so the
+	 * exception is no general bypass. */
 	case_echo("echo-254-not-self-rejected", 254, "10.0.0.2", "10.0.0.1",
 		  1, 0, XDP_DROP, BFD_STAT_REJECTED);
-	/* Off-link echo: same parser GTSM, same disposition. echo.h has its
-	 * own ECHO_TTL check, but no v4 frame reaches it while the parser
-	 * drops everything that is neither 255 nor the 254 exception. */
+	/* Off-link echo: same parser GTSM; echo.h's own ECHO_TTL check is
+	 * never reached. */
 	case_echo("echo-off-link-rejected", 200, "10.0.0.2", "10.0.0.2", 1, 0,
 		  XDP_DROP, BFD_STAT_REJECTED);
 	/* not self-addressed at 255 */
@@ -109,13 +99,8 @@ static void run_echo_matrix(void)
 		  XDP_TX, BFD_STAT_REFLECTED);
 }
 
-/* The v6 echo reflector and the return path, mirroring run_echo_matrix.
- *
- * The return arm is the one that needs the parser. parse.h's v4 GTSM has a
- * narrow exception for our own echo at TTL 254 and self-addressed; the v6
- * branch needs the same one or echo_reflect_v6's return branch is
- * unreachable and v6 echo RTT never updates. The not-self-at-254 arm is
- * what keeps that exception from becoming a general hop-limit bypass. */
+/* The v6 reflector and return path, mirroring the v4 matrix, including the
+ * not-self-at-254 arm. */
 static void build_echo_v6(struct frame *f, uint8_t hlim, const char *src,
 			  const char *dst, uint32_t my_disc, uint32_t nonce)
 {
@@ -175,13 +160,9 @@ static void case_echo_v6(const char *name, uint8_t hlim, const char *src,
 	map_reset_v6();
 }
 
-/* Our own v6 echo coming back.
- *
- * Two arms, because the map writes are what the userspace RTT plumbing
- * reads and an assertion on them is vacuous without one that must not
- * fire: with the discriminator in echo_disc the frame is consumed and the
- * session's echo fields move; with a discriminator we never sent, the same
- * frame must fall out to the stack and leave them alone. */
+/* Our own v6 echo returning: with the discriminator in echo_disc the frame is
+ * consumed and the echo fields move; with an unknown one it passes and they
+ * stay. */
 static void case_echo_v6_return(int arm_disc, int want_v, const char *name)
 {
 	struct session_key k = key_v6("fd00::2", "fd00::1");

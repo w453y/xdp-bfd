@@ -31,10 +31,8 @@
 
 static int dp_listen = -1, dp_conn = -1;
 
-/* Hand the loop the current pair so it can poll them instead of
- * calling accept() and recv() blind every pass. Asked for fresh each
- * time rather than cached: dp_conn is replaced on reconnect and
- * closed on drop, and a cached fd would outlive both. */
+/* Current listener and connection fds for the poll set. Not cached, since
+ * dp_conn changes on reconnect. */
 void dp_fds(int *listen_fd, int *conn_fd)
 {
 	*listen_fd = dp_listen;
@@ -47,11 +45,8 @@ uint64_t dp_hold_us;              /* --dp-hold: keep sessions
 uint64_t dp_reconcile_us;         /* sweep deadline after reconnect */
 #define DP_RECONCILE_US (10ull * 1000000)
 
-/* Translate the peer's last received wire flags into the RBIT_*
- * encoding bfdd expects in bfddp_state_change.remote_flags. The two
- * use different bit positions and only Demand happens to coincide,
- * so shipping the raw wire byte mislabels the peer's bits.
- */
+/* Map the peer's wire flags to the RBIT_* encoding bfdd expects in
+ * remote_flags; the bit positions differ. */
 static uint32_t rflags_from_wire(uint8_t wire)
 {
 	uint32_t r = 0;
@@ -90,9 +85,8 @@ void sess_teardown_one(struct session *s, const char *why)
 	memset(s, 0, sizeof(*s));
 }
 
-/* Connection lost: with --dp-hold, keep the wire sessions alive and
- * mark them orphaned (graceful restart); otherwise the historical
- * drop-and-recreate. Reconciliation happens after reconnect. */
+/* Connection lost: with --dp-hold, keep sessions running as orphans until bfdd
+ * reconnects and reclaims them; otherwise tear them down. */
 static void dp_sessions_orphan(const char *why)
 {
 	if (!dp_hold_us) {
@@ -112,31 +106,14 @@ static void dp_sessions_orphan(const char *why)
 		       why, n, (unsigned long long)(dp_hold_us / 1000000));
 }
 
-/* Outbound queue.
- *
- * dp_conn is non-blocking, so a full socket buffer surfaces as EAGAIN.
- * That is usually transient - a counters sweep at 64 sessions arrives
- * faster than a busy bfdd reads it - so it must not tear the connection
- * down. Waiting for room is not an option either: dp_notify_state runs
- * inside the per-session tick, which paces transmit and detect timing.
- *
- * Queueing everything keeps ordering correct and handles partial writes
- * for free. Only overflow drops the connection, which means bfdd really
- * has stopped reading - the case dp_hold covers.
- *
- * 64KB is about fifteen full counter sweeps at 64 sessions.
- */
+/* Outbound queue. dp_conn is non-blocking and the tick cannot wait, so writes
+ * queue here and partial writes resume later. Only overflow drops the
+ * connection. 64KB holds about fifteen counter sweeps at 64 sessions. */
 static char dp_out[65536];
 static size_t dp_out_len;
 
-/* Everything a connection carried, forgotten in one place.
- *
- * Both buffers belong to the byte stream that is going away. Input is
- * obvious; output is the half that was missed, because a message queued
- * for the old client is not a message for the new one, and after a partial
- * write what is left is the tail of a frame the new client never saw the
- * head of. It would then read a message boundary in the middle of one.
- */
+/* Forget everything the connection carried, in both directions: queued output
+ * belongs to the old byte stream and may end mid-frame. */
 static void dp_conn_reset(void)
 {
 	dp_have = 0;
@@ -214,15 +191,9 @@ void dp_notify_state(struct session *s)
 	m.sc.diagnostics = s->diag;
 	m.sc.detection_multiplier = s->r_mult;
 
-	/* A state change is not worth the whole connection. dp_send would
-	 * drop it on overflow, but a session flapping - which a forger on an
-	 * unauthenticated session can drive per packet - must not cost the
-	 * other 63 their control channel. If the message will not fit, mark
-	 * the session owing a notification and re-send its CURRENT state
-	 * from dp_notify_flush_pending once the queue drains, so a storm of
-	 * flaps collapses to one send of the final state. Bounded: at
-	 * most one deferred notification per session, resolved in loop
-	 * order, so a full queue can never orphan the connection. */
+	/* On a full queue, defer rather than drop the connection: mark the
+	 * session and re-send its current state from dp_notify_flush_pending.
+	 * A flap storm collapses to one message per session. */
 	if (sizeof(m) > sizeof(dp_out) - dp_out_len) {
 		s->notify_pending = 1;
 		return;
@@ -233,10 +204,8 @@ void dp_notify_state(struct session *s)
 	dp_flush();
 }
 
-/* Re-send the state of every session that could not be notified last time
- * the queue was full. Called after dp_flush has drained room. dp_notify_state
- * reads the session's current state, so a session that flapped several
- * times while deferred is reported once, at where it ended up. */
+/* Re-send current state for sessions deferred while the queue was full. Called
+ * after dp_flush. */
 void dp_notify_flush_pending(void)
 {
 	if (dp_conn < 0)
@@ -248,15 +217,10 @@ void dp_notify_flush_pending(void)
 
 
 /* ---------- dplane socket: inbound handlers ---------- */
-/* bfdd registers a session with an unspecified local address (0.0.0.0 or
- * ::) when its peer was configured without a local-address: bfdd resolves a
- * source only when it transmits, and hands the data plane a wildcard. The
- * fast path keys a session on (peer, local), so a wildcard local never
- * lands in tx_config, and the unknown-session drop then eats the peer's
- * inbound packets - the session can never come up. Resolve the concrete
- * source the kernel would use to reach the peer (the same one bfdd
- * transmits from) so the key is complete. connect() on a datagram socket
- * sends nothing; it runs the route lookup that getsockname reads back. */
+/* Wildcard local address. bfdd sends 0.0.0.0 or :: when no local-address is
+ * configured, but the fast path keys sessions on (peer, local). Resolve the
+ * source the kernel would use to reach the peer; connect() on a datagram
+ * socket only runs the route lookup. */
 static int addr_unspecified(const struct bfd_addr *a, int family)
 {
 	if (family == AF_INET6) {
@@ -299,16 +263,9 @@ static void dp_resolve_local(struct session *s)
 	close(fd);
 }
 
-/* A wildcard-origin session (bfdd offered no local address) had its
- * source resolved once, at ADD. If the route to the peer later moves -
- * an interface flaps, a source address is withdrawn - that source goes
- * stale: the peer's replies then arrive with a destination the fast
- * path keys elsewhere, they are dropped as unknown, and the session cannot recover on
- * its own. While such a session is not Up, re-resolve at a slow cadence
- * and, if the source moved, drop the old key so ktx_mirror re-pushes
- * under the new one. Bounded to non-Up wildcard sessions at one probe a
- * second, so a healthy host pays nothing; connect() on a datagram
- * socket sends no packet, it only re-runs the route lookup. */
+/* Re-resolve a wildcard session's source while it is not Up, at most once a
+ * second. If the route moved, drop the old key so ktx_mirror pushes under the
+ * new one. */
 void dp_reresolve_wildcard(struct session *s, uint64_t now)
 {
 	struct bfd_addr old;
@@ -379,9 +336,8 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 		s->wire_disc = lid;   /* adopted sessions keep their wire
 		                       * discriminator (RFC 5880: constant
 		                       * while Up) */
-	/* An UPDATE for an existing lid may move the address pair. The old
-	 * pair's tx_config and bfd_sessions entries would otherwise stay
-	 * behind with enable=1 and keep being answered from the fast path. */
+	/* An UPDATE may move the address pair; clear the old pair's map
+	 * entries. */
 	struct bfd_addr old_peer = s->peer, old_local = s->local;
 
 	sm_addrs(sm, &s->local, &s->peer, &s->family);
@@ -416,24 +372,13 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 	s->is_mhop     = !!(flags & SESSION_MULTIHOP);
 	s->demand      = !!(flags & SESSION_DEMAND);
 
-	/* Authentication (RFC 5880 s6.7). bfdd sends the key itself,
-	 * because a data plane that transmits is the thing that has to
-	 * authenticate.
-	 *
-	 * A key that does not fit the digest leaves the session
-	 * unauthenticated rather than half-configured: the alternative is
-	 * a session that believes it is authenticating and fails every
-	 * packet, which reads exactly like a mismatched key on the peer.
-	 * The sequence number starts somewhere unpredictable, which
-	 * s6.7.3 asks for and which costs nothing here.
-	 */
+	/* Authentication (RFC 5880 s6.7). SESSION_AUTH says whether the
+	 * session authenticates; keys arrive separately in DP_SESSION_AUTH.
+	 * The TX sequence starts at a random value (s6.7.3). */
 	{
 		int authed = !!(flags & SESSION_AUTH);
 
-		/* The flag says whether the session authenticates at all.
-		 * The keys arrive separately, so it clearing is how the
-		 * control plane withdraws them: holding on to them would
-		 * keep authenticating a session no longer meant to. */
+		/* A cleared flag withdraws the keys. */
 		if (!authed && s->auth_present) {
 			memset(s->auth_keys, 0, sizeof(s->auth_keys));
 			s->auth_nkeys = 0;
@@ -450,38 +395,24 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 
 	ktx_update_mhop_flag();
 
-	/* The fast path is attached to one interface. A single-hop session
-	 * bfdd placed on a different one still works, but entirely in
-	 * userspace: no RX-clocked TX, no kernel detection sweep, and none
-	 * of the XDP validation. Every measured result in this project is
-	 * about the fast path, so a session quietly off it invalidates any
-	 * claim made about it - say so once.
-	 *
-	 * Multihop is exempt: a routed session can ingress anywhere, so the
-	 * interface bfdd names for it does not mean what it means here.
-	 */
+	/* Interface handling: record the ifindex for echo TX, attach the fast
+	 * path to the session's interface, and warn once if it cannot be
+	 * covered. Multihop sessions are exempt, since they can ingress
+	 * anywhere. */
 	uint32_t sif = ntohl(sm->ifindex);
 
-	/* Kept on the session because echo TX needs it: a raw L2 send has
-	 * to name the egress interface itself, and one global taken from
-	 * --kernel-tx put every session's echo on that one link. */
+	/* Echo TX sends at L2, so it needs the session's own egress interface. */
 	if (sif != s->ifindex) {
 		s->ifindex = sif;
 		s->echo_mac_valid = 0;
 	}
 
-	/* Follow the sessions: bfdd places them by routing, not by where
-	 * --kernel-tx pointed. Attach the same loaded program to this
-	 * interface too rather than letting the session fall off the
-	 * fast path. Multihop is excluded because a routed session can
-	 * ingress anywhere, so its ADD ifindex does not name the one
-	 * interface that would need covering. */
+	/* bfdd places sessions by routing, so attach the program to this
+	 * interface too. */
 	if (use_ktx && !s->is_mhop && sif && !ktx_covers((int)sif)) {
 		char ifn[sizeof(sm->ifname) + 1];
 
-		/* bfddp's ifname is a fixed field and need not be
-		 * terminated; the warning below uses %.*s for the same
-		 * reason. */
+		/* bfddp's ifname need not be NUL-terminated. */
 		snprintf(ifn, sizeof(ifn), "%.*s",
 			 (int)sizeof(sm->ifname), sm->ifname);
 		ktx_attach_if((int)sif, ifn);
@@ -495,11 +426,9 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 		       "only\n",
 		       s->lid, (int)sizeof(sm->ifname), sm->ifname, sif);
 	}
-	/* echo policy: track peers of echo-active sessions so the reflector
-	 * returns only their echoes, not arbitrary 3785 traffic. The map is
-	 * keyed on the shared 16-byte address, so both families share it. */
-	/* Not a bare update/delete on this session's say-so: the entry is
-	 * shared with every other session that has the same peer. */
+	/* echo_peers holds peers of echo-active sessions, so the reflector
+	 * returns only their echoes. The entry is shared by every session with
+	 * that peer, so recompute it rather than update it. */
 	echo_peer_refresh(&s->peer, NULL);
 	if (!fresh && s->state == ST_UP &&
 	    (s->min_tx_us != old_tx || s->min_rx_us != old_rx)) {
@@ -510,13 +439,9 @@ static void dp_handle_add(const struct bfddp_message_header *h,
 			s->applied_tx_us = s->min_tx_us;
 		fsm_start_poll(s, t);
 	} else if (!s->polling) {
-		/* Not while a Poll is outstanding. A repeated ADD carrying
-		 * the values the previous one already applied compares equal
-		 * here, so it lands in this branch, and assigning the new
-		 * min_tx would slow transmission to a rate the peer has not
-		 * accepted yet. s6.8.3 holds the old interval until the poll
-		 * terminates, and it is fsm_rx and ktx_poll_map that end it
-		 * on the peer's Final. */
+		/* Not while a Poll is outstanding: s6.8.3 keeps the old
+		 * interval until the peer's Final, which fsm_rx or
+		 * ktx_poll_map handles. */
 		s->applied_tx_us = s->min_tx_us;
 	}
 	if (fresh) {
@@ -605,16 +530,9 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h,
 
 		ktx_session_counters(s, &krx, &ktx);
 
-		/* Both halves of each direction: establishment runs in
-		 * userspace and the steady state in the kernel, so reporting
-		 * one of them understates every session.
-		 *
-		 * The kernel byte count is estimated at the 24-byte minimum -
-		 * session_state has no byte counter - so a peer that pads its
-		 * control packets is undercounted on bytes while the packet
-		 * count stays exact. Our own transmissions really are 24
-		 * bytes, so the output side is exact.
-		 */
+		/* Sum userspace (establishment) and kernel (steady state)
+		 * counts. Kernel bytes are estimated at 24 per packet, so a
+		 * peer that pads is undercounted on bytes only. */
 		uint64_t rx = s->rx_pkts + krx;
 		uint64_t rx_bytes = s->rx_bytes + krx * BFD_MIN_LEN;
 		uint64_t tx = s->tx_pkts + ktx;
@@ -624,12 +542,9 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h,
 		m.c.control_output_bytes   = htobe64(tx * BFD_MIN_LEN);
 		m.c.control_output_packets = htobe64(tx);
 
-		/* The originator's numbers only. Frames the kernel reflector
-		 * bounces on a peer's behalf are counted globally and cannot
-		 * be attributed to a session: echo_peers is keyed on the peer
-		 * address alone, so the reflector never learns which session
-		 * an arriving echo belongs to. A peer that echoes at us while
-		 * we do not echo back reads zero here. */
+		/* Our own echoes only. Echoes the kernel reflects for a peer
+		 * cannot be attributed to a session, since echo_peers is keyed
+		 * on address alone. */
 		m.c.echo_input_bytes    = htobe64(s->echo_rx_pkts * BFD_MIN_LEN);
 		m.c.echo_input_packets  = htobe64(s->echo_rx_pkts);
 		m.c.echo_output_bytes   = htobe64(s->echo_tx_pkts * BFD_MIN_LEN);
@@ -638,14 +553,8 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h,
 	dp_send(&m, sizeof(m));
 }
 
-/* Take the session's authentication keys.
- *
- * Every key the chain holds arrives, with the periods that say when each
- * may be used, and choosing between them is this side's job. A key chain
- * rolls over on a clock, so a control plane that named the key of the
- * moment would have to keep telling us, which is the traffic that
- * delegating the session was meant to avoid.
- */
+/* Take the session's authentication keys. The whole chain arrives with its
+ * send and accept periods; key selection follows the clock from here. */
 static void dp_session_auth(const struct bfddp_session_auth *sa, size_t plen)
 {
 	uint32_t lid = ntohl(sa->lid);
@@ -671,10 +580,8 @@ static void dp_session_auth(const struct bfddp_session_auth *sa, size_t plen)
 		struct auth_key *dst = &s->auth_keys[kept];
 		uint8_t kl = k->key_len;
 
-		/* A key too long for the digest is dropped rather than
-		 * truncated: a truncated key authenticates nothing and
-		 * fails every packet, which reads like a mismatch on the
-		 * peer. */
+		/* Drop, not truncate, a key too long for the digest: a
+		 * truncated key fails every packet. */
 		if (kl == 0 || kl > sizeof(dst->kpad)) {
 			log_err("dplane: lid=%u key id %u has an unusable length %u, ignored\n",
 				lid, k->key_id, kl);
@@ -733,15 +640,10 @@ static void dp_process(const uint8_t *buf, size_t len)
 	}
 }
 
-/* The one read. A fuzz build replaces it so dp_read can be driven from a
- * buffer with no socket at all: the parser is the thing under test, and
- * owning a connection lifecycle per iteration is where a socket-based
- * harness spends its time going wrong. Production keeps recv(2). */
+/* Receive hook; the fuzz harness replaces it to drive dp_read from a buffer. */
 ssize_t (*dp_recv_hook)(int fd, void *buf, size_t len) = NULL;
 
-/* Companion to the hook: dp_conn is static and dp_read returns at once
- * when it is negative, so a buffer-driven test needs a way past that
- * guard without a real connection. Never called in production. */
+/* Test only: set dp_conn so dp_read runs without a real connection. */
 void dp_set_conn_for_test(int fd)
 {
 	dp_conn = fd;
@@ -773,11 +675,9 @@ void dp_read(void)
 			(const void *)(dp_buf + off);
 		uint16_t mlen = ntohs(h->length);
 		if (mlen < sizeof(*h) || mlen > sizeof(dp_buf)) {
-			/* Framing lost on a byte stream: resetting the buffer
-			 * but keeping the connection would resync onto arbitrary
-			 * mid-stream bytes. Drop the connection instead and let
-			 * bfdd reconnect from a clean boundary. With --dp-hold
-			 * the sessions survive the reconnect. */
+			/* Framing lost: drop the connection so bfdd reconnects
+			 * on a clean boundary. With --dp-hold the sessions
+			 * survive. */
 			log_err("dplane: bad frame length %u, dropping connection\n",
 			       mlen);
 			dp_drop_conn("bad frame length");
@@ -787,10 +687,8 @@ void dp_read(void)
 			break;
 		dp_process(dp_buf + off, mlen);
 		off += mlen;
-		/* dp_process can reply, and a reply on a full output queue
-		 * drops the connection and zeroes dp_have. Both are size_t,
-		 * so dp_have - off would underflow and off would walk past
-		 * the buffer. Nothing after a drop is meaningful anyway. */
+		/* dp_process may have dropped the connection on a full output
+		 * queue, which zeroes dp_have. */
 		if (dp_conn < 0)
 			return;
 	}
@@ -800,17 +698,8 @@ void dp_read(void)
 	}
 }
 
-/* Which uid may drive this engine.
- *
- * -1 means "whoever runs the engine", which is the safe default: a UNIX
- * socket is then created 0600 and only that account can open it. Naming a
- * peer with --dp-peer widens it to that one account, chowns the socket and
- * opens it to the group, which is what a deployment running bfdd as `frr`
- * while the engine runs as root needs.
- *
- * root is always allowed. It can read the socket whatever the mode says,
- * so refusing it would be a check that only looks like one.
- */
+/* uid allowed to drive the engine; -1 means the engine's own. --dp-peer names
+ * bfdd's account. root is always allowed. */
 static uid_t dp_peer_uid = (uid_t)-1;
 
 void dp_set_peer_uid(uid_t uid)
@@ -818,35 +707,17 @@ void dp_set_peer_uid(uid_t uid)
 	dp_peer_uid = uid;
 }
 
-/* Whether a freshly accepted client may replace the connection we have.
- *
- * Called before anything about the current connection is touched. The old
- * order closed dp_conn and orphaned every session first and looked at the
- * newcomer afterwards, so any local process could tear the control plane
- * down by connecting once - and with the default hold of zero that is a
- * teardown of all 64 sessions, not a pause.
- *
- * SO_PEERCRED is a UNIX socket facility. On TCP there is nothing to ask:
- * the listener is bound to loopback, so the check is that the peer really
- * is loopback and the rest is the operator's to control. That is weaker
- * and the log says so at startup.
- */
+/* May a freshly accepted client replace the current connection? Checked before
+ * the old one is touched. UNIX sockets check SO_PEERCRED; TCP only confirms
+ * the peer is loopback. */
 static int dp_peer_allowed(int fd)
 {
-	/* Zeroed, so the family this branches on is AF_UNSPEC rather than
-	 * whatever was on the stack if either query below ever fails. The
-	 * returns already cover that, but scan-build does not model
-	 * getsockname as an initialiser and reads ss.ss_family as garbage,
-	 * and this decides whether a peer may take over the control
-	 * connection - not a place to answer a checker with a comment. */
+	/* Zeroed so scan-build sees ss_family initialised. */
 	struct sockaddr_storage ss = {0};
 	socklen_t sslen = sizeof(ss);
 
-	/* Ask the socket what it is rather than inferring it from a failed
-	 * getsockopt. SO_PEERCRED on a TCP socket does not fail: it returns
-	 * success with uid (uid_t)-1 and pid 0, so reading the error is how
-	 * you refuse every TCP client while believing you are checking a
-	 * credential. */
+	/* Branch on the socket family: SO_PEERCRED succeeds on TCP too, with
+	 * uid -1. */
 	if (getsockname(fd, (void *)&ss, &sslen) != 0)
 		return 0;
 
@@ -909,11 +780,9 @@ void dp_accept(void)
 
 int dp_listen_init(const char *arg)
 {
-	/* "<path>" = unix socket; "<port number>" = TCP on 127.0.0.1.
-	 * Note: bfdd unixc: client mode passes an oversized addrlen to
-	 * connect(2), which AF_UNIX rejects (EINVAL). Measured against
-	 * 10.1.2, 10.7.1 and master: every release through 10.7.1 fails
-	 * this way, master does not. Use TCP with any released FRR. */
+	/* "<path>" is a UNIX socket, "<port>" TCP on 127.0.0.1. bfdd's unixc:
+	 * mode fails with EINVAL on every release through 10.7.1 (fixed on
+	 * master), so use TCP with released FRR. */
 	if (arg[0] == '/') {
 		dp_listen = socket(AF_UNIX, SOCK_STREAM, 0);
 		if (dp_listen < 0) {
@@ -928,10 +797,7 @@ int dp_listen_init(const char *arg)
 			perror("dplane listen (unix)");
 			return -1;
 		}
-		/* 0600 unless a peer was named, in which case the socket
-		 * belongs to that account and its group may open it. The
-		 * old 0666 let any local process connect, and dp_accept
-		 * displaced the live connection before looking at who had. */
+		/* 0600, or 0660 owned by the --dp-peer account. */
 		if (dp_peer_uid != (uid_t)-1) {
 			if (chown(arg, dp_peer_uid, (gid_t)-1))
 				perror("dplane chown (unix)");
@@ -942,10 +808,8 @@ int dp_listen_init(const char *arg)
 		log_info("dplane: listening on %s (bfdd: unixc:%s)\n",
 		       arg, arg);
 	} else {
-		/* strtol, not atoi, which reports nothing: `--dplane abc`
-		 * bound port 0 and announced it, and bfdd then connects to a
-		 * port nobody is listening on. Every other numeric option
-		 * here is range checked; this one was the exception. */
+		/* strtol with a full-string check; atoi would bind port 0 for
+		 * "abc". */
 		char *end;
 		long parsed = strtol(arg, &end, 10);
 		int port;
@@ -976,9 +840,8 @@ int dp_listen_init(const char *arg)
 		}
 		log_info("dplane: listening on 127.0.0.1:%d (bfdd: ipv4c:127.0.0.1:%d)\n",
 		       port, port);
-		/* No peer credentials on TCP. Loopback is the whole of the
-		 * access control, so any local process can drive the engine;
-		 * a UNIX socket with --dp-peer is the one that authorizes. */
+		/* TCP has no peer credentials: loopback is the only access
+		 * control. */
 		log_info("dplane: TCP has no peer authorization, any local process may connect\n");
 	}
 	fcntl(dp_listen, F_SETFL, O_NONBLOCK);

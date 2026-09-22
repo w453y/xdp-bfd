@@ -1,24 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * detect_vectors.h - shared input vectors for the poll-aware detect rule.
+ * detect_vectors.h - vectors for the poll-aware detect rule, which exists
+ * in fsm.c and in bfd_xdp.c; both must agree on every vector.
  *
- * The rule lives twice: fsm.c on fsm_rx, and bfd_xdp.c on packet receipt.
- * Both express the same disjunction - take the candidate if there is no
- * prior interval, or the candidate is larger, or the observed
- * inter-arrival gap already fits it - so both must agree on every vector
- * here. Two independent expressions of one rule is what drifts.
- *
- * Known divergence, deliberate: the candidate is computed differently.
- * fsm.c takes max(r_min_tx, min_rx_us) from a parsed struct; bfd_xdp.c
- * clamps the wire min_tx up to cfg->min_rx_us, or to LOCAL_MIN_RX_US
- * when no cfg is present. That fallback has no engine equivalent and is
- * the most likely place for the two to come apart.
- *
- * Boundary vectors (gap exactly == cand) are engine-only. The XDP driver
- * synthesises the gap by writing last_seen_ns before each test_run, and
- * the program reads bpf_ktime_get_ns() itself, so a vector sitting on the
- * comparison carries harness skew. Off-boundary vectors have a margin
- * larger than any plausible skew and mean the same thing on both sides.
+ * The candidate differs deliberately: fsm.c takes max(r_min_tx,
+ * min_rx_us), bfd_xdp.c clamps the wire min_tx to cfg->min_rx_us or
+ * LOCAL_MIN_RX_US. Boundary vectors (gap == candidate) are engine-only,
+ * since the XDP driver's synthesised gap carries clock skew.
  */
 #ifndef DETECT_VECTORS_H
 #define DETECT_VECTORS_H

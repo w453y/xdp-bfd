@@ -1,19 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
-/* fsm_run.c - the engine's state machine, driven directly.
+/* fsm_run.c - the engine's state machine (RFC 5880 s6.8.6), case by case.
  *
- * RFC 5880 s6.8.6 is a table: our state, the peer's state and a few flags
- * decide the transition, the diagnostic and whether the control plane is
- * told. This drives that table case by case.
- *
- * No seams needed: fsm_rx, fsm_detect and fsm_tx all take their clock as
- * a parameter, and fsm.o refers to only three engine symbols outside
- * libc - dp_notify_state, sessions and use_ktx - all stubbed below. So
- * this links the real fsm.o with no test build and no #ifdefs in shipped
- * code.
- *
- * tx_one's sendto lands on an unopened socket and fails, which fsm.c
- * ignores. This asserts state, diag and notification, not what reached
- * the wire; that is xdp_run.c and the injection matrix.
+ * Links the real fsm.o with its three engine dependencies stubbed below.
+ * Sends fail on an unopened socket, so this checks state, diag and
+ * notification, not the wire.
  *
  *     make test-fsm
  */
@@ -33,9 +23,7 @@
 struct session sessions[MAX_SESSIONS];
 int use_ktx;                 /* 0: the kernel-TX gate in fsm_tx stays shut */
 
-/* No program loaded here, so no sweep and no ring: fsm_detect keeps the
- * whole detection budget rather than deferring to a verdict that will
- * never arrive. */
+/* No program, so no sweep ring: fsm_detect keeps the whole budget. */
 int ktx_events_fd(void) { return -1; }
 
 static int notify_calls;
@@ -50,14 +38,11 @@ void dp_notify_state(struct session *s)
 
 static int fails;
 
-/* A session in a chosen state with a peer already known. Timers are the
- * mesh's 10ms; nothing here depends on the values except the detect tests. */
-/* Sessions must live in the global array: fsm.c derives a session's
- * slot index by pointer arithmetic against `sessions`, so a
- * stack-local struct produces a garbage index the moment anything
- * reaches tx_one. Every case below uses slot 0. */
+/* Sessions must live in the global array: fsm.c derives a slot index from the
+ * pointer. Every case uses slot 0. */
 #define TEST_SLOT 0
 
+/* A session in a chosen state with the peer known; 10ms timers. */
 static struct session *sess_init(uint8_t state)
 {
 	struct session *s = &sessions[TEST_SLOT];
@@ -107,11 +92,8 @@ static const char *st_name(uint8_t s)
 
 /* ---------- the table ---------- */
 
-/* One row: from `ours` with the peer at `theirs`, expect to land in `want`
- * with diagnostic `want_diag`.
- *
- * The passive and admin_down columns are separate cases below rather than
- * columns here, because they change whether the row applies at all. */
+/* One table row: from `ours` with the peer at `theirs`, expect `want` and
+ * `want_diag`. Passive and admin_down are separate cases. */
 static void row(uint8_t ours, uint8_t theirs, uint8_t want,
 		uint8_t want_diag, const char *name)
 {
@@ -144,13 +126,9 @@ static void row(uint8_t ours, uint8_t theirs, uint8_t want,
 
 /* ---------- poll-aware detect basis ---------- */
 
-/* Drives detect_vectors.h against fsm.c's copy of the rule. The same
- * vectors drive bfd_xdp.c's copy from xdp_run, which is the point: the
- * arithmetic exists twice and nothing checked that the two agree.
- *
- * sess_init leaves last_rx_us set, so both it and detect_iv_us are
- * cleared here - otherwise step 0 takes the gap branch rather than the
- * no-prior-interval branch and every case tests the wrong thing. */
+/* Drive detect_vectors.h through fsm.c's copy of the rule; xdp_run drives
+ * bfd_xdp.c's copy with the same vectors. last_rx_us and detect_iv_us are
+ * cleared so step 0 takes the no-prior-interval branch. */
 static void dv_row(const struct dv_case *c)
 {
 	struct session *s = sess_init(ST_UP);
@@ -215,46 +193,7 @@ static void run_table(void)
 	row(ST_UP,   ST_ADMINDOWN, ST_DOWN, 3, "up+admindown=down");
 }
 
-/* A passive session does not start the handshake: it answers, but Down +
- * peer Down leaves it Down rather than moving to Init. */
-/* Passive gates transmission, not the state machine.
- *
- * RFC 5880 s6.8.7 says a passive system MUST NOT transmit while
- * bfd.RemoteDiscr is zero: it does not begin the handshake, and it has no
- * discriminator to address a packet to. s6.8.6 has no passive exception
- * at all, so once a packet does arrive the transition runs like any
- * other.
- *
- * The old arrangement had these the wrong way round. It transmitted into
- * the silence it was meant to be keeping, and refused Down to Init on the
- * peer's Down, which still converged through the peer's Init a round trip
- * later, so nothing looked broken from outside.
- */
-/* An echo-only change reaches the control plane.
- *
- * dp_notify_state reports the peer's echo interval, so a peer that changes
- * only that - or withdraws echo by advertising zero - is a change the
- * control plane has to hear about. It was assigned but left out of the
- * test that decides whether to notify, so FRR kept a stale value for as
- * long as nothing else about the peer moved. ktx_poll_map compared it all
- * along, so whether the change was noticed depended on whether the fast
- * path happened to be armed.
- */
-/* A send that failed consumed nothing.
- *
- * sendto's return was discarded, so tx_pkts counted attempts as packets
- * and every piece of state a transmission is supposed to consume was
- * consumed whether or not one happened. send_final is the one that costs:
- * a Final answers the peer's Poll, and clearing it on a refused send means
- * the peer waits out its whole detection time for an answer this session
- * believes it has already given. The demand announcement quota is the same
- * shape - three announcements spent into a closed socket and the peer
- * never sees the D bit at all.
- *
- * The refusal is driven through fsm_send_hook rather than by arranging for
- * the kernel to refuse a datagram, which is not something a unit test can
- * ask for reliably.
- */
+/* Send hook that refuses every datagram. */
 static ssize_t refuse_send(int fd, const void *buf, size_t len,
 			   const struct sockaddr *dst, socklen_t dlen)
 {
@@ -263,21 +202,9 @@ static ssize_t refuse_send(int fd, const void *buf, size_t len,
 	return -1;
 }
 
-/* A peer advertising Required Min RX Interval zero is asking us to stop.
- *
- * RFC 5880 s6.8.7: a system MUST NOT periodically transmit while
- * bfd.RemoteMinRxInterval is zero. Nothing gated on it, and the interval
- * arithmetic takes the larger of the local rate and the peer's, so zero
- * simply meant the local rate and transmission carried on at full pace.
- *
- * The exemptions are the ones demand mode already has: a Poll, a pending
- * Final and an unsent demand announcement still have to arrive, or the
- * session has no way to renegotiate out of the state it is in.
- *
- * s6.8.1 initialises the variable to 1, not 0, so the rule cannot fire on
- * a session that has heard nothing yet - one that could otherwise never
- * come up. That is what the last_rx_us term stands for.
- */
+/* RFC 5880 s6.8.7: a peer advertising Required Min RX zero stops our periodic
+ * TX. A Poll, a pending Final and an unsent D still go out. A session that has
+ * heard nothing is never held (s6.8.1). */
 static void case_zero_remote_min_rx_halts_tx(void)
 {
     struct bfd_ctrl_pkt p = pkt(ST_UP, 0);
@@ -359,6 +286,8 @@ static void case_zero_remote_min_rx_halts_tx(void)
     }
 }
 
+/* A failed send consumes nothing: a pending Final and the demand
+ * announcement quota survive it. */
 static void case_failed_send_keeps_pending(void)
 {
 	struct session *s;
@@ -419,6 +348,7 @@ static void case_failed_send_keeps_pending(void)
 	}
 }
 
+/* A change to the peer's echo interval alone reaches the control plane. */
 static void case_echo_only_change_notifies(void)
 {
 	struct bfd_ctrl_pkt p = pkt(ST_UP, 0);
@@ -470,6 +400,8 @@ static void case_echo_only_change_notifies(void)
 	}
 }
 
+/* Passive (RFC 5880 s6.8.7) gates transmission while bfd.RemoteDiscr is
+ * zero, not the state machine. */
 static void case_passive(void)
 {
 	struct bfd_ctrl_pkt p = pkt(ST_DOWN, 0);
@@ -575,10 +507,8 @@ static void case_poll_bits(void)
 	}
 }
 
-/* dp_notify_state runs only when something the control plane reports
- * actually moved, and only while Up. It must also run AFTER the session
- * is updated, since it reads the peer's timers, flags, mult and
- * discriminator out of the session rather than off the packet. */
+/* dp_notify_state runs only while Up, only when something it reports changed,
+ * and after the session is updated. */
 static void case_notify(void)
 {
 	struct session *s;
@@ -646,10 +576,8 @@ static void case_notify(void)
 	}
 }
 
-/* fsm_detect. The budget is mult * interval, and both have fallbacks:
- * r_mult is preferred over our own detect_mult (the peer's multiplier is
- * what governs how long it will wait for us), and detect_iv_us falls back
- * to max(r_min_tx, min_rx_us) when unset. */
+/* fsm_detect: the budget is mult * interval, preferring r_mult over our
+ * detect_mult, and max(r_min_tx, min_rx_us) when detect_iv_us is unset. */
 static void case_detect(const char *name, uint32_t iv_us, uint8_t r_mult,
 			uint8_t detect_mult, uint64_t silent_us, uint8_t want)
 {
@@ -673,9 +601,7 @@ static void case_detect(const char *name, uint32_t iv_us, uint8_t r_mult,
 	}
 }
 
-/* now earlier than last_rx_us. fsm_detect clamps the signed delta to 0
- * rather than letting it wrap, which would otherwise read as ~584 years
- * of silence and tear down every session on a clock step. */
+/* now before last_rx_us: the delta clamps to 0 instead of wrapping. */
 static void case_detect_negative(void)
 {
 	struct session *s;
@@ -723,13 +649,8 @@ static void case_detect_guards(void)
 	}
 }
 
-/* RFC 5880 s6.8.7: the transmit interval is jittered to 75-100% of the
- * negotiated value, or 75-90% when detect_mult is 1 (with a multiplier of
- * one there is no slack for a late packet, so the ceiling comes down).
- *
- * A property, not a value: draw enough intervals to see the bounds. This
- * is the kind of thing that silently regresses to "no jitter at all" and
- * nobody notices until a mesh synchronises into a burst. */
+/* RFC 5880 s6.8.7 jitter: 75-100% of the interval, 75-90% when detect_mult is
+ * 1. Checked as a property over many draws. */
 static void case_jitter(uint8_t mult, unsigned lo_pct, unsigned hi_pct,
 			const char *name)
 {
@@ -795,15 +716,8 @@ static void case_jitter(uint8_t mult, unsigned lo_pct, unsigned hi_pct,
 
 /* ---------- demand mode (RFC 5880 s6.6) ----------
  *
- * The three gates are independent and asymmetric, which is the whole
- * point: the D bit is per-direction, so who asked decides what stops.
- * These drive the predicates through fsm_tx and fsm_detect rather than
- * calling them directly, so the wiring is covered too.
- *
- * tx_pkts is the witness for transmission: tx_one bumps it and its
- * sendto fails harmlessly on the unopened socket. demand_announced is
- * the witness for the D bit, since tx_one only bumps it on a packet it
- * actually marked.
+ * Drives the predicates through fsm_tx and fsm_detect, so the wiring is
+ * covered. tx_pkts witnesses transmission, demand_announced the D bit.
  */
 
 /* A session Up with the peer Up, optionally demanding on either side. */
@@ -872,9 +786,7 @@ static void case_demand_tx_hold(void)
 	check("demand-tx-held-when-peer-demands", s->tx_pkts == 0,
 	      "silent");
 
-	/* We demand, the peer does not: we keep transmitting. The hold is
-	 * not symmetric and reading it as "demand mode means quiet" gets
-	 * this backwards. */
+	/* We demand, the peer does not: we keep transmitting. */
 	s = demand_sess(1, 0);
 	s->next_tx_us = 0;
 	fsm_tx(s, t);
@@ -903,15 +815,9 @@ static void case_demand_tx_hold(void)
 	check("demand-tx-needs-peer-up", s->tx_pkts == 1, "transmitting");
 }
 
-/* A demanding session verifies its own path (RFC 5880 s6.6).
- *
- * While we demand, demand_detect_held stops the detection timer, so
- * nothing else can ever take the session down. These cases pin the timer
- * that makes it falsifiable again, and the two negatives matter as much
- * as the positive: a poll that fires on a session which has just heard
- * from its peer is pure cost, and one that fires faster than the detect
- * budget spends more than demand mode saves.
- */
+/* A demanding session verifies its own path (RFC 5880 s6.6). The negatives
+ * matter too: no poll right after hearing the peer, and none faster than the
+ * detect budget. */
 static void case_demand_poll(void)
 {
 	struct session *s;
@@ -934,15 +840,12 @@ static void case_demand_poll(void)
 	check("demand-poll-when-stale", s->polling && s->demand_polls == 1,
 	      "poll started");
 
-	/* And the poll re-arms detection against NOW, not against the
-	 * silence we asked for. Without this the session times out on the
-	 * spot, which is the whole reason fsm_start_poll exists. */
+	/* The poll re-arms detection from now. */
 	check("demand-poll-rearms-detection", s->last_rx_us == t,
 	      "clock reset");
 
-	/* Only we demand: the peer has stopped, our detection is held, and
-	 * this is the case that hides a dead peer even though we are still
-	 * transmitting. A plain packet obliges no answer; only a Poll does. */
+	/* Only we demand: detection is held, so the poll is what catches a
+	 * dead peer. */
 	s = demand_sess(1, 0);
 	s->last_rx_us = t - 1000000;
 	fsm_tx(s, t);
@@ -971,8 +874,7 @@ static void case_demand_poll(void)
 	check("demand-poll-fires-past-detect-budget", s->demand_polls == 1,
 	      "poll started");
 
-	/* Zero is the off switch, and the case this whole feature changes:
-	 * stale for a minute, still no poll. */
+	/* Zero turns it off. */
 	demand_poll_us = 0;
 	s = demand_sess(1, 1);
 	s->last_rx_us = t - 60000000;
@@ -992,12 +894,8 @@ static void case_demand_announce(void)
 	int sent = 0;
 
 	s->demand_announced = 0;
-	/* Just heard from the peer, which is how a session arrives at this
-	 * state at all: r_state reaches Up on the peer's packet and, if the
-	 * peer is also demanding, that same packet carries its D bit. The
-	 * fixture's default clock is a second old, which is long enough to
-	 * be due a verification poll, and the poll lifts the very hold this
-	 * case is measuring. */
+	/* Just heard from the peer, as on arriving here. A stale clock would
+	 * trigger a verification poll, which lifts the hold under test. */
 	s->last_rx_us = t;
 	for (int i = 0; i < 20; i++) {
 		s->next_tx_us = 0;          /* due every pass */
@@ -1064,16 +962,8 @@ static void rep(const char *name, int bad, const char *detail)
 	}
 }
 
-/* The two halves of bfd_auth.h, end to end on the host.
- *
- * tx_one builds an authenticated packet with bfd_auth_build; rx_auth_ok
- * verifies one with bfd_auth_check. Until now nothing checked that the
- * two agree without a kernel in the middle: the mesh proved it, and a
- * mesh is a poor place to find out that the signer and the verifier
- * disagree about which bytes are covered. fsm_send_hook already gives us
- * the buffer that would have reached the wire, so run the verifier over
- * exactly those bytes with exactly that key.
- */
+/* End to end on the host: the packet tx_one signs, captured through
+ * fsm_send_hook, must pass bfd_auth_check. */
 static __u8 sent_buf[BFD_MAX_LEN];
 static size_t sent_len;
 static int sent_calls;

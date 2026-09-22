@@ -1,7 +1,5 @@
-"""Fixtures for the Layer 3 end-to-end scenarios.
-
-Runs under sudo: `sudo python3 -m pytest tests/e2e`. The namespace
-plumbing lives in tests/lib/netns.py, shared with tests/netns_userspace.py.
+"""Fixtures for the end-to-end scenarios. Run as root: `sudo python3 -m
+pytest tests/e2e`. Namespace plumbing is in tests/lib/netns.py.
 """
 
 import json
@@ -82,17 +80,9 @@ def wait_both_up(timeout=UP_WAIT):
 
 
 def xdp_progs(ns, dev):
-    """Programs attached to dev, as a list.
-
-    Reads `ip -d link show`, not bpftool: iproute2 is on every runner
-    while bpftool lives in linux-tools-<uname -r>, which has no package
-    for some kernels, and these cases were skipping in CI because of it.
-
-    NOT a substring match on `bpftool net show` either - that prints its
-    section headers unconditionally, so "xdp" matches whether or not
-    anything is attached. That produced a vacuously passing assertion
-    once already. `ip -d` prints an xdp/xdpgeneric clause only when a
-    program is actually attached, so presence is the signal.
+    """Programs attached to dev, from `ip -d link show`, which prints an xdp
+    clause only when a program is attached. Not bpftool, which is missing
+    on some runners.
     """
     out = sh("sudo ip netns exec %s ip -d link show %s" % (ns, dev),
              check=False)
@@ -110,16 +100,9 @@ def xdp_progs(ns, dev):
 
 # ---- FRR container peer -------------------------------------------------
 #
-# NOT `ip netns exec <ns> podman run`: ip netns exec remounts /sys for the
-# new namespace and the cgroup2 mount does not come with it, so
-# /sys/fs/cgroup reads as plain sysfs inside the exec and crun refuses with
-# "invalid file system type". --cgroups=disabled does not help; the failure
-# is in crun's mount inspection, not in cgroup management.
-#
-# Instead: start the container with --network none, then move a veth end
-# into its namespace by pid. That is the standard construction, it works
-# with docker and podman identically, and it is why RUNTIME is a variable -
-# GitHub runners ship docker, this DUT has podman.
+# Containers start with --network none and a veth end is moved in by pid.
+# Not `ip netns exec <ns> podman run`: that remounts /sys without the
+# cgroup2 mount, and crun refuses to start. RUNTIME may be podman or docker.
 RUNTIME = os.environ.get("BFD_CONTAINER_RUNTIME", "podman")
 FRR_IMAGE = os.environ.get("BFD_FRR_IMAGE", "quay.io/frrouting/frr:10.4.2")
 NAME_A = "bfdrig-frr-a"          # engine's control plane, talks bfddp
@@ -138,11 +121,8 @@ bfdd_options="  -A 127.0.0.1%s"
 staticd_options="  -A 127.0.0.1"
 """
 
-# Side A's bfdd drives the engine instead of its own dataplane. The `c`
-# in ipv4c is client mode: bfdd connects out to the engine's listener.
-# unixc is the natural choice and is broken in every FRR release through
-# 10.7.1 (an oversized addrlen that AF_UNIX rejects, fixed upstream as
-# #22621 and so far on master only), so TCP it is.
+# Side A's bfdd drives the engine over TCP in client mode (ipv4c). unixc: is
+# broken in every FRR release through 10.7.1.
 DPLANE_OPT = " --dplaneaddr ipv4c:127.0.0.1:50700"
 
 
@@ -176,13 +156,9 @@ def frr_ns(pid, cmd):
 
 def frr_daemon_pid(container_pid, comm):
     """Host-side pid of a daemon inside the container, matched by PID
-    namespace.
-
-    `podman exec <c> kill -9 <pid>` reports success and kills nothing -
-    verified: bfdd kept the same pid across both pkill and an explicit
-    kill by pid, with no restart in the container logs. Signalling from
-    the host works, but the host also runs the testbed's own bfdd, so the
-    namespace check is what keeps a test from killing the live mesh."""
+    namespace so the host's own bfdd is never hit. Signal from the host,
+    since `podman exec ... kill` does not work.
+    """
     ns = sh("sudo readlink /proc/%d/ns/pid" % container_pid,
             check=False).strip()
     assert ns, "no pid namespace for container pid %d" % container_pid

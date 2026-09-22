@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /* hmac_run.c - the shared HMAC-SHA1 on the host, against known answers.
- *
- * The same vectors run through the kernel in xdp_run.c. Two builds of one
- * header, checked against one table: a divergence between them would
- * otherwise show up only as every authenticated packet failing, on both
- * sides, with nothing to say which end was wrong.
+ * xdp_run runs the same vectors through the kernel.
  *
  *     make test-hmac
  */
@@ -64,9 +60,7 @@ static void case_blocks(const struct hmac_vec *v)
 	printf("ok   %-28s via blocks\n", v->name);
 }
 
-/* A refused input must leave the output untouched. A caller that ignored
- * the return would otherwise transmit a digest of the wrong bytes, and
- * the only symptom would be a peer rejecting every packet. */
+/* A refused input must leave the output untouched. */
 static void case_refusal(void)
 {
 	unsigned char key[16], msg[128], out[SHA1_DIGEST_LEN];

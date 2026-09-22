@@ -4,21 +4,10 @@
       eth-a 10.79.1.1/24  <-veth->  r1 10.79.1.2
                                     r2 10.79.2.2  <-veth->  eth-b 10.79.2.1
 
-Different subnets, so the session between A and B is genuinely routed: its
-packets cross the router, arrive decremented, and use port 4784.
-
-WHY THIS REACHES THE FAST PATH AT ALL. dplane.c excludes multihop from
-ktx_attach_if - a routed session can ingress anywhere, so its ADD ifindex
-does not name the interface that would need covering. But that only stops
-the engine attaching a NEW interface on a multihop session's behalf.
-ktx_mirror still pushes the session into tx_config, and ktx.c never
-consults is_mhop, so when the packets do arrive on an already-attached
-interface the bounce runs normally. Here there is only one interface, so
-they always do.
-
-The scale half of scenario 7 is deliberately not built. 32 multihop
-sessions is just config, but the number it would produce is a measurement,
-and measurements on a shared CI machine mean nothing.
+A and B are on different subnets, so the session is routed: packets cross
+the router, arrive decremented, and use port 4784. The engine does not
+attach new interfaces for multihop sessions, but ktx_mirror still pushes
+them, so packets arriving on the attached interface are bounced.
 """
 
 import os
@@ -137,9 +126,9 @@ def test_inbound_arrives_decremented(capture):
 
 
 def test_bounce_restores_the_ttl(capture):
-    """tx.h sets ttl back to 255 with an incremental checksum fixup. A
-    multihop packet arrives at 254, so a reflected ttl would show as 254
-    here and a restored one as 255."""
+    """Bounced replies leave at TTL 255, though multihop packets arrive
+    decremented.
+    """
     out = [t for src, _, t in capture if src == A_IP]
     assert out, "nothing outbound from %s" % A_IP
     assert all(t == 255 for t in out), (
@@ -147,10 +136,10 @@ def test_bounce_restores_the_ttl(capture):
 
 
 def test_the_bounce_did_it_not_userspace(capture):
-    """The assertion above passes just as well if userspace answered, since
-    its socket also sends at 255. The kernel bounce uses SRC_PORT + slot,
-    a distinct high port; userspace uses the session's own socket. Without
-    this the TTL test proves nothing about the fast path."""
+    """The replies come from the kernel bounce, identified by its source
+    port range; userspace also sends at 255, from the session's own
+    socket.
+    """
     ports = {p for src, p, _ in capture if src == A_IP}
     assert ports, "nothing outbound from %s" % A_IP
     assert all(p >= 65472 for p in ports), (

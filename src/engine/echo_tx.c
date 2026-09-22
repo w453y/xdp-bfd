@@ -2,11 +2,7 @@
 /* echo_tx.c - echo originator (RFC 5880 s6.4).
  *
  * Self-addressed UDP/3785 to the neighbour's MAC at TTL 255, on a raw L2
- * socket: through a normal socket a self-addressed packet is routed to
- * loopback and never reaches the wire. Detection keys off the
- * outstanding nonce, so a stall leaves nothing outstanding and no
- * timeout can fire.
- */
+ * socket, since a normal socket would route it to loopback. */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
@@ -47,9 +43,6 @@ static uint16_t ip_csum(const void *data, size_t len)
 
 void echo_tx_init(const char *ifname)
 {
-        	/* Echo TX needs a raw L2 socket: a self-addressed UDP packet sent
-        	 * through a normal socket is routed to loopback and never reaches
-        	 * the wire. */
         	echo_ifindex = if_nametoindex(ifname);
         	struct ifreq ifr;
         	memset(&ifr, 0, sizeof(ifr));
@@ -60,11 +53,8 @@ void echo_tx_init(const char *ifname)
         			memcpy(echo_src_mac, ifr.ifr_hwaddr.sa_data, 6);
         		close(mfd);
         	}
-        	/* Protocol 0, not ETH_P_ALL: this socket only ever sends.
-        	 * ETH_P_ALL subscribes the process to every inbound frame on
-        	 * every interface, so packet_rcv runs for all host traffic and
-        	 * queues it on a socket nothing reads. TX behaviour is
-        	 * identical either way. */
+        	/* Protocol 0, not ETH_P_ALL: this socket only sends, and
+        	 * ETH_P_ALL would queue every inbound frame on it. */
         	echo_sock = socket(AF_PACKET, SOCK_RAW, 0);
         	if (echo_sock < 0)
         		perror("echo raw socket");
@@ -73,14 +63,8 @@ void echo_tx_init(const char *ifname)
         	       echo_src_mac[3], echo_src_mac[4], echo_src_mac[5], echo_sock);
 }
 
-/* The interface this session's echo leaves by, and that interface's own
- * MAC. Per session, not global: an echo is self-addressed, so one sent
- * down the wrong link reaches an address only reachable via another and
- * nothing loops it back.
- *
- * Falls back to the --kernel-tx interface when bfdd named none, which is
- * what a multihop ADD carries - a routed session has no single egress.
- */
+/* Egress interface and its MAC for this session's echo. Falls back to
+ * --kernel-tx when bfdd named none, as for multihop. */
 static int echo_egress(struct session *s, uint32_t *ifindex,
 		       const uint8_t **mac)
 {
@@ -95,10 +79,8 @@ static int echo_egress(struct session *s, uint32_t *ifindex,
 
 	if (!s->echo_mac_valid) {
 		memset(&ifr, 0, sizeof(ifr));
-		/* ifr_name is IFNAMSIZ and if_indextoname writes at most
-		 * IF_NAMESIZE including the terminator - the same 16 - so
-		 * it can fill this directly rather than through a copy
-		 * that gcc cannot prove terminates. */
+		/* if_indextoname writes at most IF_NAMESIZE, the size of
+		 * ifr_name. */
 		if (!if_indextoname(s->ifindex, ifr.ifr_name))
 			return 0;
 		mfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -118,11 +100,9 @@ static int echo_egress(struct session *s, uint32_t *ifindex,
 	return 1;
 }
 
-/* The 24-byte payload, identical on both families. My Disc names the
- * session when the frame comes back; Your Disc is zero because a classic
- * echo never loops it; and the nonce rides in the Required Min Echo RX
- * field, which is the word the kernel return demux reads back into
- * session_state.echo_last_nonce. */
+/* 24-byte payload. My Disc names the session and Your Disc is zero; the nonce
+ * rides in Required Min Echo RX, which the kernel reads back into
+ * echo_last_nonce. */
 static void echo_payload(struct session *s, uint8_t *b, uint32_t nonce)
 {
 	uint32_t v;
@@ -187,11 +167,8 @@ static unsigned echo_build_v4(struct session *s, uint8_t *frame,
 	return 14 + 20 + 8 + 24;
 }
 
-/* v6: no IP checksum to compute, but the UDP one is mandatory rather than
- * optional and its pseudo-header is 40 bytes instead of 12 - the two
- * addresses, a 32-bit upper-layer length, three zero bytes and the next
- * header. Self-addressed at hop limit 255, which the neighbour's
- * forwarding plane returns at 254 exactly as it does for v4. */
+/* v6: the UDP checksum is mandatory, over the 40-byte pseudo-header. Hop limit
+ * 255. */
 static unsigned echo_build_v6(struct session *s, uint8_t *frame,
 			      uint32_t nonce, const uint8_t *src_mac)
 {
@@ -235,10 +212,7 @@ static unsigned echo_build_v6(struct session *s, uint8_t *frame,
 	return 14 + 40 + 8 + 24;
 }
 
-/* Self-addressed UDP/3785 to the neighbour's MAC, TTL 255. The trailing
- * payload word carries a nonce; the return is matched on it for RTT.
- * Detection keys off the outstanding nonce, so if this stalls there is
- * simply no echo outstanding and no timeout can fire. */
+/* Send one echo if due. The nonce is matched on return for RTT. */
 void echo_tx_maybe(struct session *s, uint64_t t)
 {
 	if (echo_sock < 0 || !s->echo_tx_us || s->state != ST_UP)

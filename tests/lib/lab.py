@@ -1,9 +1,5 @@
-"""Where the lab is, for anything that talks to it.
-
-Every rig hardcoded the same five values, so a second testbed meant editing
-each one and a contributor could not run any of them at all. Read from the
-environment, defaulting to the testbed these numbers were measured on, so
-the defaults stay honest and an override is one variable.
+"""Where the lab is. Read from the environment; the defaults describe the
+reference testbed.
 
     BFD_PEER_HOST   ssh target for the far end of the mesh
     BFD_IFACE       interface the fast path attaches to on the DUT
@@ -11,10 +7,6 @@ the defaults stay honest and an override is one variable.
     BFD_ENGINE      path to bfd_tx
     BFD_STATS       where SIGUSR1 writes its snapshot
     BFD_FRR_PREFIX  install prefix of that FRR build
-
-The distro vtysh is a trap worth naming: it exists on this box, it answers,
-and its daemons are not the ones running, so a rig that picks it up reports
-an empty mesh rather than an error. That cost a debugging cycle once.
 """
 
 import os

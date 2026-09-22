@@ -33,15 +33,8 @@ enum bfddp_message_type {
  * array is declared in full so a message can be read in place. */
 #define BFDDP_AUTH_KEY_COUNT_MAX 16
 
-/* How much of a session message has to be there.
- *
- * Authentication was appended to this message, so a control plane that
- * predates it sends a shorter one. The header carries the length and
- * that is the contract: anything from the start of the message up to
- * this point must be present, and everything after it is optional and
- * absent-means-unset. Requiring the whole struct instead would make
- * every ADD from an older daemon unparseable, and the failure would be
- * silence - no sessions, no error, nothing on the wire. */
+/* Minimum session message length: the whole struct. Keys travel separately in
+ * DP_SESSION_AUTH. */
 #define BFDDP_SESSION_MSG_MIN sizeof(struct bfddp_session_msg)
 
 enum bfddp_session_flag {
@@ -52,9 +45,8 @@ enum bfddp_session_flag {
 	SESSION_IPV6     = (1 << 4),
 	SESSION_PASSIVE  = (1 << 5),
 	SESSION_SHUTDOWN = (1 << 6),
-	/* The session authenticates. The keys arrive separately, in a
-	 * DP_SESSION_AUTH; this is what says whether they are expected at
-	 * all, so it clearing is how the control plane withdraws them. */
+	/* The session authenticates; keys follow in DP_SESSION_AUTH. Clearing
+	 * it withdraws them. */
 	SESSION_AUTH     = (1 << 7),
 };
 
@@ -96,20 +88,15 @@ struct bfddp_session_msg {
 	char     ifname[64];
 } __attribute__((packed));
 
-/* When a key may be used. Seconds since the epoch, with a start of zero
- * meaning always and an end of -1 meaning never expires, which is how
- * bfdd's key chain spells a key configured without lifetimes. */
+/* Seconds since the epoch; a start of 0 means always, an end of -1 never
+ * expires. */
 struct bfddp_key_lifetime {
 	int64_t start;
 	int64_t end;
 } __attribute__((packed));
 
-/* One key, with the periods that decide when it is ours to use.
- *
- * The two overlap during a rollover: a key stops being used to transmit
- * before it stops being accepted, so a packet already in flight still
- * verifies. Honouring that is the whole reason the periods are here
- * rather than the control plane simply naming the key of the moment. */
+/* One key and its periods. Sending stops before accepting does, so in-flight
+ * packets still verify during a rollover. */
 struct bfddp_auth_key {
 	uint8_t  type;
 	uint8_t  key_id;
@@ -120,10 +107,8 @@ struct bfddp_auth_key {
 	char     key[BFDDP_AUTH_KEY_MAX];
 } __attribute__((packed));
 
-/* DP_SESSION_AUTH payload: every key the session's chain holds.
- *
- * Only `key_count` entries are on the wire, so the message is shorter
- * than this and the header length is what bounds it. */
+/* DP_SESSION_AUTH payload: the session's key chain. Only key_count entries are
+ * on the wire. */
 struct bfddp_session_auth {
 	uint32_t lid;
 	uint16_t key_count;

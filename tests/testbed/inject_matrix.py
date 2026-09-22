@@ -3,29 +3,21 @@
 """
 Injection matrix for the XDP BFD engine.
 
-Sends crafted packets from a third host and asserts on the kernel
-counters, so the validation properties the engine claims can be checked
-by running one command instead of by hand.
-
-Runs on the engine host. Injection happens on a separate host reached
-over ssh; this file pipes itself there rather than needing to be
-installed on both.
+Sends crafted packets from an injector host and asserts on the engine's
+kernel counters. Runs on the engine host; this file pipes itself to the
+injector over ssh.
 
     ./tests/testbed/inject_matrix.py                 run everything
     ./tests/testbed/inject_matrix.py --list          show the cases
     ./tests/testbed/inject_matrix.py --only gtsm-v4  run one
 
-Four cases need a phantom session: a peer configured on the DUT that
-nothing answers on, so its counters move only when we inject. Without
-one they are skipped, not failed. Configure two, one per family:
+Four cases need a phantom session, a configured peer nothing answers on,
+and are skipped without one. Configure one per family:
 
     peer 10.66.0.200 multihop local-address <local v4>
      minimum-ttl 200
     peer fd66::200 multihop local-address <local v6>
      minimum-ttl 200
-
-The session cap is 64, so free a slot first, and `write memory` or the
-next restart loses them.
 """
 
 import argparse
@@ -37,17 +29,15 @@ import subprocess
 import sys
 import time
 
-# Lab defaults; every one is overridable from the command line so the
-# harness is not welded to one testbed.
+# Lab defaults, all overridable from the command line.
 INJECTOR_HOST = "w453y@10.66.0.3"
 IFACE = "ens19"
 COUNT = 20
 SETTLE = 0.6
 UNKNOWN_ECHO = "10.66.0.250"
 UNKNOWN_ECHO6 = "fd66::250"
-# Configured peers nothing answers on, used as positive controls.
-# Pinned by address: "multihop session with enable == 0" also
-# describes every real multihop peer that is merely down.
+# Configured peers nothing answers on, used as positive controls. Pinned by
+# address, since a down multihop peer also has enable == 0.
 PHANTOM4 = "10.66.0.200"
 PHANTOM6 = "fd66::200"
 
@@ -55,9 +45,8 @@ MAC = None
 # Fields an injected packet must not disturb on a live session.
 WATCH = ("remote_disc", "detect_iv_us", "min_tx_us", "min_rx_us",
          "detect_mult", "peer_mac")
-# An address pair with no session and no tx_config entry: proves deferred
-# GTSM drops rather than passing an unconfigured pair to the stack. Must
-# not collide with any mesh, multihop or phantom address.
+# An address pair with no session, for the deferred-GTSM drop. Must not collide
+# with any configured address.
 UNKNOWN_SRC = "10.66.0.240"
 UNKNOWN_DST = "10.66.0.241"
 
@@ -66,19 +55,9 @@ _STAT = {}
 
 
 class AtLeast:
-    """A lower bound on a delta rather than an exact one.
-
-    Most counters here are global, and the live mesh moves them while a
-    case runs. Usually that does not matter, because the counter a case
-    watches is one nothing else touches. `not-self` is the exception: it
-    climbs on its own the whole time, since FRR sources its v6 echoes at
-    the peer rather than self-addressed and every one of them arrives
-    here as a not-self echo. Slot 7 is documented as doing exactly this.
-
-    An exact delta on such a counter cannot pass. A lower bound still
-    requires the injected packets to have been counted - which is all
-    the witness is there to prove - while tolerating the traffic that
-    was always going to be running alongside it.
+    """A lower bound on a delta rather than an exact one, for global
+    counters the live mesh also moves. not-self climbs on its own, since
+    FRR sources its v6 echoes at the peer.
     """
     __slots__ = ("n",)
 
@@ -94,31 +73,16 @@ class AtLeast:
 
 def stat_names():
     """Slot numbering and names, read from the BFD_STAT_LIST X-macro in
-    include/bfd_shared.h.
-
-    Resolved on first use, NOT at import: this file pipes itself to the
-    injector host over ssh and runs there as `python3 -`, where __file__
-    is "<stdin>" and the repo is not checked out at all. Only the
-    orchestrator half ever needs the table.
-
-    Hand-copied here until 2026-08: the same table lived in the header,
-    the loader and this file, and grew from 9 slots to 11 in one branch.
-    A missed edit would have made every assertion below name the wrong
-    counter, silently. Reading the definition is the only way this file
-    cannot drift from what the program actually counts.
+    include/bfd_shared.h. Resolved on first use, not at import: on the
+    injector this runs as `python3 -` with no repo checked out.
     """
     if _STAT:
         return _STAT
 
-    # tests/testbed/ -> repo root. This said ".." while the script lived
-    # one level up, and the relocation left it pointing at tests/include.
+    # tests/testbed/ -> repo root.
     hdr = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "..", "..", "include", "bfd_shared.h")
-    # Strip comments before walking the lines. Several entries carry a
-    # comment that runs over three lines, and only its last line ends in a
-    # backslash, so a line-at-a-time reader stops at the first of them and
-    # silently returns a short list. That is how the three newest counters
-    # went missing here while abi_check still pinned eighteen.
+    # Strip comments first: an entry's comment may span lines.
     src = open(hdr).read()
     src = src[src.index("#define BFD_STAT_LIST"):]
     src = re.sub(r"/\*.*?\*/", " ", src, flags=re.S)
@@ -157,10 +121,8 @@ def bpf_map(name):
         data = json.loads(out)
     except ValueError:
         sys.exit("cannot read map %s; is the engine running?" % name)
-    # With two engines loaded - the mesh plus a netns rig, say - `dump name`
-    # matches both and returns a list of MAP OBJECTS rather than entries.
-    # Reading that as entries would silently report on the wrong engine's
-    # sessions, so refuse instead.
+    # With two engines loaded, `dump name` returns map objects rather than
+    # entries; refuse rather than read the wrong engine.
     if data and isinstance(data[0], dict) and "id" in data[0] \
             and "type" in data[0]:
         sys.exit("more than one map named %s is loaded; another engine is "
@@ -169,12 +131,8 @@ def bpf_map(name):
 
 
 def counters():
-    """Global stat slots by name, plus rx:<peer>:<local> per session.
-
-    Global slots are useless for anything the live mesh also drives, so a
-    case that must observe an accepted packet asserts on one session's own
-    rx_pkts instead. A key absent before and present after reads as 0 -> n,
-    which is what a session receiving its first packet looks like.
+    """Global stat slots by name, plus rx:<peer>:<local> per session. A key
+    absent before and present after reads as 0 -> n.
     """
     names = stat_names()
     out = {names[e["key"]]: sum(c["value"] for c in e["values"])
@@ -207,12 +165,8 @@ def rx_of(peer, local):
 
 
 def session_states():
-    """(peer, local) -> (alive, remote_disc) for every configured session.
-
-    The counter oracle cannot see collateral damage: a case can move the
-    counter it expects and still have disturbed a live session on the way.
-    remote_disc is the sharp one, since an accepted payload's my_disc is
-    what would overwrite it.
+    """(peer, local) -> (alive, remote_disc) for every configured session,
+    to catch collateral damage the counters cannot see.
     """
     out = {}
     for e in bpf_map("bfd_sessions"):
@@ -252,18 +206,10 @@ def pick(sess):
     """Choose the sessions the cases need, or explain what is missing."""
     got = {}
     for s in sess:
-        # enable is required, not incidental: a session in demand hold is
-        # Up and configured but deliberately not answering, so the kernel
-        # bounce never fires and every case that expects a reply - the
-        # Poll/Final pair above all - reads zero. Which session the map
-        # hands back first is not stable between runs, so without this the
-        # suite passes or fails depending on iteration order.
-        #
-        # Authenticated sessions are skipped for the same reason. Every
-        # frame this file builds is unauthenticated, which is exactly
-        # what such a session must discard (RFC 5880 s6.8.6), so picking
-        # one turns the whole matrix red - and only on the runs where the
-        # map happened to hand it back first.
+        # Only sessions the fast path answers for: not in demand hold (enable)
+        # and not authenticated, since every frame built here is
+        # unauthenticated. Map order is not stable, so either would make
+        # results depend on it.
         if (s["family"] == 4 and s["min_ttl"] == 255 and s["enable"]
                 and not s["auth_type"] and "v4" not in got):
             got["v4"] = s
@@ -273,11 +219,9 @@ def pick(sess):
         if (s["family"] == 4 and s["min_ttl"] < 255 and s["enable"]
                 and not s["auth_type"] and "mh4" not in got):
             got["mh4"] = s
-        # A configured peer nothing answers on: enable stays 0, so the
-        # TX bounce never fires and its rx_pkts moves only when we
-        # inject. Matched on the address, not on enable == 0 - that also
-        # matches a real multihop peer during bring-up, and the case then
-        # asserts against a session carrying live traffic.
+        # A configured peer nothing answers on: its rx_pkts moves only when we
+        # inject. Matched on address, since enable == 0 also matches a multihop
+        # peer during bring-up.
         if (s["family"] == 4 and s["peer"] == PHANTOM4
                 and "phantom" not in got):
             got["phantom"] = s
@@ -309,9 +253,8 @@ def inject(spec):
     return None, cap
 
 
-# Header rules the engine checks before it will look a session up. Each
-# entry breaks exactly one, so a case still isolates its own rule even
-# though all six land on the shared malformed counter.
+# Header rules checked before session lookup. Each entry breaks exactly one, so
+# each case isolates its rule though all share the malformed counter.
 MALFORMED = (
     ("bad-version", "BFD version other than 1", dict(vers=0)),
     ("zero-my-disc", "my_discriminator of zero is illegal", dict(mydisc=0)),
@@ -324,13 +267,9 @@ MALFORMED = (
 )
 
 
-# Well-formed headers carrying a flag we cannot honour. These DROP, as
-# the malformed set now does too (G2): passing one hands it to a
-# userspace path that would accept it as plain unauthenticated BFD.
-# The counter differs: the M bit is a flag nothing can honour, while the
-# A bit is refused because this session has no key - a fact about the
-# session, not the packet, and worth telling apart when reading counters
-# on a box where some sessions do authenticate.
+# Well-formed headers with a flag we cannot honour; dropped. The M bit counts
+# as unsupported-flags, the A bit as auth-mismatch, since it is refused because
+# this session has no key.
 UNSUPPORTED = (
     ("auth-bit", "the A bit with no authentication configured", 0x04,
      "auth-mismatch"),
@@ -340,17 +279,13 @@ UNSUPPORTED = (
 
 
 def unsupported_cases(sess, fam):
-    """The unsupported-flag set for one family. Same reasoning as
-    malformed_cases: the check sits after the family branch, so running
-    both exercises each parse path into it."""
+    """The unsupported-flag set for one family; both families exercise each
+    parse path.
+    """
     out = []
     for cname, cdesc, fl, counter in UNSUPPORTED:
-        # ydisc naming no session, peer state Up: on a build WITHOUT the
-        # flag check this is rejected by the demux (slot 3) instead of
-        # reaching the session state update. That matters for the
-        # before-arm - ydisc=0 with the peer in Init is admitted by the
-        # demux, so the pre-fix run would overwrite a live session's
-        # remote_disc and trip the collateral check.
+        # ydisc naming no session with the peer Up, so a build without the flag
+        # check drops at demux instead of touching a live session.
         spec = dict(family=fam, src=sess["peer"], dst=sess["local"],
                     ttl=255, dport=3784, ydisc=0x11111111, state=3,
                     flags=fl)
@@ -359,8 +294,9 @@ def unsupported_cases(sess, fam):
 
 
 def malformed_cases(sess, fam):
-    """The malformed set for one family. The checks sit after the family
-    branch, so running both exercises each parse path into them."""
+    """The malformed set for one family; both families exercise each parse
+    path.
+    """
     out = []
     for cname, cdesc, extra in MALFORMED:
         spec = dict(family=fam, src=sess["peer"], dst=sess["local"],
@@ -371,12 +307,8 @@ def malformed_cases(sess, fam):
 
 
 def phantom_cases(ph, fam):
-    """Positive controls, only possible against a session nothing answers.
-
-    Global counters are swamped by the live mesh, so these assert the
-    phantom's own rx_pkts: no host exists at that address, so cfg->enable
-    stays 0, the TX bounce never fires, and nothing but the injector moves
-    its counter.
+    """Positive controls against a session nothing answers: nothing but the
+    injector moves the phantom's rx_pkts.
     """
     rx = [("rx:%s:%s" % (ph["peer"], ph["local"]), COUNT)]
     base = dict(family=fam, src=ph["peer"], dst=ph["local"],
@@ -408,23 +340,16 @@ def build_cases(got):
         c.append(("ip-options", "single-hop BFD never carries IP options",
                   dict(family=4, src=s["peer"], dst=s["local"], ttl=255,
                        dport=3784, ydisc=0, state=1, options=True),
-                  # Its OWN slot, not `rejected`: the check fires on any UDP
-                  # packet carrying options, BFD or not, because the port
-                  # cannot be read until the header length is known to be 20.
-                  # This asserted `rejected` until 2026-09-01 and had been
-                  # failing since the slot was split out, unnoticed because
-                  # the full matrix had not been run in three weeks.
+                  # Its own slot, not rejected: the check fires on any optioned
+                  # UDP packet, BFD or not.
                   [("ip-options", COUNT), ("rejected", 0)], None))
         c.append(("frag-first", "a first fragment aimed at 3784 is dropped, "
                   "not bounced back out with MF set",
                   dict(family=4, src=s["peer"], dst=s["local"], ttl=255,
                        dport=3784, ydisc=0, state=1, mf=True),
                   "rejected", COUNT))
-        # Only meaningful while a multihop session exists: that is what
-        # sets prog_flags bit 1 and makes parse_l3 defer the TTL verdict
-        # instead of dropping the packet at the front filter. Without one
-        # the packet dies earlier and the case would pass for a reason
-        # that has nothing to do with the fix.
+        # Only meaningful with a multihop session configured, which makes
+        # parse_l3 defer the TTL verdict.
         if any(k in got for k in ("mh4", "mh6", "phantom", "phantom6")):
             c.append(("gtsm-unconfigured-pair",
                       "a low-TTL packet naming an address pair we have no "
@@ -434,11 +359,9 @@ def build_cases(got):
                       "rejected", COUNT))
         pf = session_value(s["peer"], s["local"])
         if pf:
-            # Poll/Final responder (RFC 5880 s6.5). Everything but the P
-            # bit is replayed from the session's own state, so each write
-            # in the accept path lands back identical and the collateral
-            # check verifies that. Only the reply proves the F bit, so
-            # this case needs the capture oracle.
+            # Poll/Final (RFC 5880 s6.5). Everything but P is replayed from the
+            # session's own state, so the collateral check holds; only the
+            # reply proves the F bit.
             c.append(("poll-final", "a packet with Poll set is answered "
                       "with Final",
                       dict(family=4, src=s["peer"], dst=s["local"], ttl=255,
@@ -477,9 +400,8 @@ def build_cases(got):
                   dict(family=6, src=s["peer"], dst=s["local"], ttl=255,
                        dport=3784, ydisc=0x11111111, state=3),
                   "rejected", COUNT))
-        # The v6 reflector is a separate helper, so its declined and
-        # not-self branches need their own cases: the v4 ones above never
-        # reach them.
+        # The v6 reflector is a separate helper, so its declined and not-self
+        # branches need their own cases.
         c.append(("echo-unknown-peer-v6", "echo from a v6 peer we do not "
                   "serve",
                   dict(family=6, src=UNKNOWN_ECHO6, dst=UNKNOWN_ECHO6,
@@ -514,36 +436,23 @@ def build_cases(got):
                        ttl=s["min_ttl"] - 10, dport=4784, ydisc=0, state=1),
                   "rejected", COUNT))
 
-    # One case per family: the v4 and v6 reflectors are separate code
-    # paths, so taking only the first peer silently under-tests one of them.
+    # One case per family: the v4 and v6 reflectors are separate paths.
     seen_fams = set()
     for addr, fam in echo_peer_addrs():
         if fam in seen_fams:
             continue
         seen_fams.add(fam)
-        # Both cases judge the reflector by the capture oracle alone.
-        # `reflected` is a global counter and the mesh reflects its own
-        # peer's echoes into it the whole time these run - measured at
-        # ~50/s with sixteen echo sessions up, which is more than either
-        # expectation. Neither an exact +COUNT nor a +0 can hold against
-        # a counter someone else is also moving.
-        #
-        # The capture is immune by construction: it sniffs the injector's
-        # own interface and counts only frames addressed to the
-        # injector's MAC, and the mesh's traffic is between two other
-        # hosts. It is also the stronger check of the two - a counter
-        # proves the program reached a count() call, the capture proves a
-        # correct frame actually left the NIC.
+        # Judged by the capture alone: `reflected` is global and the mesh moves
+        # it constantly. The capture counts only frames addressed to the
+        # injector's MAC, and proves a correct frame left the NIC.
         c.append(("echo-reflect-v%d" % fam,
                   "echo from a peer of an echo-active session is returned",
                   dict(family=fam, src=addr, dst=addr, ttl=255,
                        dport=3785, ydisc=0, state=1, l2dst=MAC,
                        capture=True),
                   [("cap:replies", COUNT)], None))
-        # Same packet, only the TTL wrong: proves the echo GTSM check is
-        # what blocks it, not anything about the peer or the payload.
-        # echo-ttl is the witness that must move, so the zero below is
-        # not a case that passes by doing nothing.
+        # Same packet with the TTL wrong: echo-ttl must move, so the zero below
+        # is not vacuous.
         c.append(("echo-gtsm-v%d" % fam,
                   "an echo arriving below TTL 255 is not reflected",
                   dict(family=fam, src=addr, dst=addr, ttl=64,
@@ -587,17 +496,14 @@ def orchestrate(args):
               % ", ".join(sorted(missing)))
     for kind, addr in (("phantom", PHANTOM4), ("phantom6", PHANTOM6)):
         if kind not in got:
-            # Silent before: a phantom that does not resolve just dropped
-            # its cases from the list, and the run still said everything
-            # passed. Say so instead.
+            # Say when a phantom does not resolve rather than silently dropping
+            # its cases.
             print("no configured session for %s %s, its cases are skipped"
                   % (kind, addr), file=sys.stderr)
     print()
 
     if args.only and not any(c[0] == args.only for c in cases):
-        # A name matching nothing would otherwise run zero cases and
-        # still report success. Every +0 assertion here needs a witness;
-        # so does the case list itself.
+        # A name matching nothing must not report success.
         sys.exit("no case named %r. Available now: %s"
                  % (args.only, ", ".join(c[0] for c in cases)))
 
@@ -618,9 +524,8 @@ def orchestrate(args):
             continue
         time.sleep(SETTLE)
         after = counters()
-        # Capture results ride in as pseudo-counters with nothing in
-        # `before`, so the existing delta arithmetic yields the raw count
-        # and every counter-based case is untouched.
+        # Capture results ride in as pseudo-counters with nothing in `before`,
+        # so the delta arithmetic is unchanged.
         after.update({"cap:%s" % k: v for k, v in cap.items()})
 
         checks = counter if isinstance(counter, list) else [(counter, expect)]
@@ -705,7 +610,8 @@ def send(spec):
     def bfd(ydisc, state, vers=1, mult=3, blen=24, mydisc=0xcafebabe,
             mintx=300000, minrx=300000, minecho=0, flags=0):
         """Defaults build a well-formed header; each knob breaks one rule
-        the engine checks before it will look a session up."""
+        the engine checks before session lookup.
+        """
         md = mydisc
         return bytes([
             (vers << 5), ((state & 3) << 6) | flags, mult, blen,
@@ -720,15 +626,8 @@ def send(spec):
             (minecho >> 8) & 0xff, minecho & 0xff,
         ])
 
-    # The source MAC is set explicitly rather than left to scapy, which
-    # fills it from the route to the destination address, not from the
-    # interface sendp was told to use. Those differ whenever the injector
-    # has an address in the target session's subnet on some other link:
-    # the frame then leaves the right interface carrying the wrong
-    # interface's MAC, the reply is addressed to that MAC, and the
-    # capture below - which matches on our own - sees nothing. The bridge
-    # floods the reply, so a tcpdump still shows it and only the assertion
-    # fails.
+    # Set the source MAC explicitly: scapy takes it from the route, which may
+    # name another interface, and the capture below matches on our own MAC.
     eth = Ether(src=get_if_hwaddr(spec["iface"]))
     if spec.get("l2dst"):
         eth.dst = spec["l2dst"]
@@ -743,23 +642,20 @@ def send(spec):
     if spec.get("trunc"):
         payload = payload[:spec["trunc"]]
     if spec.get("pad"):
-        # Trailing bytes past the BFD payload. Legal: udp_len grows
-        # while bfd->len stays 24, so the overread guard still holds
-        # and the packet must be accepted, not dropped.
+        # Trailing bytes past the payload: udp_len grows, bfd->len stays 24,
+        # and the packet must be accepted.
         payload = payload + bytes(spec["pad"])
     l4 = UDP(sport=49152, dport=spec["dport"]) / Raw(payload)
 
     if spec["family"] == 4:
         ip = IP(src=spec["src"], dst=spec["dst"], ttl=spec["ttl"])
         if spec.get("mf"):
-            # Offset 0 with More Fragments set. The UDP and BFD headers
-            # are all present, so this is the fragment that could pass
-            # every check and be bounced back out still marked MF.
+            # Offset 0 with MF set: the fragment that could pass every check
+            # and be bounced still marked MF.
             ip.flags = "MF"
         if spec.get("options"):
-            # Four NOPs is one option word, so ihl becomes 6 and the UDP
-            # header moves. Single-hop BFD never carries options, and the
-            # engine drops anything that does rather than parse past them.
+            # Four NOPs, one option word: ihl 6 and the UDP header moves. BFD
+            # never carries options, so the engine drops these.
             ip.options = [IPOption_NOP() for _ in range(4)]
     else:
         ip = IPv6(src=spec["src"], dst=spec["dst"], hlim=spec["ttl"])
@@ -769,10 +665,8 @@ def send(spec):
               inter=0.005, verbose=0)
         return 0
 
-    # Capture oracle. Counters prove the program reached a count() call;
-    # they cannot prove a correct frame left the NIC. Both the reflect and
-    # the control-bounce paths swap MACs, so whatever comes back is
-    # addressed to us even though the IP is the spoofed peer's.
+    # Capture oracle: counters prove a count() call ran, not that a correct
+    # frame left the NIC. Replies swap MACs, so they come back to us.
     from scapy.all import AsyncSniffer, get_if_hwaddr
     mymac = get_if_hwaddr(spec["iface"]).lower()
     sn = AsyncSniffer(iface=spec["iface"], store=True,

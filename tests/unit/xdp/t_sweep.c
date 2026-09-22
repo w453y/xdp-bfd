@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of the xdp_run test, split by subject.
- * Compiled as one unit via tests/unit/xdp_run.c, which carries the
- * includes, the shared globals and main; include order there is the
- * dependency order (harness first, sweep last). */
+/* Part of xdp_run, split by subject; compiled as one unit via
+ * tests/unit/xdp_run.c. */
 
-/* The detection sweep. None of this has any coverage today: it runs from a
- * bpf_timer, and a timer never fires under test_run.
- *
- * detect_ns is detect_mult * detect_iv_us, and a session is torn down only
- * when the silence exceeds it AND the alive flag was still 1 - the
- * compare-and-swap is what stops two sweeps both emitting a Down. */
+/* The detection sweep, called directly since a bpf_timer never fires under
+ * test_run. A session goes down only when the silence exceeds detect_mult *
+ * detect_iv_us and alive was still 1; the CAS stops two sweeps both emitting a
+ * Down. */
 static void case_sweep(const char *name, unsigned int iv_us, unsigned int mult,
 		       unsigned long long silent_ns, unsigned int alive_in,
 		       unsigned int want_alive)
@@ -51,15 +47,8 @@ static void case_sweep(const char *name, unsigned int iv_us, unsigned int mult,
 	bpf_map_delete_elem(sweep_cfg_fd, &k);
 }
 
-/* Demand mode (RFC 5880 s6.6): the engine asked this peer to stop
- * transmitting, so the silence the sweep measures is the silence we
- * requested. Without the hold every demanding session is torn down one
- * detection time after it goes quiet - which is immediately, since going
- * quiet is the whole point.
- *
- * alive must stay 1 rather than merely skipping the emit: bfd_loader
- * reports the flag directly, so clearing it would show every healthy
- * demand session as down. */
+/* Demand mode (RFC 5880 s6.6): the sweep holds, and alive stays 1 since
+ * bfd_loader reports it directly. */
 static void case_sweep_demand(void)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
@@ -96,18 +85,8 @@ static void case_sweep_demand(void)
 	bpf_map_delete_elem(sweep_cfg_fd, &k);
 }
 
-/* The receive window ages out (RFC 5880 s6.7).
- *
- * A peer that restarts picks a fresh random sequence, which will not sit
- * inside the window its predecessor left behind. Nothing else recovers
- * from that: the program validates authentication whether or not it is
- * answering, so the packets never reach userspace to be reconsidered.
- * Twice the detection time of silence is what the RFC gives for it, and
- * the sweep is where the silence is already measured.
- *
- * Both edges, because a window that ages out too eagerly is a replay
- * window that is not one.
- */
+/* The receive window ages out after twice the detection time (RFC 5880 s6.7),
+ * so a restarted peer can resync. Both edges are checked. */
 static void case_sweep_auth_resync(const char *name, unsigned long long silent_ns,
 				   unsigned int want_seen, int demand_hold)
 {
@@ -191,14 +170,8 @@ static void case_sweep_negative(void)
 	bpf_map_delete_elem(sweep_cfg_fd, &k);
 }
 
-/* The echo advisory verdict.
- *
- * sweep.h computes echo_alive from echo_iv_us * detect_mult against
- * echo_last_seen_ns, and the comment there is emphatic that it is advisory
- * only: with userspace echo TX a local stall looks exactly like a path
- * fault, so this must never tear a session down. Every arm below therefore
- * checks alive as well as echo_alive - a stale echo on a session that is
- * receiving control packets must leave alive at 1. */
+/* Echo advisory verdict: computed from echo_iv_us * detect_mult and never
+ * allowed to take a session down, so every arm also checks alive. */
 static void case_echo_advisory(const char *name, unsigned int echo_iv_us,
 			       unsigned long long echo_silent_ns,
 			       int set_last_seen, unsigned int want_echo_alive)
@@ -264,21 +237,17 @@ static void run_sweep_matrix(void)
 	case_sweep("sweep-silent-under-budget", 10000, 3, 20000000ull, 1, 1);
 	/* already down: the CAS must not fire a second time */
 	case_sweep("sweep-already-down-stays", 10000, 3, 40000000ull, 0, 0);
-	/* detect_iv_us unset: falls back to max(min_tx_us, cfg->min_rx_us),
-	 * which is 10000 here, so the budget is the same 30ms. An entry
-	 * predating the field must not be treated as a zero budget. */
+	/* detect_iv_us unset: falls back to max(min_tx_us, min_rx_us), here
+	 * the same 30ms budget. */
 	case_sweep("sweep-iv-fallback-past", 0, 3, 40000000ull, 1, 0);
 	case_sweep("sweep-iv-fallback-under", 0, 3, 20000000ull, 1, 1);
-	/* now before last_seen_ns: a packet raced past the sweep's snapshot.
-	 * The guard returns early rather than letting the unsigned delta
-	 * wrap into an enormous silence. */
+	/* now before last_seen_ns: the guard returns early instead of
+	 * wrapping. */
 	case_sweep_negative();
 	case_auth_required(0);
 	case_auth_required(1);
 
-	/* The control: a correctly signed packet is answered. Without it
-	 * every rejection below would pass on a build that refused
-	 * everything. */
+	/* Control: a correctly signed packet is answered. */
 #define KS BFD_AUTH_KEYED_SHA1
 #define MS BFD_AUTH_METICULOUS_SHA1
 	case_auth_present_without_send_key();
@@ -289,47 +258,35 @@ static void run_sweep_matrix(void)
 	/* Replay: the window already sits above this sequence. */
 	case_auth_reject("auth-replayed-seq",   KS, "topsecret", 7, 100, 0, 500, 0);
 
-	/* The one thing that separates the two SHA1 types. A sequence
-	 * equal to the window is a repeat: RFC 5880 s6.7.4 lets the plain
-	 * form take it - which is what allows a Final to answer a Poll
-	 * without burning a sequence - and requires meticulous to refuse
-	 * it. Same packet, same key, same window, opposite verdicts. */
+	/* A sequence equal to the window is a repeat: plain keyed SHA1 accepts
+	 * it, meticulous must refuse it (s6.7.4). */
 	case_auth_reject("auth-equal-seq-plain",      KS, "topsecret", 7, 100,
 			 0, 100, 1);
 	case_auth_reject("auth-equal-seq-meticulous", MS, "topsecret", 7, 100,
 			 0, 100, 0);
-	/* The window has an upper edge as well as a lower one (s6.7.4:
-	 * RcvAuthSeq to RcvAuthSeq+3*Detect Mult). Detect Mult is 3 here,
-	 * so 9 ahead is the last acceptable sequence and 10 is not. Without
-	 * the upper bound almost the entire number space is acceptable, and
-	 * a wrap leaves the session rejecting forever. */
+	/* Upper edge (s6.7.4): with Detect Mult 3, 9 ahead is the last
+	 * acceptable sequence. */
 	case_auth_reject("auth-window-upper-edge", KS, "topsecret", 7, 109,
 			 0, 100, 1);
 	case_auth_reject("auth-window-past-upper", KS, "topsecret", 7, 110,
 			 0, 100, 0);
 
-	/* RFC 5880 names the local state variable bfd.DetectMult and the
-	 * header field Detect Mult, and s6.7.4 asks for the latter. With a
-	 * local multiplier of 1 the window would stop at 3, so a distance of
-	 * 9 only passes if the packet's own Detect Mult of 3 is what sized
-	 * it. */
+	/* The window is sized by the packet's Detect Mult (s6.7.4), not the
+	 * local one: with a local multiplier of 1, 9 ahead passes only this
+	 * way. */
 	arm_local_mult = 1;
 	case_auth_reject("auth-window-mult-from-packet", KS, "topsecret", 7, 109,
 			 0, 100, 1);
 	arm_local_mult = 3;
 
-	/* Circular, not linear. A sequence far below the watermark is not
-	 * "less than" in a 32-bit circular space, it is very far ahead -
-	 * and still outside the window, which is what must refuse it. */
+	/* Circular: far below the watermark is far ahead, and outside the
+	 * window. */
 	case_auth_reject("auth-window-wrapped-far", KS, "topsecret", 7,
 			 0x10000000, 0, 0xF0000000, 0);
 	/* The same wrap, one step past the watermark, is inside it. */
 	case_auth_reject("auth-window-wraps-cleanly", KS, "topsecret", 7,
 			 0x00000002, 0, 0xFFFFFFFF, 1);
-	/* A rollover leaves the peer signing with a key we have stopped
-	 * transmitting under, and refusing it is the breakage the accept
-	 * period exists to prevent. The session transmits under key 7 and
-	 * still accepts key 9. */
+	/* Rollover: transmitting under key 7, still accepting key 9. */
 	arm_extra_keyid = 9;
 	arm_extra_key = "otherkey1";
 	case_auth_reject("auth-rollover-old-key", KS, "otherkey1", 9, 100,
@@ -349,10 +306,8 @@ static void run_sweep_matrix(void)
 	 * and is forgotten after 80ms. */
 	case_sweep_auth_resync("sweep-auth-window-held", 40000000ull, 1, 0);
 	case_sweep_auth_resync("sweep-auth-window-aged", 80000000ull, 0, 0);
-	/* Under demand hold the sweep leaves `alive` alone, but the window
-	 * must still age: a peer we asked to stop transmitting can restart
-	 * inside a silence no detection timer ends, and a window that
-	 * outlives it rejects every packet the peer will ever send. */
+	/* Under demand hold the window still ages; a peer can restart inside a
+	 * demanded silence. */
 	case_sweep_auth_resync("sweep-auth-window-aged-demand", 80000000ull, 0, 1);
 	case_sweep_auth_resync("sweep-auth-window-held-demand", 40000000ull, 1, 1);
 
@@ -372,9 +327,7 @@ static void run_sweep_matrix(void)
 	/* Bound zero is the off switch, and a heartbeat old enough to trip
 	 * any armed gate must not trip this one. */
 	case_deadman("deadman-disarmed", 0, mono_ns() - 60ull * DM_BOUND, 1);
-	/* Heartbeat zero is the window between program load and the
-	 * engine's first pass. Tripping there holds every session down at
-	 * startup, so it reads as healthy. */
+	/* Heartbeat zero, before the engine's first pass, reads as healthy. */
 	case_deadman("deadman-never-beaten", DM_BOUND, 0, 1);
 #undef DM_BOUND
 

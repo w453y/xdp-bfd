@@ -1,26 +1,12 @@
-"""The dead-man gate, arm and disarm, in two namespaces.
+"""The dead-man gate, armed and disarmed, in two namespaces.
 
-measure/wedged_ktx.py on the docs branch asserts the same thing against
-the 64-session mesh and
-needs that mesh; this is the version CI can run. The claim is narrow and
-the negative arm is what makes it mean anything:
+  armed     engine A is SIGSTOPped, XDP stops answering for it, and B goes
+            Down on its own detection timer
+  disarmed  the same stop with --deadman-us 0, and B stays Up, since XDP
+            keeps answering for the stopped engine
 
-  armed     engine A is SIGSTOPped, XDP stops answering for it, and B
-            reaches its own conclusion on its own detection timer
-  disarmed  the same stop with --deadman-us 0, and B stays Up - because
-            XDP goes on answering on behalf of a control plane that is no
-            longer there
-
-Without the second, "B went Down while A was stopped" is equally well
-explained by A simply being stopped, which is true of any engine with no
-fast path at all.
-
-SIGSTOP rather than load: the loop is not CPU-bound - it sleeps on a
-timer, wakes for microseconds, sleeps again - so throttling CPU does not
-slow it. sweep_ladder's ladder measured a hard 5% cgroup cap at 505
-passes/s against 504 uncapped. SIGSTOP stops userspace dead while the
-process stays alive and its bpf_link stays open, which is the case under
-test.
+The disarmed arm shows it is the gate, not the stop, that takes B down.
+SIGSTOP freezes userspace while the process and its bpf_link stay alive.
 """
 
 import time
@@ -31,9 +17,7 @@ from conftest import (NS_A, NS_B, STATS, STATS_B, sh, setup, teardown,
                       ns_pids, start_engine, wait_both_up, only_session,
                       dump)
 
-# Comfortably past the 1s bound plus B's detect budget (~150ms at the
-# rig's timers), and short enough that the disarmed arm is not just
-# waiting out the clock.
+# Past the 1s bound plus B's detect budget (~150ms).
 STOP_S = 4.0
 
 
@@ -50,11 +34,8 @@ def run_arm(rootpath, deadman):
         start_engine(binary, 4, ns=NS_B, stats=STATS_B)
         wait_both_up()
 
-        # What the engine says is in force, not what was asked for: a
-        # bound that failed to reach the map, or a heartbeat that failed
-        # to mmap, disarms the gate on the way through. Reading it back
-        # is what stops the armed arm from silently becoming a second
-        # copy of the disarmed one.
+        # Read back what is in force: a failed map write or mmap disarms the
+        # gate.
         assert dump(NS_A, STATS)["deadman_us"] == deadman, (
             "engine did not apply --deadman-us %d" % deadman)
 

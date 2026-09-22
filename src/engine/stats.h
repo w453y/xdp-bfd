@@ -5,9 +5,8 @@
 #include <signal.h>
 #include <stdint.h>
 
-/* Main loop pass count and how many of those passes were woken by an
- * arriving packet rather than by the tick timeout. Rates, not states:
- * take two snapshots and divide by the now_us delta. */
+/* Loop passes, and passes woken by a packet rather than the tick. Rates: diff
+ * two snapshots. */
 extern uint64_t loop_passes;
 extern uint64_t loop_rx_wakeups;
 extern uint64_t loop_gap_us[24];

@@ -1,6 +1,4 @@
-# Example lines for FRR's /etc/frr/daemons (FRR's own conffile, which this
-# package does not ship or modify). Enable bfdd and point its data plane
-# at xdp-bfd on 127.0.0.1:50700, matching XDP_BFD_ARGS in
-# /etc/xdp-bfd/engine.conf.
+# Example lines for FRR's /etc/frr/daemons, which this package does not modify:
+# enable bfdd and point its data plane at xdp-bfd on 127.0.0.1:50700.
 bfdd=yes
 bfdd_options="  --daemon -A 127.0.0.1 --dplaneaddr ipv4c:127.0.0.1:50700"

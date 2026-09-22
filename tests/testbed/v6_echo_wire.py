@@ -1,34 +1,18 @@
 #!/usr/bin/env python3
 """The IPv6 echo originator, end to end on the wire.
 
-A self-addressed v6 echo comes back at hop limit 254 exactly as a v4 one
-does, provided the neighbour has ipv6 forwarding on. That sysctl is the
-only difference between the two arms below.
-
-This drives the whole path and asserts on the wire rather than on the
-engine's own counters. Two arms against one config, changing only the
-neighbour's sysctl:
+A self-addressed v6 echo returns at hop limit 254 when the neighbour has
+IPv6 forwarding on. Two arms, changing only that sysctl:
 
   peer forwarding off   frames sent, none returned          negative arm
   peer forwarding on    frames sent, all returned, RTT set
 
-Three properties, in the order they matter:
+Asserted on the wire: every outbound frame has a valid UDP checksum
+(tcpdump's [udp sum ok]), every returned payload matches one we sent, and
+the engine's echo rx and rtt_last_us move.
 
-  1. Every outbound frame carries a valid UDP checksum, which is mandatory
-     in v6 and is folded over a 40-byte pseudo-header rather than v4's 12.
-     The oracle is tcpdump's own [udp sum ok], computed independently of
-     echo_build_v6 - recomputing the fold here would only prove the test
-     agrees with itself.
-  2. Every returned frame's payload is byte-identical to one we sent. A
-     count of frames at hop limit 254 would pass on any 254 frame that
-     happened to be on the bridge; the payload match is what ties the
-     return to the transmission.
-  3. The engine demuxes them: echo rx climbs and rtt_last_us is non-zero,
-     which only happens on a nonce match in ktx_poll_map.
-
-Needs: passwordless sudo locally, key-based ssh to the peer and to the
-hypervisor, and a v6 mesh session in Up. Writes no config permanently -
-no write memory, so a botched revert lasts until the next frrinit reload.
+Needs passwordless sudo, key-based ssh to the peer and the hypervisor, and
+a v6 session in Up. Config is not saved (no write memory).
 """
 import argparse
 import ipaddress
@@ -55,9 +39,7 @@ def sh(cmd, capture=True):
 
 
 def rsh(host, cmd, capture=True):
-    """Quote with shlex, not json.dumps: the remote shell has to be the one
-    that expands $!, and json's double quotes let the local shell do it
-    first - which returns an empty pid and looks like tcpdump failing."""
+    """Quote with shlex, not json.dumps, so the remote shell expands $!."""
     return sh("ssh -o BatchMode=yes %s %s" % (host, shlex.quote(cmd)), capture)
 
 
@@ -69,12 +51,8 @@ def vtysh_config(lines):
 
 
 def check_fresh():
-    """The process under test must be the binary that was built.
-
-    make replaces the file rather than writing through it, so an engine
-    started before the build has /proc/<pid>/exe reading (deleted). An
-    empty capture from a stale binary looks exactly like a broken frame
-    builder - that misreading cost a full run when this was written.
+    """The running engine must be the binary that was built; a stale one
+    shows /proc/<pid>/exe as (deleted).
     """
     pid = sh("pgrep -x bfd_tx")
     if not pid.isdigit():
@@ -123,10 +101,9 @@ def find_session(snap, peer):
 
 
 def parse_pcap(path):
-    """One record per tcpdump line naming IP6, with the hex continuation
-    folded in. Splitting the output on a marker does not work: every record
-    is prefixed with a timestamp, so nothing starts a line with IP6 and the
-    whole capture collapses into a single block."""
+    """One record per tcpdump line naming IP6, with its hex continuation
+    folded in.
+    """
     out = subprocess.run("tcpdump -nvr %s" % path, shell=True, text=True,
                          stdout=subprocess.PIPE,
                          stderr=subprocess.DEVNULL).stdout
@@ -219,9 +196,8 @@ def main():
     if not m:
         sys.exit("could not read peer and local out of: %s" % line.strip())
     peer, local = m.group(1), m.group(2)
-    # Copied verbatim rather than reconstructed: a peer line that does not
-    # match an existing one creates a new peer, which is then refused at the
-    # 64 cap with no error anywhere.
+    # Copied verbatim: a line matching no existing peer would create a new one,
+    # refused silently at the 64 cap.
     print("peer line: %s" % line.strip())
 
     s = find_session(dump(), peer)

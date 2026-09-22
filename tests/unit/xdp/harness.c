@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of the xdp_run test, split by subject.
- * Compiled as one unit via tests/unit/xdp_run.c, which carries the
- * includes, the shared globals and main; include order there is the
- * dependency order (harness first, sweep last). */
+/* Part of xdp_run, split by subject; compiled as one unit via
+ * tests/unit/xdp_run.c. */
 
 static uint16_t csum16(const void *p, int len, uint32_t seed)
 {
@@ -146,11 +144,8 @@ static void build_v6(struct frame *f, uint8_t hlim, uint16_t dport,
 	f->len = sizeof(*eth) + sizeof(*ip6) + sizeof(*udp) + payload;
 }
 
-/* Verify rather than recompute. Summing the pseudo-header, the UDP header
- * with its checksum field in place, and the payload must fold to 0xffff.
- * That property is independent of how tx.h produced the value, which is
- * the point: reimplementing the same 34-word fold here would only prove
- * the test agrees with itself. */
+/* Verify rather than recompute: the pseudo-header, the UDP header with its
+ * checksum, and the payload must fold to 0xffff. */
 static int v6_udp_csum_ok(const unsigned char *frm, unsigned int len)
 {
 	const struct ethhdr *eth = (const void *)frm;
@@ -234,14 +229,8 @@ static void expect(const char *name, int got, int want)
 
 /* ---------- map state ---------- */
 
-/* The sweep lives behind a bpf_timer, which does not fire under
- * test_run, so tests/unit/bfd_xdp_test.o carries a second program that
- * drives the same callback through the same helper at a time we choose.
- * Separate object on purpose: no test entry point in shipped bytecode. */
-
-/* Keys are built from the arriving frame's point of view: peer is the
- * source, local is the destination. Getting this backwards produces a
- * silent XDP_PASS rather than an error, so it is worth stating. */
+/* Keys are from the arriving frame's view: peer is the source, local the
+ * destination. Backwards gives a silent XDP_PASS. */
 static struct session_key key_v4(const char *peer, const char *local)
 {
 	struct session_key k = {0};
@@ -254,12 +243,8 @@ static struct session_key key_v4(const char *peer, const char *local)
 	return k;
 }
 
-/* prog_flags carries two independent bits and they are NOT the same bit:
- * value 1 is the promiscuous PASS in bfd_xdp.c, value 2 is the multihop
- * deferral parse.h reads. The comment in bfd_xdp.c calls the latter
- * "bit 1", meaning index 1, which reads as the same bit as the & 1
- * below it. Nothing here opened this map before, so every earlier case
- * ran at whatever the object's default was; map_reset now clears it. */
+/* prog_flags: FLAG_PROMISC (1) is the promiscuous PASS, FLAG_MHOP (2) the
+ * multihop deferral in parse.h. map_reset clears it. */
 
 static void set_flags(__u32 v)
 {
@@ -311,10 +296,8 @@ static void arm_session(void)
 	}
 }
 
-/* arm_session with a chosen min_rx_us, and alive already set.
- * alive matters: the XDP rule's first disjunct is !st->alive, so a
- * session left at alive 0 takes the candidate on every packet and
- * every decrease vector would pass without the rule running. */
+/* arm_session with a chosen min_rx_us and alive set. With alive 0 every packet
+ * takes the candidate and the decrease rule never runs. */
 static void arm_session_rx(__u32 min_rx_us)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
@@ -340,10 +323,8 @@ static void arm_session_rx(__u32 min_rx_us)
 	}
 }
 
-/* Same as arm_session but with a caller-chosen min_ttl. ktx_mirror
- * pushes min_ttl for EVERY session it mirrors - ktx.c never consults
- * is_mhop - so a sub-255 value does reach tx_config and the deferred
- * GTSM branch is live, not dead code. */
+/* arm_session with a chosen min_ttl. ktx_mirror pushes min_ttl for every
+ * session, so the deferred GTSM branch is live. */
 static void arm_session_ttl(__u32 min_ttl)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
@@ -437,9 +418,7 @@ static void arm_session_v6_ttl(__u32 min_ttl)
 	}
 }
 
-/* Read a session's kernel-owned state back after a run. Everything above
- * asserts on the returned frame; the map side is the other half of what
- * the program does, and nothing has checked it yet. */
+/* Read a session's kernel-owned state back after a run. */
 static int read_state(const struct session_key *k, struct session_state *out)
 {
 	if (bpf_map_lookup_elem(sess_fd, k, out)) {
@@ -449,11 +428,8 @@ static int read_state(const struct session_key *k, struct session_state *out)
 	return 1;
 }
 
-/* bfd_stats is a per-CPU array of __u64; sum the slots the way
- * stats_dump does. This is what makes the malformed cases real
- * assertions: those return XDP_PASS, which an unmatched packet
- * also returns, so the verdict alone would still pass if the
- * header check were deleted. The counter is the witness. */
+/* Sum a bfd_stats slot across CPUs. The counter is the witness where the
+ * verdict alone cannot tell a rejection apart. */
 static unsigned long long stat_get(int slot)
 {
 	static int ncpu;
@@ -476,8 +452,8 @@ static unsigned long long stat_get(int slot)
 	return total;
 }
 
-/* Run one sweep pass at a chosen nanosecond time. The frame is nothing
- * but that timestamp. */
+/* Run one sweep pass at a chosen time. bpf_timer does not fire under test_run,
+ * so bfd_xdp_test.o, a separate test-only object, drives the same callback. */
 static int sweep_at(unsigned long long now_ns)
 {
 	unsigned char in[sizeof(struct ethhdr) + sizeof(__u64)] = {0};
@@ -516,20 +492,7 @@ static int sweep_put(const struct session_key *k,
 
 /* ---------- poll-aware detect basis ---------- */
 
-/* The kernel half of detect_vectors.h. fsm_run drives the same vectors
- * against fsm.c; this drives bfd_xdp.c. The rule exists twice and
- * nothing checked that the two agree until these two drivers.
- *
- * The gap is synthesised by writing last_seen_ns before each run, since
- * the program reads bpf_ktime_get_ns() itself and the harness cannot
- * hand it a clock. Base is CLOCK_MONOTONIC, which is what that helper
- * returns. Cases flagged boundary sit exactly on the comparison and are
- * skipped here: skew between our clock read and the program's would
- * decide them. fsm_run takes those, where the clock is an argument.
- *
- * LOCAL_MIN_RX_US is 10000, the same value arm_session uses, so the
- * cfg-present and cfg-absent floors coincide unless a case says
- * otherwise. */
+/* CLOCK_MONOTONIC, the clock bpf_ktime_get_ns reads. */
 static __u64 mono_ns(void)
 {
 	struct timespec ts;
@@ -537,26 +500,6 @@ static __u64 mono_ns(void)
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (__u64)ts.tv_sec * 1000000000ull + (__u64)ts.tv_nsec;
 }
-
-/* The rejection paths.
- *
- * Everything else about authentication is checked by watching a session
- * stay up, which only ever exercises the accept path. These are the
- * cases the feature exists for: a forged digest, a replayed sequence, a
- * key id that is not ours. Each has to be refused, and refused without
- * touching the session - an accepted forgery that merely fails later is
- * still a forgery that refreshed liveness.
- *
- * Built as a real keyed-SHA1 packet and then damaged, so every case
- * differs from a packet that would have been accepted by exactly the
- * thing under test.
- */
-/* The local detect multiplier the next armed session gets. The replay
- * window is sized from the packet's Detect Mult, so a case sets this
- * apart from the packet's value to prove which of the two is used. */
-
-/* A second key left in the accept set, as a rollover leaves the key the
- * peer has not stopped using yet. Zero id means only one key. */
 
 static void arm_session_auth(__u8 type, __u8 keyid, const char *key)
 {
@@ -579,9 +522,7 @@ static void arm_session_auth(__u8 type, __u8 keyid, const char *key)
 	cfg.auth_keylen = (__u8)n;
 	memcpy(cfg.auth_kpad, key, n);
 
-	/* What the engine leaves for the receive side: every key a packet
-	 * may currently be signed with. One here, unless a case says
-	 * otherwise. */
+	/* The accept set: one key, unless the case adds a second. */
 	cfg.auth_nkeys = 1;
 	cfg.auth_accept[0].type = type;
 	cfg.auth_accept[0].key_id = keyid;

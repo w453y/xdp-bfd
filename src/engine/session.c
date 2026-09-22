@@ -97,16 +97,8 @@ static void auth_note_boundary(int64_t at, int64_t now, int64_t *soonest)
 		*soonest = at;
 }
 
-/* Pick the key to transmit with, and work out when that choice could
- * next change.
- *
- * The control plane sends every key the chain holds and leaves the
- * choosing here, because a rollover happens on a clock rather than on a
- * configuration change and only this side sees the packets.
- *
- * Returns non-zero when the transmit key changed, so the caller knows
- * the fast path is holding a stale one.
- */
+/* Pick the transmit key and when that choice can next change. Returns non-zero
+ * if the key changed. */
 int session_auth_evaluate(struct session *s, int64_t now)
 {
 	uint8_t type = 0, key_id = 0, keylen = 0;
@@ -160,13 +152,8 @@ int session_auth_evaluate(struct session *s, int64_t now)
 	return changed;
 }
 
-/* The key a received packet says it was signed with, or NULL.
- *
- * Looked up across everything still acceptable rather than compared
- * against the key being transmitted with: during a rollover the peer is
- * still sending under the old key, and refusing it is exactly the
- * breakage the lifetimes exist to avoid.
- */
+/* The key a received packet names, if still acceptable. Any acceptable key
+ * counts, so a rollover does not refuse the peer. */
 const struct auth_key *session_auth_key_for(const struct session *s,
 					    uint8_t key_id, int64_t now)
 {

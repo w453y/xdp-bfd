@@ -1,9 +1,7 @@
 #!/bin/bash
-# Build the xdp-bfd package INSIDE the current distro container, from the
-# checked-out tree. This is the "already in the container" form used by the
-# ci.yml `package` job (which sets container: <image>); the nested-container
-# form for a workstation is tools/build-packages.sh. Kept separate so the
-# verified local driver is untouched; the install and build steps mirror it.
+# Build the package inside the current distro container, for the ci.yml package
+# job. tools/build-packages.sh is the workstation form, which starts its own
+# containers.
 #
 # Usage: tools/ci-package.sh deb|rpm
 set -euo pipefail
@@ -25,9 +23,9 @@ if [ "$KIND" = deb ]; then
 		build-essential libbpf-dev debhelper dpkg-dev devscripts \
 		ca-certificates wget gnupg lsb-release linux-libc-dev \
 		make gcc pkgconf llvm lintian >/dev/null
-	# clang-21 from apt.llvm.org: stock debian/ubuntu clang is below the
-	# floor and builds a BPF object the verifier rejects. Repo set up by
-	# hand; llvm.sh needs software-properties-common, absent on trixie.
+	# clang-21 from apt.llvm.org, since some targets' stock clang is below
+	# the floor of 17. Repo set up by hand; llvm.sh needs
+	# software-properties-common.
 	. /etc/os-release
 	wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
 		| gpg --dearmor > /usr/share/keyrings/llvm.gpg
@@ -36,10 +34,8 @@ if [ "$KIND" = deb ]; then
 	apt-get update -qq
 	apt-get install -y -qq --no-install-recommends clang-21 >/dev/null
 
-	# dch signs the entry with DEBEMAIL, and inside a container that
-	# resolves to root@<container id>, which lintian rejects outright
-	# (bogus-mail-host-in-debian-changelog). Sign as the maintainer the
-	# control file already names.
+	# Sign as the maintainer: in a container DEBEMAIL defaults to
+	# root@<container id>, which lintian rejects.
 	export DEBFULLNAME="Abdul Wasey"
 	export DEBEMAIL="w453y.me@gmail.com"
 	dch --create --package xdp-bfd -v "${PKGVER}-1" --distribution unstable \

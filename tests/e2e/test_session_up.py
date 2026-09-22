@@ -1,8 +1,5 @@
-"""Fixture self-test: two static engines reach Up over the veth pair.
-
-Both run pure userspace. No --kernel-tx on either side: two RX-clocked
-engines facing each other is 04-symmetric-deployment's ping-pong premise
-and belongs in a deliberate experiment, not in the baseline fixture.
+"""Fixture self-test: two static userspace engines reach Up over the veth
+pair.
 """
 
 import time
@@ -39,11 +36,8 @@ def test_session_goes_down_when_peer_dies(rig, binary, family):
     pytest.fail("A still reports 1 up %.0fs after killing B" % DOWN_WAIT)
 
 
-# Authentication end to end. Stock bfdd cannot offload an authenticated
-# session to a data plane it did not write, so check-frr will never reach
-# this: two static engines facing each other are the only place the
-# transmit sequence, the accept set and the replay window are exercised
-# outside the mesh. --auth exists for exactly this.
+# Authentication end to end between two static engines. Stock bfdd will not
+# offload an authenticated session, so check-frr cannot cover it.
 AUTH_KEY = "sup3rs3cr3tk3y"
 
 

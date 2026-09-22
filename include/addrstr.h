@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-/* addrstr.h - render a shared 16-byte session address.
- *
- * The key always holds the 16-byte form with v4 stored v4-mapped
- * (::ffff:a.b.c.d), so anything printing one has to decide which family
- * it is looking at. One copy of that byte comparison, not several.
- *
- * Userspace only - inet_ntop does not exist on the BPF side.
- */
+/* addrstr.h - render a 16-byte session address (v4 stored v4-mapped).
+ * Userspace only. */
 #ifndef BFD_ADDRSTR_H
 #define BFD_ADDRSTR_H
 

@@ -2,22 +2,12 @@
 /*
  * xdp_fuzz.c - libFuzzer target for the XDP program.
  *
- * xdp_run.c covers the frames a person can enumerate. This targets what
- * nobody does: an arbitrary control payload over a valid envelope for a
- * configured session, so the fuzzer explores the header validation, the
- * demux, the auth section and the reply builder.
+ * Arbitrary control payloads over a valid envelope for a configured
+ * session. Invariants checked after every run:
  *
- * The verifier already guarantees the program cannot crash or read out of
- * bounds in the kernel; ASAN here catches the harness reading a reply the
- * program built wrong. So the value is the invariants asserted after every
- * run, not a signal:
- *
- *   - a DROP leaves no trace: it must not refresh liveness (rx_pkts) or
- *     set the alive flag. That is the property spoofed traffic must not
- *     break.
- *   - an XDP_TX reply is a well-formed BFD control packet carrying our own
- *     discriminator, at TTL 255. That is the class the envelope bug
- *     (a frame going back out with a length that lied) fell in.
+ *   - a DROP leaves no trace: rx_pkts and alive do not move.
+ *   - an XDP_TX reply is a well-formed control packet carrying our own
+ *     discriminator, at TTL 255.
  *
  * Needs root: it loads bfd_xdp.o and drives it with BPF_PROG_TEST_RUN.
  *

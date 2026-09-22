@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0
-"""Turn `gcovr --json-summary` into the job summary table.
-
-GitHub renders the step summary as Markdown, so gcovr's own text table
-arrives with its columns collapsed and its list of uncovered line numbers
-running off the page. This emits a table that survives that, and says
-what the numbers are so a first-time reader does not have to guess.
+"""Turn `gcovr --json-summary` into a Markdown table for the job summary.
 
     gcovr --json-summary --filter ... | python3 .github/coverage-summary.py
 """

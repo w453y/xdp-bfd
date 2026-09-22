@@ -23,9 +23,7 @@ static FILE *evlog;
 
 #define addr_str bfd_addr_str
 
-/* The only place the slot names are instantiated. Generated from the
- * same list the enum comes from, so the dump cannot drift from the
- * numbering the program uses. */
+/* Slot names, generated from the same list as the enum. */
 static const char *const stat_name[] = {
 #define BFD_STAT_NAME(n, s) s,
 	BFD_STAT_LIST(BFD_STAT_NAME)
@@ -33,18 +31,14 @@ static const char *const stat_name[] = {
 };
 #define NSTATS ((__u32)BFD_STAT_MAX)
 
-/* fopen(..., "a") does not define where the stream position starts, so
- * ftell() on a fresh append handle is not reliably 0 on an empty file.
- * Seek to the end explicitly before deciding whether to write a header. */
+/* Seek before ftell: the position of a fresh append stream is unspecified. */
 static int file_is_empty(FILE *f)
 {
 	return f && !fseek(f, 0, SEEK_END) && ftell(f) == 0;
 }
 
-/* Age of a timestamp against a snapshot taken slightly earlier. A packet
- * arriving between the snapshot and the map read leaves last_seen_ns
- * ahead of now, and an unguarded __u64 subtraction then wraps to about
- * 1.8e13 ms. sweep.h's check_session() already guards this the same way. */
+/* Age of a timestamp against an earlier snapshot, signed so a newer timestamp
+ * does not wrap. */
 static double age_ms(__u64 now, __u64 then)
 {
 	__s64 d = (__s64)(now - then);

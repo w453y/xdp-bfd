@@ -1,21 +1,14 @@
 CLANG     ?= clang
 CC        ?= gcc
 WERROR    ?= -Werror
-# CFLAGS is the injectable slot: a distro package build layers its codegen
-# and hardening flags into it (dpkg-buildflags, Fedora %{optflags}) without
-# wiping our include paths and -D defines, which live in XDP_CFLAGS and are
-# always applied to the userspace build. $(LDFLAGS) is honoured on the two
-# userspace link lines for RELRO and PIE. None of this reaches the BPF
-# object: BPFFLAGS and the bfd_xdp.o rule are left untouched, so x86 codegen
-# hardening (meaningless or breaking under clang -target bpf) never lands on
-# it. WERROR is separated so a package build may pass WERROR= if a distro's
-# injected flags trip -Werror; it stays on for the normal build.
+# CFLAGS takes a distro build's codegen and hardening flags; our includes and
+# defines live in XDP_CFLAGS, and LDFLAGS applies to the userspace links. None
+# of it reaches the BPF object. A package build may pass WERROR= if injected
+# flags trip -Werror.
 XDP_CFLAGS := -O2 -g -Wall $(WERROR) -Iinclude -Isrc/engine
 
-# Install layout, overridable by the package build. The object goes to
-# LIBDIR and the binary is told where with -DBFD_XDP_OBJDIR so it finds it
-# once installed away from its build directory. VERSION is stamped into
-# --version; the package build passes the real one.
+# Install layout, overridable by the package build. BFD_XDP_OBJDIR tells the
+# binary where the object is installed; VERSION is stamped into --version.
 PREFIX  ?= /usr
 SBINDIR ?= $(PREFIX)/sbin
 LIBDIR  ?= $(PREFIX)/lib/xdp-bfd
@@ -26,10 +19,7 @@ DOCDIR  ?= $(PREFIX)/share/doc/xdp-bfd
 MANDIR  ?= $(PREFIX)/share/man/man8
 VERSION ?= 0.0.0-dev
 INSTALL ?= install
-# The BPF target has no multiarch include path of its own, so the system's
-# triple supplies it. Not $(CC) -dumpmachine: the directory is a property
-# of the system, not of the compiler, and clang and gcc name it
-# differently for the same box.
+# The BPF target needs the system's multiarch include directory.
 TRIPLE    := $(shell dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null \
 		     || gcc -dumpmachine)
 BPFFLAGS  := -O2 -g -Wall -target bpf -Iinclude -Isrc/xdp -I/usr/include/$(TRIPLE)
@@ -38,10 +28,7 @@ BPFFLAGS  := -O2 -g -Wall -target bpf -Iinclude -Isrc/xdp -I/usr/include/$(TRIPL
 # Harmless in a build-tree run: objpath tries beside-the-binary first.
 XDP_CFLAGS += -DBFD_XDP_OBJDIR='"$(LIBDIR)"' -DBFD_XDP_VERSION='"$(VERSION)"'
 
-# Every shared header, not one named by hand. include/ grew a digest and
-# an authentication layout that both planes compile, and a rule naming
-# only bfd_shared.h rebuilds neither when they change - the object then
-# disagrees with the source that produced it, silently.
+# Every shared header, so a change to any rebuilds both planes.
 SHARED_HDRS := $(wildcard include/*.h)
 
 ENGINE_OBJS := src/engine/log.o src/engine/main.o src/engine/session.o src/engine/dplane.o src/engine/ktx.o src/engine/echo_tx.o src/engine/fsm.o src/engine/stats.o src/engine/rx.o src/engine/ktx_cfg.o
@@ -99,9 +86,7 @@ tests/unit/bfd_xdp_test.o: tests/unit/bfd_xdp_test.c $(SHARED_HDRS) \
 			   $(wildcard src/xdp/*.h)
 	$(CLANG) $(BPFFLAGS) -c $< -o $@
 
-# Headers shared between the unit harnesses. Without these as
-# prerequisites, editing a vector table rebuilds nothing and the suites
-# run stale against the old expectations.
+# Headers shared between the unit harnesses, as prerequisites.
 TEST_HDRS := $(wildcard tests/unit/*.h)
 
 tests/unit/xdp_run: tests/unit/xdp_run.c $(wildcard tests/unit/xdp/*.c) $(SHARED_HDRS) $(TEST_HDRS)
@@ -112,15 +97,13 @@ tests/unit/fsm_run: tests/unit/fsm_run.c src/engine/fsm.o src/engine/log.o \
 		    $(wildcard src/engine/*.h) $(TEST_HDRS)
 	$(CC) $(CFLAGS) $(XDP_CFLAGS) tests/unit/fsm_run.c src/engine/fsm.o src/engine/log.o -o $@
 
-# The receive decision, driven directly: no sockets, no cmsgs, no root.
-# rx.o refers only to the session table and the shared predicates, so this
-# links the real object the four drains call.
-# What the fast path is told about a session, without a program to tell.
+# ktx_cfg_for, without a loaded program.
 tests/unit/ktx_cfg_run: tests/unit/ktx_cfg_run.c src/engine/ktx_cfg.o \
 			src/engine/log.o $(wildcard src/engine/*.h) $(TEST_HDRS)
 	$(CC) $(CFLAGS) $(XDP_CFLAGS) tests/unit/ktx_cfg_run.c \
 		src/engine/ktx_cfg.o src/engine/log.o -o $@
 
+# rx_accept against the session table; no sockets or root.
 tests/unit/rx_run: tests/unit/rx_run.c src/engine/rx.o src/engine/session.o \
 		   src/engine/log.o $(wildcard src/engine/*.h) $(TEST_HDRS)
 	$(CC) $(CFLAGS) $(XDP_CFLAGS) tests/unit/rx_run.c src/engine/rx.o \
@@ -165,14 +148,8 @@ test-rx: tests/unit/rx_run
 test-ktxcfg: tests/unit/ktx_cfg_run
 	./tests/unit/ktx_cfg_run
 
-# What a contributor with nothing installed can run: no libbpf, no clang
-# beyond the one abi-check needs for its syntax pass, no root, no NIC.
-#
-# This exists because `check` depended on `all`, and `all` builds the BPF
-# object and links two binaries against libbpf, so someone without
-# libbpf-dev got none of it - not even the digest vectors or the state
-# machine table, which need neither. The whole of check-host runs in about
-# three seconds from cold.
+# What a contributor with nothing installed can run: no libbpf, no root, no
+# NIC; clang only for abi-check's syntax pass.
 check-host: abi-check test-hmac test-fsm test-dp test-rx test-ktxcfg
 	@echo "host suites passed"
 
@@ -182,10 +159,8 @@ check-host: abi-check test-hmac test-fsm test-dp test-rx test-ktxcfg
 check: check-host all test-xdp
 	@echo "all suites passed"
 
-# End-to-end on veth and network namespaces. Needs root and pytest, and
-# takes seconds rather than milliseconds, so it is not in `check`. The
-# parity rig runs first: it is the only coverage of the socket receive
-# path, where GTSM is enforced by IP_MINTTL and IPV6_MINHOPCOUNT.
+# End-to-end on veth and network namespaces; needs root and pytest. The parity
+# rig covers the socket receive path.
 check-netns:
 	python3 tests/testbed/netns_userspace.py
 	python3 -m pytest tests/e2e -v -m "not frr"
@@ -207,14 +182,8 @@ tests/unit/hmac_run: tests/unit/hmac_run.c $(SHARED_HDRS) $(TEST_HDRS)
 test-hmac: tests/unit/hmac_run
 	./tests/unit/hmac_run
 
-# Needs root to load the object; not part of `all`. bfd_xdp_test.o is a
-# prerequisite because xdp_run opens it by path at runtime - without it
-# the sweep half of the suite runs against stale bytecode.
-# Needs root, because it loads the program through BPF_PROG_TEST_RUN.
-# Invoked as `sudo make test-xdp`, like check-netns and check-frr, rather
-# than reaching for sudo from inside a recipe: a Makefile that escalates on
-# its own gives a contributor no way to run the rest without it, and it is
-# why `make check` prompted for a password on a tree that had not built yet.
+# Loads the program through BPF_PROG_TEST_RUN, so run as `sudo make test-xdp`.
+# bfd_xdp_test.o is a prerequisite because xdp_run opens it at runtime.
 test-xdp: tests/unit/xdp_run bfd_xdp.o tests/unit/bfd_xdp_test.o
 	./tests/unit/xdp_run
 

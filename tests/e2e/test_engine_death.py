@@ -1,20 +1,11 @@
 """What happens to a session when the engine dies.
 
-Two claims, asserted separately:
-
   link-detaches-on-death      SIGKILL closes the bpf_link and the program
                               leaves the interface
   peer-detects-on-own-budget  the surviving peer times out on its own
                               detect budget, since the wire goes silent
 
-Neither is the wedged-but-alive case: with --kernel-tx active XDP answers
-the peer from softirq regardless of userspace state, so an engine that
-wedges without dying keeps the peer Up. Killing a process cannot test
-that; measure/wedged_ktx.py on the docs branch covers it.
-
-No tight timing bound here. The engine records last_overshoot_us for
-diag 1 and the test asserts it exists and is sane; thresholds belong in
-the perf harness.
+A wedged but living engine is the dead-man gate's case, in test_deadman.py.
 """
 
 import time
@@ -30,9 +21,9 @@ OVERSHOOT_SANITY_US = 50_000
 
 @pytest.fixture(scope="module")
 def death(request):
-    """Bring both engines up, kill the kernel-tx side, capture everything
-    the two tests below assert on. One run, two named assertions, no
-    ordering dependency between them."""
+    """Bring both engines up, kill the kernel-tx side, and record what the
+    tests below assert, in one run.
+    """
     root = request.config.rootpath
     binary = str(root / "bfd_tx")
     obj = str(root / "bfd_xdp.o")
@@ -50,12 +41,8 @@ def death(request):
         for pid in ns_pids(NS_A):
             sh("sudo kill -KILL %d" % pid, check=False)
         killed = time.time()
-        # The detach read needs a moment for the link to close, but it
-        # must NOT sit between the kill and the detection loop below:
-        # detection completes in ~30ms at these timers, so half a second
-        # here meant the loop always found the session already Down and
-        # elapsed_s could never read under 500ms. Detach is checked after
-        # the loop instead.
+        # Check detach after the detection loop: detection takes ~30ms here,
+        # and waiting first would always find the session already Down.
         res["down"] = False
         end = time.time() + DOWN_WAIT
         while time.time() < end:
@@ -96,10 +83,7 @@ def test_peer_detects_on_own_budget(death):
     overshoot = s["last_overshoot_us"]
     assert 0 < overshoot < OVERSHOOT_SANITY_US, (
         "implausible overshoot %sus" % overshoot)
-    # elapsed_s is an UPPER BOUND, not a detection time: each poll
-    # costs a SIGUSR1 round trip plus the 0.1s sleep between polls, so
-    # it reads a few hundred ms against a ~30ms budget. last_overshoot_us
-    # is the engine's own measurement and is the number that means
-    # something.
+    # elapsed_s is a harness upper bound (SIGUSR1 round trips and sleeps);
+    # last_overshoot_us is the engine's own measurement.
     print("peer Down within %.0fms (harness-bound), overshoot %.2fms"
           % (death["elapsed_s"] * 1000, overshoot / 1000.0))

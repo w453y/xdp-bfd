@@ -1,21 +1,7 @@
-"""A demanding session verifies its own path (RFC 5880 s6.6).
-
-While a system is demanding, its detection timer does not run: it told
-the peer to go quiet, so silence is what it asked for and cannot be read
-as a fault. Nothing then ever takes the session down, and it reports Up
-against a peer that may be long gone. That is not theoretical - changing
-an authentication key on one end of the 64-session mesh took down every
-authenticated session except the one demanding at both ends, which stayed
-Up against a key it could no longer have verified.
-
-s6.6 leaves the timing to the implementation ("MAY send a Poll Sequence"),
-and stock bfdd reaches bfd_set_polling only from a parameter change, so in
-practice never does.
-
-Both arms, because "it went Down while the peer was silenced" is equally
-well explained by any session with a running detection timer. With
---demand-poll-us 0 the same silence produces nothing at all, which is the
-behaviour this replaces.
+"""A demanding session verifies its own path (RFC 5880 s6.6). Detection is
+held while demanding, so the periodic Poll is what takes the session down
+when the peer vanishes; with --demand-poll-us 0 the same silence produces
+nothing.
 """
 
 import time
@@ -25,8 +11,7 @@ import pytest
 from conftest import (NS_A, NS_B, STATS, STATS_B, sh, setup, teardown,
                       ns_pids, start_engine, wait_both_up, only_session)
 
-# Comfortably past one poll interval plus A's detect budget, and long
-# enough that the disarmed arm is a real wait rather than a near miss.
+# Past one poll interval plus A's detect budget.
 SILENCE_S = 8.0
 
 
@@ -36,10 +21,8 @@ def run_arm(rootpath, poll_us):
 
     setup()
     try:
-        # A demands; B does not. A's detection is therefore held while B,
-        # having been asked to, stops transmitting - so A is the end that
-        # cannot see B disappear. Demanding at both ends is the same
-        # thing twice; this is the smaller case that still has the bug.
+        # A demands and B does not, so A's detection is held and B goes quiet:
+        # A is the end that cannot see B disappear.
         start_engine(binary, 4, ns=NS_A, stats=STATS,
                      kernel_tx="rig-a", xdp_mode="generic",
                      extra=("--bpf-obj", obj, "--demand",
@@ -47,9 +30,8 @@ def run_arm(rootpath, poll_us):
         start_engine(binary, 4, ns=NS_B, stats=STATS_B)
         wait_both_up()
 
-        # Wait for demand to actually engage before measuring. Up is not
-        # enough: the D bit goes out only once both ends are Up, and the
-        # announcement quota has to clear before transmission ceases.
+        # Wait for demand to engage: the D bit goes out only once both ends are
+        # Up, and the announcement quota must clear.
         held = False
         for _ in range(50):
             s = only_session(NS_A, STATS)
@@ -60,8 +42,8 @@ def run_arm(rootpath, poll_us):
         assert held, "demand never engaged on A: %r" % (s["demand"],)
 
         polls0 = s["demand_polls"]
-        # Kill B outright rather than filtering: B is not transmitting
-        # anyway, so what has to disappear is its ANSWER to A's poll.
+        # Kill B: it is not transmitting anyway, so what must disappear is its
+        # answer to A's poll.
         for pid in ns_pids(NS_B):
             sh("sudo kill -KILL %d" % pid, check=False)
 

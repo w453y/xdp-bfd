@@ -34,12 +34,9 @@ jobs:
       - name: regressions
         run: find tests/unit/fuzz-regress -type f ! -name '*.md' -exec ./tests/unit/dp_fuzz {} +
 
-      # The corpus is cached rather than committed, so the search compounds
-      # night to night without going stale in the tree. The key covers the
-      # target and the parser it drives, so changing either starts fresh
-      # rather than inheriting a corpus shaped by code that is gone. The run
-      # id makes each run write a new entry and restore-keys take the most
-      # recent - the append-only pattern actions/cache supports.
+      # Corpus cached, not committed. The key covers the target and the parser,
+      # so changing either starts fresh; the run id with restore-keys takes the
+      # most recent.
       - name: restore corpus
         uses: actions/cache@v4
         with:
@@ -77,9 +74,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # CLANG as well as FUZZ_CC: this target depends on bfd_xdp.o, which is
-      # built with $(CLANG), and the self-hosted runner carries clang-21
-      # with no unversioned clang for it to fall back on.
+      # CLANG too: bfd_xdp.o is built with $(CLANG), and the runner has only
+      # clang-21.
       - name: build
         run: make CLANG=clang-21 FUZZ_CC=clang-21 tests/unit/xdp_fuzz
 

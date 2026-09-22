@@ -10,9 +10,8 @@ case "$1" in
                 --shell /usr/sbin/nologin --user-group \
                 --comment "XDP BFD engine" xdp-bfd
         fi
-        # Advisory load-and-ABI probe. Never fails the install: a build
-        # host or a sub-floor kernel must still install cleanly so the
-        # operator can read the --check error and enable the unit later.
+        # Advisory load-and-ABI probe. Never fails the install, so a build host
+        # or an old kernel still installs.
         if xdp-bfd --check >/dev/null 2>&1; then
             echo "xdp-bfd: the XDP object loads and is ABI-matched on this kernel ($(uname -r))."
         else

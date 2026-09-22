@@ -1,21 +1,9 @@
 #!/usr/bin/env python3
-"""Userspace parity rig: the socket path, in namespaces, on one machine.
-
-inject_matrix.py asserts on BPF counters, so it can only test the XDP
-path. This covers what the engine does when a packet reaches userspace:
-the shared acceptance predicate, GTSM on the sockets, and the demux.
-
-The engine runs in static mode - no --dplane, no --kernel-tx - so every
-packet goes through recvmsg and fsm_rx. Assertions come from the SIGUSR1
-stats snapshot.
-
-No scapy and no raw sockets: the userspace path receives UDP datagrams, so
-a plain socket with IP_TTL set reaches every check worth testing. Layer-2
-and IP-header cases (fragments, options) are XDP-path concerns and stay in
-inject_matrix.py where the counters can see them.
-
-Two namespaces on a veth pair, addresses in 10.77.0.0/24, so nothing here
-touches the live mesh on ens19. Needs root.
+"""Userspace parity rig: the socket path, in namespaces. Covers what the
+engine does once a packet reaches userspace (acceptance predicate, GTSM,
+demux), which inject_matrix.py's BPF counters cannot see. Static mode,
+plain UDP sockets, assertions from the SIGUSR1 snapshot. Two namespaces
+on a veth pair in 10.77.0.0/24; needs root.
 """
 
 import argparse
@@ -35,8 +23,7 @@ F_AUTH = 0x04
 F_MP = 0x01
 
 
-# tests/, one up: the namespace helpers are shared with the pytest e2e
-# suite and live in tests/lib, not beside the rigs.
+# The namespace helpers live in tests/lib, shared with the e2e suite.
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.abspath(__file__)), ".."))
 from lib.netns import (NS_A, NS_B, IP_A, IP_B, IP_A6, IP_B6, STATS,
@@ -64,11 +51,9 @@ def bfd_bytes(vers=1, diag=0, state=1, flags=0, mult=3, length=24,
 
 
 def inject(payload, ttl, count, fam):
-    """Send from the peer namespace over a plain UDP socket.
-
-    The hop count is the only thing that needs setting - the single-hop
-    sockets carry IP_MINTTL / IPV6_MINHOPCOUNT, so this is what exercises
-    GTSM, and on v4 it has already shown that option to be inert."""
+    """Send from the peer namespace over a plain UDP socket; the hop count
+    is what exercises GTSM.
+    """
     if fam == 6:
         prog = (
             "import socket,sys,base64\n"
@@ -89,10 +74,7 @@ def inject(payload, ttl, count, fam):
             "for _ in range(%d): s.sendto(p,('%s',%d))\n"
         ) % (ttl, IP_B, BFD_PORT, count, IP_A, BFD_PORT)
     import base64
-    # shlex.quote, not json.dumps: json double-quotes and escapes the
-    # newlines, and the shell passes \n through double quotes
-    # literally, so python receives a one-liner full of backslash-n.
-    # inject_matrix.py hit this exact thing when it was written.
+    # shlex.quote, not json.dumps, so the newlines survive the shell.
     sh("sudo ip netns exec %s python3 -c %s %s"
        % (NS_B, shlex.quote(prog), base64.b64encode(payload).decode()))
 

@@ -1,18 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of the xdp_run test, split by subject.
- * Compiled as one unit via tests/unit/xdp_run.c, which carries the
- * includes, the shared globals and main; include order there is the
- * dependency order (harness first, sweep last). */
+/* Part of xdp_run, split by subject; compiled as one unit via
+ * tests/unit/xdp_run.c. */
 
-/* Deferred GTSM (087c9af). A packet below 255 is acceptable only if it
- * names a configured session whose min_ttl admits it. Four arms: above
- * the minimum, exactly at it (pttl < mt is strict), below it, and the
- * null-cfg arm that must drop even with the multihop flag set - which is
- * why the gate sits ABOVE the promiscuous PASS rather than after it.
- *
- * No leak case is written: the session key is address-only, so a
- * single-hop and a multihop session on one pair are the same tx_config
- * entry and there is no per-port state to leak. */
+/* Deferred GTSM: a packet below 255 is accepted only for a configured session
+ * whose min_ttl admits it. Arms: above the minimum, at it, below it, and
+ * unconfigured with the multihop flag set, which must drop. */
 static void case_deferred_gtsm(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -43,10 +35,8 @@ static void case_deferred_gtsm(void)
 	       XDP_DROP);
 	map_reset();
 
-	/* Negative arm for the flag itself. With FLAG_MHOP clear, parse_l3
-	 * rejects a sub-255 packet before the deferred gate is reached, so
-	 * the first case's frame must DROP. Without this, a set_flags that
-	 * silently wrote nothing would leave both DROP arms vacuous. */
+	/* Negative arm: with FLAG_MHOP clear, parse_l3 drops the same frame
+	 * early. Guards against set_flags silently doing nothing. */
 	map_reset();
 	set_flags(0);
 	arm_session_ttl(32);
@@ -67,9 +57,8 @@ static void case_not_bfd(void)
 	expect("non-bfd-port-passes", run_frame(&f, NULL, NULL), XDP_PASS);
 }
 
-/* RFC 5881 s5: a single-hop control packet must arrive at TTL 255. The
- * reject must be XDP_DROP specifically, not XDP_PASS: a reject that
- * passes leaks the packet to the userspace socket. */
+/* RFC 5881 s5: single-hop control packets must arrive at TTL 255. Rejected
+ * with XDP_DROP, not XDP_PASS, which would leak to the socket. */
 static void case_gtsm_v4(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -79,10 +68,7 @@ static void case_gtsm_v4(void)
 	expect("gtsm-v4-low-ttl-drops", run_frame(&f, NULL, NULL), XDP_DROP);
 }
 
-/* v6 counterpart of case_gtsm_v4, plus the v6 arm of the deferred gate.
- * parse.h reads the multihop flag at two sites, one per family, and only
- * the v4 side had a case. The v6-only IPV6_MINHOPCOUNT defect the netns
- * rig found is the reason this asymmetry is worth closing. */
+/* v6 counterpart of case_gtsm_v4, plus the v6 arm of the deferred gate. */
 static void case_gtsm_v6(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -111,6 +97,9 @@ static void case_gtsm_v6(void)
 	set_flags(0);
 }
 
+/* Kernel half of detect_vectors.h; fsm_run drives the engine's. The gap is
+ * synthesised through last_seen_ns since the program reads its own clock,
+ * and boundary cases are left to fsm_run. */
 static void dv_row_xdp(const struct dv_case *c)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
@@ -174,13 +163,8 @@ static void case_detect_vectors(void)
 	}
 }
 
-/* bfd_ctrl_check's reject conditions, one case each, both families.
- *
- * Two assertions per case, not one. The verdict must be XDP_DROP
- * specifically, since a reject that returns XDP_PASS leaks the packet to
- * the userspace socket. And rx_pkts must not move, because a rejected
- * packet must not refresh liveness - a peer sending garbage would
- * otherwise hold the session up forever. */
+/* bfd_ctrl_check's reject conditions, one case each, both families. Each must
+ * be XDP_DROP and must not move rx_pkts. */
 static void case_malformed(int v6, const char *name,
 			   void (*mutate)(struct bfd_ctrl_pkt *), int want_v,
 			   int slot)
@@ -271,14 +255,9 @@ static void run_malformed_matrix(void)
 	}
 }
 
-/* Demux, RFC 5880 s6.8.6. your_disc must name our session, or be zero
- * with the peer in Down or AdminDown (it lost state, or is restarting).
- *
- * The reject must not refresh liveness: that is how spoofed traffic keeps
- * a dead session up, and it is why each arm checks rx_pkts as well as the
- * verdict. tests/netns_userspace.py found the userspace path falling back
- * to the address pair on any miss; these arms pin the kernel side of the
- * same rule. */
+/* Demux (RFC 5880 s6.8.6): your_disc names our session, or is zero with the
+ * peer in Down or AdminDown. Rejects must not refresh liveness, so each arm
+ * checks rx_pkts too. */
 static void case_demux(int v6, const char *name, uint32_t ydisc,
 		       uint8_t peer_state, int want_v, uint64_t want_rx)
 {
@@ -352,12 +331,8 @@ static void run_demux_matrix(void)
 	}
 }
 
-/* The other half of RFC 5880 s6.8.6, and the half that matters: a
- * session with a key must reject a packet that arrives without one.
- * Without this rule a peer downgrades the session simply by omitting
- * authentication, which is the whole attack authentication exists to
- * stop - and it would look like an ordinary healthy session.
- */
+/* RFC 5880 s6.8.6: a session with a key rejects a packet without one, or a
+ * peer could downgrade it by omitting authentication. */
 static void case_auth_required(int v6)
 {
 	struct session_key k = v6 ? key_v6("fd00::2", "fd00::1")
@@ -407,16 +382,9 @@ static void case_auth_required(int v6)
 	map_reset();
 }
 
-/* IPv4 fragmentation.
- *
- * The rule in parse.h is narrower than "drop fragments": only a FIRST
- * fragment (offset 0, MF set) aimed at a BFD port is dropped. A non-first
- * fragment PASSes, because at that point the bytes where the UDP header
- * would be are payload, so the port comparison would be meaningless - the
- * offset is checked first for exactly that reason.
- *
- * IPv6 needs no equivalent: a fragment header makes nexthdr != UDP and the
- * frame falls out of dispatch before any of this. */
+/* IPv4 fragments: only a first fragment (offset 0, MF) to a BFD port is
+ * dropped. Non-first fragments pass, since they have no UDP header to read the
+ * port from. */
 static void case_frag(const char *name, uint16_t frag_off, uint16_t dport,
 		      int want_v, uint64_t want_rx)
 {
@@ -478,24 +446,8 @@ static void run_frag_matrix(void)
 	case_frag("frag-df-not-a-fragment", 0x4000, BFD_PORT_1HOP, XDP_TX, 1);
 }
 
-/* An envelope that does not describe the frame.
- *
- * bfd_ctrl_check takes the payload length from udp->len, which is whatever
- * the sender wrote, and nothing compared it against what actually arrived.
- * A 66 byte frame claiming a UDP length of 208 was accepted: no overread,
- * because every field read afterwards is inside the 24 bytes already
- * bounds-checked, but it refreshed liveness and could acknowledge a Poll
- * on a packet that is not what it says it is.
- *
- * Worse on the way out. The bounce trimmed and rewrote the lengths only
- * when there was a tail to trim, so a frame with nothing spare went back
- * out still claiming 208 - built by this engine, with a length its own
- * receive path would now refuse.
- *
- * MALFORMED, and now dropped, like any broken BFD
- * header on ports only our socket consumes. It still must not refresh
- * liveness, and must not leave on the wire under our name.
- */
+/* A UDP length that does not describe the frame: MALFORMED and dropped,
+ * without refreshing liveness. */
 static void case_bad_envelope(const char *name, int which)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
@@ -547,22 +499,8 @@ static void case_bad_envelope(const char *name, int which)
 	map_reset();
 }
 
-/* IP options.
- *
- * A BFD control packet never carries them, and with them the UDP header is
- * at an offset the fixed-offset reads in the parser would get wrong, so one
- * aimed at a BFD port is dropped rather than passed: passing it would skip
- * GTSM and demux and leak it to the userspace socket unvalidated.
- *
- * The rule is about BFD, so it is gated on the port like every other rule
- * here. An optioned packet going anywhere else is not ours and reaches the
- * stack untouched, which the other-port arm pins.
- *
- * The frame is built properly, with the options actually present between
- * the IP header and the UDP header rather than declared in `ihl` and not
- * there. The earlier version of this case set `ihl` alone, which the parser
- * could not have distinguished from a lie and which no real sender emits.
- */
+/* IP options on a real optioned frame: dropped when aimed at a BFD port,
+ * passed untouched otherwise. */
 static void case_ip_options(const char *name, uint16_t dport, int want,
 			    int want_counter)
 {
@@ -580,10 +518,8 @@ static void case_ip_options(const char *name, uint16_t dport, int want,
 	unsigned char *opt = (unsigned char *)(ip + 1);
 	unsigned int moved = sizeof(struct udphdr) + sizeof(p);
 
-	/* Open four bytes after the IP header and fill them with a real
-	 * option: NOP, NOP, NOP, End of Option List. Everything after
-	 * shifts, which is what makes this an optioned packet rather than
-	 * a claim of one. */
+	/* Insert a real four-byte option (NOP, NOP, NOP, EOL); everything
+	 * after shifts. */
 	memmove(opt + 4, opt, moved);
 	opt[0] = 1;
 	opt[1] = 1;
@@ -620,14 +556,8 @@ static void case_ip_options(const char *name, uint16_t dport, int want,
 	map_reset();
 }
 
-/* An `ihl` that claims options the frame does not carry.
- *
- * The parser reads the port where the header says the payload starts, and
- * so does the stack, so both look at the same wrong bytes and neither
- * delivers it to a BFD socket. Passing it is therefore not a bypass, and
- * dropping it would mean dropping on a declared length alone, which is how
- * unrelated traffic got caught before.
- */
+/* An ihl claiming options the frame does not carry: passed. The parser and the
+ * stack read the same wrong bytes, so it cannot reach a BFD socket. */
 static void case_ip_options_lying(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -649,12 +579,8 @@ static void case_ip_options_lying(void)
 	map_reset();
 }
 
-/* Traffic that is not BFD, at the TTLs real traffic arrives with.
- *
- * Every BFD rejection rule is about BFD. Before they were gated on the
- * port, a DNS reply at TTL 57 was dropped in the driver whenever no
- * multihop session existed, which is most deployments.
- */
+/* Non-BFD traffic at real-world TTLs must pass: the BFD rules are gated on the
+ * port. */
 static void case_not_bfd_ttl(uint8_t ttl)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -683,11 +609,8 @@ static void case_not_bfd_v6_hlim(uint8_t hlim)
 	map_reset();
 }
 
-/* A well-formed control packet at TTL 255 for an
- * address pair with no tx_config entry is dropped in XDP and counted, not
- * passed to the socket. Our socket is the only consumer of the BFD ports,
- * so passing it is the widest flood path to recvmsg. The promiscuous flag
- * keeps XDP_PASS for the standalone observer, which does not count it. */
+/* A well-formed packet for an unconfigured pair is dropped and counted. The
+ * promiscuous flag keeps XDP_PASS for the standalone observer, uncounted. */
 static void case_unknown_session(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();

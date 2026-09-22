@@ -40,19 +40,11 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx,
         		ip6->daddr = t6;
         	}
 
-        	/* Multihop: this frame arrived below 255 and is being reused as
-        	 * our reply, so it would leave already decremented and lose more
-        	 * on the return path - the peer would then measure it against
-        	 * its own minimum and reject us while we accept it, giving a
-        	 * session that comes up one way only. RFC 5883 wants multihop
-        	 * sent at 255 so the receiver can count hops, which is what the
-        	 * userspace path already does. Single-hop frames arrive at 255
-        	 * and skip this entirely. */
+        	/* Multihop: send at TTL 255 (RFC 5883), not at the decremented
+        	 * TTL this frame arrived with. */
         	if (iph && iph->ttl != 255) {
-        		/* No incremental checksum fixup: the v4 header check is
-        		 * zeroed and folded again in full below, once the
-        		 * length is final, so patching it here is work whose
-        		 * result is overwritten. */
+        		/* No incremental fixup: the v4 checksum is recomputed
+        		 * in full below. */
         		iph->ttl = 255;
         	} else if (ip6 && ip6->hop_limit != 255) {
         		ip6->hop_limit = 255;   /* no checksum in v6 */
@@ -75,10 +67,8 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx,
         	if (!send_final && cfg->poll &&
             st->final_seq != cfg->poll_seq)
         		bfd->flags |= BFD_F_POLL;
-        	/* D rides alongside P or F rather than excluding them: only
-        	 * P and F are mutually exclusive (s6.5). The engine has
-        	 * already checked both ends are Up, which is the whole of
-        	 * s6.8.6's condition. */
+        	/* D may accompany P or F; only P and F exclude each other
+        	 * (s6.5). The engine has already checked both ends are Up. */
         	if (cfg->demand)
         		bfd->flags |= BFD_F_DEMAND;
         	bfd->detect_mult = cfg->mult;
@@ -97,38 +87,23 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx,
         	bfd->min_rx      = bpf_htonl(cfg->min_rx_us);
         	bfd->min_echo_rx = bpf_htonl(cfg->min_echo_rx_us);
 
-        	/* Sign what we just built, before the checksum covers it and
-        	 * before the frame is trimmed. A session whose digest cannot
-        	 * be produced sends nothing: a reply carrying the A bit and
-        	 * an empty section authenticates as garbage, and the peer
-        	 * would drop it anyway after doing the work. */
+        	/* Sign before checksumming and trimming. If no digest can be
+        	 * built, send nothing. */
         	if (cfg->auth_type &&
         	    (!sc || !xdp_auth_build(ctx, iph ? BFD_OFF_V4 : BFD_OFF_V6,
         	                            bfd, cfg, st, sc, &auth_sum)))
         		return XDP_DROP;
 
-        	/* Echo exactly a 24-byte control packet: a longer peer
-        	 * frame (auth section, trailer) must not go back out with
-        	 * trailing bytes. tot_len changes, so recompute the IP
-        	 * checksum; UDP csum is already 0. On adjust_tail failure
-        	 * drop: the frame is half-rewritten by now, and liveness
-        	 * was already refreshed above. */
+        	/* Send exactly a 24-byte control packet, trimming any auth
+        	 * section or trailer, and recompute the IP checksum. On
+        	 * adjust_tail failure drop, as the frame is half-rewritten. */
         	int want = (int)(sizeof(*eth) +
         	                 (iph ? sizeof(*iph) : sizeof(*ip6)) +
         	                 sizeof(*udp) + bfd->len);
         	int excess = (int)((long)data_end - (long)data) - want;
 
-        	/* Unconditional, not only when there is a tail to trim.
-        	 *
-        	 * The received envelope is whatever the sender wrote, and
-        	 * nothing upstream requires it to describe the frame. A 66
-        	 * byte frame claiming a UDP length of 208 has no excess to
-        	 * trim, so the rewrite was skipped and the reply went back
-        	 * out still claiming 208 - a frame this engine built, with a
-        	 * length its own receive path would refuse.
-        	 *
-        	 * What goes out is ours: a 24 byte control packet in an
-        	 * envelope that says so. */
+        	/* Always rewrite the lengths: the received envelope may not
+        	 * describe the frame. */
         	udp->len = bpf_htons(sizeof(*udp) + bfd->len);
         	if (iph) {
         		iph->tot_len = bpf_htons(sizeof(*iph) +
@@ -145,12 +120,10 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx,
         		ip6->payload_len = bpf_htons(sizeof(*udp) + bfd->len);
         	}
 
-        	/* v6: mandatory UDP checksum over pseudo-header + UDP header
-        	 * + the 24-byte payload. Swaps are csum-neutral but the
-        	 * payload rewrite is not, so recompute in full. Fixed 34-word
-        	 * fold, pointers bounds-proven above. Runs before adjust_tail
-        	 * (which invalidates pointers); the fold never reads past
-        	 * payload byte 24, which survives the trim. */
+        	/* v6: mandatory UDP checksum over the pseudo-header, UDP
+        	 * header and payload, recomputed in full. Runs before
+        	 * adjust_tail, which invalidates the pointers; the fold reads
+        	 * nothing the trim removes. */
         	if (ip6) {
         		__u32 csum = 0;
         		__u16 *w = (__u16 *)&ip6->saddr;
@@ -161,10 +134,8 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx,
         		w = (__u16 *)udp;              /* UDP hdr, check == 0 */
         		for (int i = 0; i < 4; i++)
         			csum += w[i];
-        		/* The payload. With authentication its length varies
-        		 * and it may even be an odd number of bytes, so the sum
-        		 * comes back from the builder, which had it assembled
-        		 * in a fixed-size block already. */
+        		/* With authentication the payload length varies, so
+        		 * its sum comes from xdp_auth_build. */
         		if (cfg->auth_type) {
         			csum += auth_sum;
         		} else {

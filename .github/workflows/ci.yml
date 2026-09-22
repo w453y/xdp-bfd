@@ -19,19 +19,9 @@ name: ci
 # The nightly fuzz search is separate, in fuzz.yml.
 on:
   pull_request:
-  # Every branch, not just main. A merge commit is a different tree from the
-  # branch that was tested and a direct push has no pull-request run at all,
-  # which was the original reason for main being here - but restricting it to
-  # main meant a branch got no CI until someone opened a pull request, and a
-  # 27 commit branch reached merge having never been built by anything but
-  # its author. Two breakages arrived that way: the fuzz target stopped
-  # linking, and a static analysis finding sat unreported, both caught only
-  # at the first pull request.
-  #
-  # A branch that does have a pull request open is therefore built twice,
-  # once per event. That is deliberate and it costs the six hosted arms; the
-  # two self-hosted jobs skip push events below, so the shared VM is not
-  # contended for.
+  # Every branch, so a branch is built before it reaches a pull request. A
+  # branch with an open pull request is built twice; the self-hosted jobs skip
+  # push events.
   push:
     branches: ['**']
   workflow_dispatch:
@@ -49,16 +39,13 @@ concurrency:
 jobs:
   full:
     runs-on: [self-hosted, Linux, X64]
-    # One VM, shared with `kernel`. A push to a branch gets the hosted arms
-    # and leaves this for the pull request, so a branch under active work
-    # does not hold the machine.
+    # Shares one VM with `kernel`; pushes leave it to the pull request.
     if: github.event_name != 'push'
     timeout-minutes: 30
     env:
       BFD_CONTAINER_RUNTIME: podman
-      # Suites run under sudo, so anything Python writes lands root-owned and
-      # the next checkout - which runs as the runner user - cannot remove it.
-      # pytest.ini disables its own cache for the same reason.
+      # Suites run under sudo, so keep Python from writing root-owned bytecode
+      # the next checkout cannot remove.
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v4
@@ -126,16 +113,9 @@ jobs:
           sudo find . -user root -exec rm -rf {} + 2>/dev/null || true
           true
 
-  # Every clang the packaging declares support for compiles the BPF
-  # object. This was once a floor check, because below clang 20 the BPF
-  # backend had no 32-bit atomic compare-and-swap and refused the object
-  # outright; the two CAS targets are __u64 now, so that barrier is gone.
-  #
-  # 17 is the lowest arm because it is the lowest clang measured to
-  # compile an object that then loads, and it is what Build-Depends and
-  # BuildRequires ask for. Compiling is all this hosted job can check: it
-  # has no BPF kernel. The `kernel` job below loads a clang-21 object
-  # under a real one, which is the guard for the version actually shipped.
+  # Every clang the packaging supports compiles the BPF object; 17 is the floor
+  # Build-Depends and BuildRequires ask for. Compile only: the `kernel` job
+  # loads a clang-21 object under a real kernel.
   toolchain:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -174,11 +154,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # One kernel for now, the host's own series: this asserts the suites
-        # run under a vng microVM boot, but adds no coverage over `full`
-        # until a second, different kernel is listed here. Placeholder by
-        # design; add a row (an older LTS, or the next -rc) to make it earn
-        # its slot.
+        # One kernel for now, the host's series; add rows to cover others.
         kernel:
           - "7.0.0-30-generic"
     steps:
@@ -204,33 +180,25 @@ jobs:
           # would mask it, so assert on the output too.
           grep -q 'all suites passed' /tmp/vng.log
 
-  # The BPF object is target-independent bytecode, but BPFFLAGS carries
-  # -I/usr/include/$(TRIPLE) for the kernel UAPI headers, and that triple
-  # must not be hardcoded to the host's. Codegen only: no cross libbpf and
-  # no linking.
-  #
-  # Both arms matter. A bogus triple must fail on <asm/types.h>, or the -I
-  # is decorative and the aarch64 arm proves nothing.
+  # The object is target-independent, but BPFFLAGS takes the UAPI include path
+  # from the target triple. Codegen only. A bogus triple must fail on
+  # <asm/types.h>, or the aarch64 arm proves nothing.
   cross:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
-      # bpf/bpf_helpers.h is architecture-independent, so the host's amd64
-      # libbpf-dev serves the aarch64 build. Only the UAPI headers under
-      # /usr/include/<triple> are arch-specific, which is what the arm64
-      # step below is for.
+      # bpf_helpers.h is architecture-independent, so the host libbpf-dev
+      # serves; only the UAPI headers are per-architecture.
       - uses: ./.github/actions/llvm
         with:
           version: 21
 
       - name: add arm64 headers
         run: |
-          # Ubuntu splits architectures across mirrors: archive.ubuntu.com
-          # carries amd64 only, everything else lives on ports.ubuntu.com.
-          # Adding arm64 without scoping the existing sources makes apt ask
-          # the amd64 mirror for arm64 indices and every one 404s.
+          # Ubuntu serves arm64 only from ports.ubuntu.com, so scope the
+          # existing sources to amd64 before adding it.
           sudo dpkg --add-architecture arm64
           for f in /etc/apt/sources.list.d/*.sources; do
             sudo sed -i '/^Architectures:/d' "$f"
@@ -255,9 +223,8 @@ jobs:
           grep -q 'asm/types.h' /tmp/x.log || {
             echo "failed, but not on the missing header:"; tail -5 /tmp/x.log; exit 1; }
 
-  # Userspace with both compilers. The BPF object is always clang; this
-  # axis is the engine, and it exists because the multiarch triple must be
-  # derived from the system rather than from $(CC).
+  # Userspace with both compilers; the BPF object is always clang. Checks the
+  # multiarch triple comes from the system, not from $(CC).
   compilers:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -268,8 +235,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # clang 21 from apt.llvm.org: the runner image defaults to 18, which is
-      # below the floor the toolchain job asserts.
+      # clang 21 from apt.llvm.org, as the kernel job uses.
       - uses: ./.github/actions/llvm
         with:
           version: 21
@@ -284,12 +250,8 @@ jobs:
       - name: unit suites
         run: sudo make CC=${{ matrix.cc }} CLANG=clang-21 check
 
-  # A --coverage build of the two host suites, reported not gated: it shows
-  # which fsm.c and dplane.c lines and branches the unit tables miss, which
-  # is where the last round's authentication bugs sat. The summary goes to
-  # the job summary, one click from the checks page. Not a gate: it carries
-  # no --fail-under, so a coverage number never fails the build; only a
-  # broken build or a failing suite does.
+  # A --coverage build of the host suites for fsm.c and dplane.c, written to
+  # the job summary. Reported, not gated.
   coverage:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -301,21 +263,16 @@ jobs:
           sudo apt-get install -y gcovr libbpf-dev
       - name: build and run fsm_run and dp_run instrumented
         run: make CFLAGS="--coverage -O0 -g" test-fsm test-dp
-      # The job summary is rendered as Markdown, so gcovr's text table
-      # arrives as one run-on paragraph. Emit a real table, and keep the
-      # plain report in the log for anyone who wants the missing lines.
+      # Emit a Markdown table for the job summary; the plain report stays in
+      # the log.
       - name: report line and branch coverage
         run: |
           gcovr -s --filter 'src/engine/(fsm|dplane)\.c'
           gcovr --json-summary --filter 'src/engine/(fsm|dplane)\.c' \
             | python3 .github/coverage-summary.py >> "$GITHUB_STEP_SUMMARY"
 
-  # Its own job rather than a step on the end of the compiler matrix, where
-  # a finding was reported as "portability (cc) failed" and said nothing
-  # about what had been found. It also ran twice over one codebase, since
-  # scan-build uses its own clang whatever $(CC) is.
-  #
-  # --status-bugs makes any finding fail the job.
+  # Its own job, so a finding is reported as static analysis. --status-bugs
+  # fails the job on any finding.
   static-analysis:
     runs-on: ubuntu-latest
     timeout-minutes: 15

@@ -1,18 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* rx_run.c - the receive decision, driven directly.
- *
- * The four drains in main.c differ only in which socket they read and how
- * the addresses come out of the cmsgs; the decision they make once the
- * packet is in hand is rx_accept, and this is that decision as a table.
- *
- * It exists because the two authentication bugs found here sat on this
- * boundary and nothing on the host could reach them: the only
- * coverage was tests/testbed/netns_userspace.py, which needs namespaces,
- * sockets and root to assert the same rules. Those CASES are here as unit
- * rows; the netns rig keeps only what it alone can test, the socket and
- * cmsg plumbing that feeds this function its arguments.
- *
- * Links the real rx.o and session.o. No sockets, no BPF, no root.
+/* rx_run.c - rx_accept, the receive decision shared by the four drains,
+ * driven as a table. Links the real rx.o and session.o; no sockets, BPF
+ * or root.
  *
  *     make test-rx
  */
@@ -134,9 +123,8 @@ static size_t build_auth(__u8 *buf, uint8_t state, uint32_t your_disc,
 	build(buf, state, your_disc);
 	memcpy(kpad, key, strlen(key));
 
-	/* The A bit and the length go on before the signature: the digest
-	 * covers the 24-byte header, so setting either afterwards signs a
-	 * packet nobody sent. */
+	/* Set the A bit and length before signing: the digest covers the
+	 * header. */
 	h->flags |= BFD_F_AUTH;
 	h->len = bfd_auth_pkt_len(BFD_AUTH_KEYED_SHA1, (__u8)strlen(key));
 	len = bfd_auth_build(buf, BFD_AUTH_KEYED_SHA1, key_id,
@@ -181,10 +169,8 @@ int main(void)
 	check("demux-wrong-your-disc", buf, n, 255, &A_PEER, &A_LOCAL, 0,
 	      RX_NO_SESSION, "a discriminator we never issued");
 
-	/* your_disc 0 is the peer saying it has lost state, and is the only
-	 * case the address pair may answer. Up with a zero your_disc is not
-	 * that case, and taking it would let a forger who knows the pair
-	 * feed any session. */
+	/* your_disc 0 with the peer Down may match on the address pair; Up
+	 * with 0 may not, or a forger knowing the pair could feed any session. */
 	n = build(buf, ST_DOWN, 0);
 	check("demux-zero-disc-down-falls-back", buf, n, 255,
 	      &A_PEER, &A_LOCAL, 0, RX_ACCEPT, "peer lost state: pair answers");
@@ -225,9 +211,8 @@ int main(void)
 	      RX_TTL, "");
 	check("gtsm-multihop-no-cmsg", buf, n, -1, &A_PEER, &A_LOCAL, 1,
 	      RX_TTL, "");
-	/* The multihop minimum belongs to the session, so it can only be
-	 * applied once the demux has found one: a low-TTL packet naming
-	 * nothing is refused for the session, not for the TTL. */
+	/* The multihop minimum is the session's, so demux runs first: a
+	 * low-TTL packet naming nothing is RX_NO_SESSION. */
 	n = build(buf, ST_UP, 0xdeadbeef);
 	check("gtsm-multihop-unknown-session-first", buf, n, 1,
 	      &A_PEER, &A_LOCAL, 1, RX_NO_SESSION, "demux before the minimum");

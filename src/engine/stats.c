@@ -21,11 +21,8 @@
 #include "fsm.h"
 #include "stats.h"
 
-/* /run, not /tmp: the packaged unit sets RuntimeDirectory=xdp-bfd,
- * which creates and owns /run/xdp-bfd, and PrivateTmp would hide a
- * /tmp path from anything outside the unit. A plain ./bfd_tx run
- * without that directory gets a rename error on SIGUSR1 and should
- * pass --stats-dump, which every test already does. */
+/* Under /run, which the packaged unit creates (RuntimeDirectory=xdp-bfd).
+ * Other runs should pass --stats-dump. */
 const char *stats_path = "/run/xdp-bfd/stats.json";
 volatile sig_atomic_t stats_wanted;
 
@@ -35,15 +32,7 @@ void stats_on_signal(int sig)
 	stats_wanted = 1;
 }
 
-/* Emit a string as a JSON value, escaping what the grammar forbids.
- *
- * Every value passed here today is a code literal, so nothing needs it
- * yet. last_reason is twenty-four bytes of copied-anything by design
- * though, and an interface name comes from the control plane, so the first
- * caller to format an address or an errno into one would silently produce
- * a document that the tests consuming this file cannot parse. Cheaper to
- * escape than to rely on every future caller knowing.
- */
+/* Emit a string as a JSON value, escaped. */
 static void json_str(FILE *f, const char *v)
 {
 	fputc('"', f);
@@ -107,9 +96,8 @@ static void one_session(FILE *f, const struct session *s, int first)
 	fputc(',', f);
 	fprintf(f, " \"last_rx_us\": %llu,",
 		(unsigned long long)s->last_rx_us);
-	/* Beside last_rx_us because the pair is the measurement: while the
-	 * fast path answers every packet they track each other, and the gap
-	 * between them is how long the program has been declining to. */
+	/* Next to last_rx_us: the gap between them is how long the program has
+	 * been declining to answer. */
 	fprintf(f, " \"last_ktx_us\": %llu,",
 		(unsigned long long)s->last_ktx_us);
 	fprintf(f, " \"last_detect_us\": %u, \"last_overshoot_us\": %u,",
@@ -124,12 +112,8 @@ static void one_session(FILE *f, const struct session *s, int first)
 		s->detect_iv_us, s->polling ? "true" : "false");
 	fprintf(f, " \"demand_polls\": %u,", s->demand_polls);
 	fprintf(f, " \"orphaned\": %s,", s->orphaned ? "true" : "false");
-	/* Four separate facts, because in demand mode they routinely
-	 * disagree and a single "demand" boolean hides which way round it
-	 * is: what bfdd configured, what the peer is asking of us, and the
-	 * two holds those actually produce right now. A session with
-	 * "demand": true and "tx_held": false has simply not seen the peer
-	 * reach Up yet. */
+	/* Configured demand, the peer's demand, and the two holds they
+	 * produce; in demand mode these routinely differ. */
 	fprintf(f, " \"demand\": {\"on\": %s, \"peer\": %s,"
 		   " \"tx_held\": %s, \"detect_held\": %s},",
 		s->demand ? "true" : "false",
@@ -143,18 +127,9 @@ static void one_session(FILE *f, const struct session *s, int first)
 	fprintf(f, " \"rx_pkts\": %llu, \"tx_pkts\": %llu,",
 		(unsigned long long)s->rx_pkts,
 		(unsigned long long)s->tx_pkts);
-	/* "on" is what bfdd asked for (SESSION_ECHO in the ADD); "active"
-	 * is what this engine will actually do. They differ when the
-	 * negotiated interval is zero, which echo_tx_maybe treats as off
-	 * and which echo_on alone cannot show. This also carried a family
-	 * gate while the originator was v4 only; that is gone.
-	 *
-	 * "alive" is the kernel's advisory verdict and is null when there
-	 * is none: check_session only forms one once an echo has actually
-	 * returned, so a plain false conflated "the echo path is dead"
-	 * with "no echo has ever come back". echo_rx_pkts is the
-	 * userspace-visible witness for that; the kernel's own timestamp
-	 * stays in the map. */
+	/* "on" is SESSION_ECHO from the ADD; "active" is whether echo actually
+	 * runs, since a zero interval is off. "alive" is the kernel's verdict,
+	 * null until an echo has returned. */
 	fprintf(f, " \"echo\": {\"on\": %s, \"active\": %s,"
 		   " \"tx\": %llu, \"rx\": %llu,"
 		   " \"lost\": %llu, \"rtt_last_us\": %llu,"
@@ -206,10 +181,8 @@ void stats_dump(void)
 
 	fprintf(f, "{\n  \"now_us\": %llu,\n", (unsigned long long)now_us());
 	fprintf(f, "  \"kernel_tx\": %s,\n", use_ktx ? "true" : "false");
-	/* What is actually in force, not what was asked for: a bound that
-	 * failed to reach the map, or a heartbeat that failed to map, zero
-	 * this on the way through, so a snapshot saying 0 means the fast
-	 * path really will answer for a wedged engine. */
+	/* Values in force, not as requested: a failed map write or mmap zeroes
+	 * them. */
 	fprintf(f, "  \"deadman_us\": %llu,\n",
 		(unsigned long long)(ktx_deadman_ns / 1000));
 	fprintf(f, "  \"demand_poll_us\": %llu,\n",

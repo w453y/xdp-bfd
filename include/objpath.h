@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-/* objpath.h - locate bfd_xdp.o without depending on the working directory.
- *
- * The object is built beside the binaries, so the binary's own directory
- * is where to look; the cwd stays a last resort so an explicitly placed
- * object still works.
- */
+/* objpath.h - locate bfd_xdp.o: --bpf-obj, then beside the binary, then the
+ * install directory, then the cwd. */
 #ifndef BFD_OBJPATH_H
 #define BFD_OBJPATH_H
 
@@ -36,11 +32,7 @@ static inline const char *bfd_obj_path(const char *override)
 			return buf;   /* beside the binary: the build tree */
 	}
 
-	/* The install location, compiled in by the package build as
-	 * -DBFD_XDP_OBJDIR=\"/usr/lib/xdp-bfd\". An installed binary lives in
-	 * /usr/sbin and its object in /usr/lib/xdp-bfd, so the beside-the-
-	 * binary search above misses it and this is where it is found. Absent
-	 * in a plain `make` build, where beside-the-binary already works. */
+	/* Install location, set by the package build as -DBFD_XDP_OBJDIR. */
 #ifdef BFD_XDP_OBJDIR
 	if (sizeof(BFD_XDP_OBJDIR "/" BFD_XDP_OBJ) <= sizeof(buf)) {
 		strcpy(buf, BFD_XDP_OBJDIR "/" BFD_XDP_OBJ);
@@ -49,7 +41,7 @@ static inline const char *bfd_obj_path(const char *override)
 	}
 #endif
 
-	return BFD_XDP_OBJ;   /* last resort: the cwd, as before */
+	return BFD_XDP_OBJ;   /* last resort: the cwd */
 }
 
 #endif /* BFD_OBJPATH_H */

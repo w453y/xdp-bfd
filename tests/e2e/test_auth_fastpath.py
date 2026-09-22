@@ -1,18 +1,7 @@
-"""An authenticated session on the fast path, end to end.
-
-This is the one thing check-frr can never reach: stock bfdd will not
-offload an authenticated session to a data plane it did not write, so the
-handover of the authentication state from userspace to the program - the
-transmit sequence seeded into bfd_sessions, the accept set pushed into
-tx_config, and the digest the program then builds and verifies on its own
-- was exercised only by the 64-session mesh. Two static engines with
---auth reproduce it in namespaces, which CI can run.
-
-A on the fast path, B in pure userspace: that asymmetry is the point. B
-signs in userspace with bfd_auth_build and verifies with bfd_auth_check;
-A's replies are built by the XDP program from the accept set and the
-seeded sequence. The session only reaches Up if the two agree, so Up is
-the assertion.
+"""An authenticated session on the fast path, end to end. Stock bfdd will
+not offload authenticated sessions, so two static engines with --auth
+stand in: A on the fast path, B in userspace. Up requires A's
+kernel-built digests and B's userspace ones to agree.
 """
 
 import time
@@ -37,11 +26,8 @@ def test_authenticated_session_up_over_the_fast_path(rig, binary, bpf_obj,
         start_engine(binary, 4, ns=NS_B, stats=STATS_B, extra=spec)
         wait_both_up()
 
-        # Up is not enough on its own: a session whose fast path never
-        # armed would still come up, answered from userspace the whole
-        # time. last_ktx_us is the engine's record of the program having
-        # transmitted, so it is what says the digest below was built in
-        # the kernel and accepted by a userspace peer.
+        # Up alone could be userspace answering; last_ktx_us shows the program
+        # transmitted.
         end = time.time() + 5
         while time.time() < end:
             if only_session(NS_A, STATS).get("last_ktx_us", 0):

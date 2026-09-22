@@ -6,7 +6,9 @@ reference testbed.
     BFD_VTYSH       vtysh of the FRR build under test, not the distro one
     BFD_ENGINE      path to bfd_tx
     BFD_STATS       where SIGUSR1 writes its snapshot
+    BFD_DPLANE      the engine's --dplane argument
     BFD_FRR_PREFIX  install prefix of that FRR build
+    BFD_FRRINIT     frrinit.sh of that FRR build
 """
 
 import os

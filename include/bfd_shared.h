@@ -9,13 +9,10 @@
 #define BFD_PORT_1HOP    3784
 #define BFD_PORT_MHOP    4784   /* RFC 5883 multihop */
 #define BFD_ECHO_PORT    3785
-#define BFD_SRC_PORT     65472  /* Per-session TX source port = base +
-                                 * slot; 64 slots end at 65535, the top
-                                 * of the RFC 5881 s4 range. Top-down
-                                 * because stock bfdd allocates its own
-                                 * per-session sockets bottom-up from
-                                 * 49152 even in dplane mode and those
-                                 * binds collide with ours. */
+#define BFD_SRC_PORT     65472  /* TX source port = base + slot; 64 slots
+                                 * end at 65535, the top of the RFC 5881
+                                 * s4 range, away from bfdd's own sockets
+                                 * allocated upward from 49152 */
 #define BFD_MIN_LEN      24
 #define BFD_VERSION      1
 #define BFD_MAX_SESSIONS 64
@@ -78,9 +75,9 @@ struct bfd_ctrl_pkt {
 	X(DECLINED,          "declined")           /* echo, peer unknown */\
 	X(NOT_SELF,          "not-self")           /* echo, not self-addr */\
 	X(ECHO_TTL,          "echo-ttl")           /* unreachable, see above */ \
-	X(UNSUPPORTED_FLAGS, "unsupported-flags")  /* A or M bit */        \
+	X(UNSUPPORTED_FLAGS, "unsupported-flags")  /* M bit */             \
 	X(SWEEP_INIT_FAIL,   "sweep-init-fail")    /* sweeper never armed */ \
-	X(IP_OPTIONS,        "ip-options")         /* any UDP with options */ \
+	X(IP_OPTIONS,        "ip-options")         /* BFD port, IP options */ \
 	X(AUTH_MISMATCH,     "auth-mismatch")      /* A bit vs session */   \
 	X(AUTH_BAD,          "auth-bad")           /* key, digest or seq */ \
 	X(DEADMAN_HOLD,      "deadman-hold")       /* reply withheld, engine stalled */ \
@@ -270,12 +267,12 @@ struct tx_cfg {
 	__u32 your_disc;
 	__u32 min_tx_us;
 	__u32 min_rx_us;
-	__u16 src_port;      /* kernel echo TX source port; 0 = BFD_SRC_PORT */
+	__u16 src_port;      /* source port of kernel replies; 0 = BFD_SRC_PORT */
 	__u8  state;
 	__u8  diag;
 	__u8  mult;
 	__u8  poll;          /* userspace-initiated Poll sequence active:
-	                      * echo sets P until final_seq == poll_seq */
+	                      * replies set P until final_seq == poll_seq */
 	__u8  demand;        /* set the D bit on kernel replies */
 	__u8  demand_hold;   /* demand steady state: the sweep must not treat
 	                      * the peer's silence as a fault. Precomputed by

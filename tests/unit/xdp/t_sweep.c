@@ -247,7 +247,7 @@ static void run_sweep_matrix(void)
 	case_auth_required(0);
 	case_auth_required(1);
 
-	/* Control: a correctly signed packet is answered. */
+	/* Authentication; auth-good-signature is the control. */
 #define KS BFD_AUTH_KEYED_SHA1
 #define MS BFD_AUTH_METICULOUS_SHA1
 	case_auth_present_without_send_key();
@@ -283,7 +283,7 @@ static void run_sweep_matrix(void)
 	 * window. */
 	case_auth_reject("auth-window-wrapped-far", KS, "topsecret", 7,
 			 0x10000000, 0, 0xF0000000, 0);
-	/* The same wrap, one step past the watermark, is inside it. */
+	/* Across the wrap, a sequence just past the watermark is inside it. */
 	case_auth_reject("auth-window-wraps-cleanly", KS, "topsecret", 7,
 			 0x00000002, 0, 0xFFFFFFFF, 1);
 	/* Rollover: transmitting under key 7, still accepting key 9. */

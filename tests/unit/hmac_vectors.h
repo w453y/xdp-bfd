@@ -4,9 +4,9 @@
  * hmac_run on the host and xdp_run in the kernel.
  *
  * The first four are RFC 2202 test cases; its others need keys or
- * messages longer than a block, which this refuses. The rest are the
- * shapes BFD produces: a 52-byte keyed-SHA1 packet at the key and message
- * lengths where the padding changes.
+ * messages longer than a block, which this refuses. The rest are
+ * BFD-shaped: 52-byte keyed-SHA1 packets under 1, 16 and 64-byte keys, and
+ * messages of 0, 24 and 55 bytes, where the padding changes.
  */
 #ifndef BFD_HMAC_VECTORS_H
 #define BFD_HMAC_VECTORS_H

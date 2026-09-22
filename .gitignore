@@ -7,13 +7,12 @@ observer.csv
 
 # numbered scratch scripts, local only
 /[0-9][0-9]-*.py
-# unit test binaries. A pattern rather than a list: every harness is
-# <subject>_run or <subject>_fuzz, and the list kept going stale.
+# unit test binaries: every harness is <subject>_run or <subject>_fuzz
 /tests/unit/*_run
 /tests/unit/*_fuzz
-# libFuzzer writes findings into the working directory, and a live
-# corpus is regenerable in 90 seconds - neither belongs in the repo.
+# libFuzzer findings and corpora; both are regenerable
 /crash-*
 /leak-*
 /timeout-*
+/corpus/
 /tests/unit/corpus/

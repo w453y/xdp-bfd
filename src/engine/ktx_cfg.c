@@ -40,8 +40,8 @@ void ktx_cfg_for(const struct session *s, int64_t now, struct tx_cfg *c,
 	};
 	memcpy(c->auth_kpad, s->auth_kpad, sizeof(c->auth_kpad));
 
-	/* Every key a packet may be signed with now. Lifetimes are evaluated
-	 * here since the program has no clock. */
+	/* Every key a packet may be signed with now. Lifetimes are in wall-clock
+	 * seconds, which the program cannot read, so they are evaluated here. */
 	{
 		unsigned i;
 

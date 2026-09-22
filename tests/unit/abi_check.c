@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Layout pins for every struct the XDP program and engine share, compiled by
  * both the host compiler and clang for BPF; if it compiles, it passes. After a
- * deliberate change, read the new offsets off the compiler. */
+ * deliberate change, read the new offsets with tests/unit/abi_probe.c. */
 #include <bfd_shared.h>
 #include <hmac_sha1.h>
 #include <stddef.h>

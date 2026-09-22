@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* log.h - levels for the engine's output.
  *
- *   ERROR  the engine cannot do its job; never gated, always on stderr.
+ *   ERROR  the engine cannot do its job; never gated, on stderr.
  *   INFO   lifecycle: attach, bfdd connect/disconnect, session add/delete
  *          and state transitions. The default.
  *   DEBUG  per-packet and per-timeout detail.

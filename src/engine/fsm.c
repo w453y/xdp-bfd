@@ -129,7 +129,7 @@ void state_transition(struct session *s, int newstate, int diag,
 	s->last_transition_us = t;
 	if (newstate == ST_DOWN && diag == 1 && s->last_rx_us) {
 		/* Account the silence here, before detect_iv_us is reset, so a
-		 * Down from the sweep via ktx_poll_map is counted too. */
+		 * Down from the sweep (on_sweep_event) is counted too. */
 		uint64_t silent = t - s->last_rx_us;
 		uint64_t budget = (uint64_t)(s->r_mult ? s->r_mult
 						    : s->detect_mult) *
@@ -493,7 +493,7 @@ void fsm_tx(struct session *s, uint64_t t)
 	int due = (t >= s->next_tx_us) || s->send_final;
 	if (use_ktx && !s->ktx_uncovered && ktx_answers(s) &&
 	    !s->send_final && !s->just_up && !demand_announce_due(s)) {
-		/* Kernel echo only transmits at the peer's pace. If that is
+		/* The fast path only replies at the peer's pace. If that is
 		 * slower than our required rate, transmit from here.
 		 * last_ktx_us is when the fast path last replied; it is zero
 		 * until the first reply, so userspace transmits until the

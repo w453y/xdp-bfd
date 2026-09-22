@@ -92,7 +92,7 @@ TEST_HDRS := $(wildcard tests/unit/*.h)
 tests/unit/xdp_run: tests/unit/xdp_run.c $(wildcard tests/unit/xdp/*.c) $(SHARED_HDRS) $(TEST_HDRS)
 	$(CC) $(CFLAGS) $(XDP_CFLAGS) -Itests/unit $< -o $@ -lbpf
 
-# Links against the real fsm.o with three stubs; no root, no BPF.
+# Links against the real fsm.o with four stubs; no root, no BPF.
 tests/unit/fsm_run: tests/unit/fsm_run.c src/engine/fsm.o src/engine/log.o \
 		    $(wildcard src/engine/*.h) $(TEST_HDRS)
 	$(CC) $(CFLAGS) $(XDP_CFLAGS) tests/unit/fsm_run.c src/engine/fsm.o src/engine/log.o -o $@
@@ -166,7 +166,7 @@ check-netns:
 	python3 -m pytest tests/e2e -v -m "not frr"
 
 # Scenarios against stock FRR bfdd in containers. Separate from
-# check-netns because it needs a container runtime and a ~100MB image.
+# check-netns because it needs a container runtime and a ~200MB image.
 # Set BFD_CONTAINER_RUNTIME to docker or podman.
 check-frr:
 	python3 -m pytest tests/e2e -v -m frr

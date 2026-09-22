@@ -11,9 +11,9 @@
 #include "bfd_shared.h"
 #include "hmac_sha1.h"
 
-/* HMAC over a control packet with the digest field zeroed, as bfdd does. Fixed
- * bounds, so the fast path can use it. `pkt` must hold BFD_MIN_LEN +
- * BFD_AUTH_SHA1_LEN bytes. */
+/* HMAC over a control packet with the digest field zeroed, as bfdd does.
+ * Userspace only; the fast path calls hmac_sha1_blocks directly. `pkt` must
+ * hold BFD_MIN_LEN + BFD_AUTH_SHA1_LEN bytes. */
 static inline int bfd_auth_sha1(const __u8 *pkt,
 				const __u8 kpad[SHA1_BLOCK_LEN],
 				__u8 out[SHA1_DIGEST_LEN])
@@ -99,7 +99,7 @@ enum bfd_auth_verdict {
 	BFD_AUTH_MALFORMED,   /* section absent, short, or the wrong type */
 	BFD_AUTH_BADKEY,      /* key id or password does not match */
 	BFD_AUTH_BADDIGEST,
-	BFD_AUTH_REPLAY,      /* sequence number went backwards */
+	BFD_AUTH_REPLAY,      /* sequence number outside the replay window */
 };
 
 /* Check a received packet's auth section. `rx_seq` and `seen` carry the replay

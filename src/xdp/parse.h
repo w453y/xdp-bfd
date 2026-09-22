@@ -73,9 +73,9 @@ static __always_inline int parse_l3(struct ethhdr *eth, void *data_end,
 		c->udp = (void *)(c->iph + 1);
 		if ((void *)(c->udp + 1) > data_end)
 			return XDP_PASS;
-		/* Fragments: a non-first fragment has no UDP header, and a
-		 * first one would be bounced with MF set. BFD never fragments,
-		 * so drop those aimed at a BFD port and pass the rest. IPv6
+		/* Fragments. BFD never fragments, so a first fragment aimed at
+		 * a BFD port is dropped rather than bounced with MF set.
+		 * Non-first fragments have no UDP header and pass. IPv6
 		 * fragments fall out at the nexthdr check. */
 		if (c->iph->frag_off & bpf_htons(0x3fff)) {
 			if (!(c->iph->frag_off & bpf_htons(0x1fff)) &&

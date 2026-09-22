@@ -17,7 +17,7 @@ from conftest import (NS_A, NS_B, STATS, STATS_B, sh, setup, teardown,
                       ns_pids, start_engine, wait_both_up, only_session,
                       dump)
 
-# Past the 1s bound plus B's detect budget (~150ms).
+# Past the 1s bound plus B's 30ms detect budget.
 STOP_S = 4.0
 
 

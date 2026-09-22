@@ -340,8 +340,8 @@ def build_cases(got):
         c.append(("ip-options", "single-hop BFD never carries IP options",
                   dict(family=4, src=s["peer"], dst=s["local"], ttl=255,
                        dport=3784, ydisc=0, state=1, options=True),
-                  # Its own slot, not rejected: the check fires on any optioned
-                  # UDP packet, BFD or not.
+                  # Its own slot, not rejected: options are refused for
+                  # what the IP header is, not for anything in the BFD.
                   [("ip-options", COUNT), ("rejected", 0)], None))
         c.append(("frag-first", "a first fragment aimed at 3784 is dropped, "
                   "not bounced back out with MF set",

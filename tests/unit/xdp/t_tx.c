@@ -394,7 +394,7 @@ static void case_poll_final(uint8_t in_flags, uint32_t cfg_poll,
 	map_reset();
 }
 
-/* Liveness and the RX counter are map-side effects nothing has checked. */
+/* Liveness and the RX counter, the map-side effects of an accepted packet. */
 static void case_rx_state(void)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");

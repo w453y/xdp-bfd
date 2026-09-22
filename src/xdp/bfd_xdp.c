@@ -13,7 +13,7 @@
 
 #include "bfd_shared.h"
 
-/* Split out of this file; maps.h must come first (see src/xdp). */
+/* maps.h must precede every header that references a map. */
 #include "tunables.h"
 #include "maps.h"
 #include "stats.h"
@@ -48,7 +48,7 @@ int bfd_observer(struct xdp_md *ctx)
 
 	/* Echo reflection (RFC 5880 s6.4): return a self-addressed UDP/3785
 	 * packet to its originator. Swap MACs and decrement TTL 255->254,
-	 * which the originator's GTSM expects; nothing else changes. */
+	 * which the originator's GTSM expects; the payload is untouched. */
 	if (udp->dest == bpf_htons(BFD_ECHO_PORT)) {
 		if (ip6)
 			return echo_reflect_v6(eth, ip6, udp, data_end);
@@ -68,9 +68,9 @@ int bfd_observer(struct xdp_md *ctx)
 		count(BFD_STAT_MALFORMED);
 		return XDP_DROP;
 	}
-	/* The UDP length must match the frame received, or a short frame could
-	 * claim a longer packet. Dropped as malformed: nothing but our socket
-	 * consumes the BFD ports. */
+	/* The UDP and IP lengths must fit the frame received, or a short frame
+	 * could claim a longer packet. Dropped as malformed: nothing but our
+	 * socket consumes the BFD ports. */
 	{
 		__u32 have = (__u32)((long)data_end - (long)udp);
 		__u16 ulen = bpf_ntohs(udp->len);

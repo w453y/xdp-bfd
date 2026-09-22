@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
+/* abi_probe.c - print the sizes and offsets abi_check.c pins, to update it
+ * after a deliberate layout change. Not built by default:
+ *
+ *     cc -Iinclude tests/unit/abi_probe.c -o abi_probe && ./abi_probe
+ */
 #include "bfd_shared.h"
 #ifdef __bpf__
 #define P(x) _Static_assert(1, "")

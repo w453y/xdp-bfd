@@ -94,8 +94,8 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx,
         	                            bfd, cfg, st, sc, &auth_sum)))
         		return XDP_DROP;
 
-        	/* Send exactly a 24-byte control packet, trimming any auth
-        	 * section or trailer, and recompute the IP checksum. On
+        	/* Trim the frame to our packet (24 bytes plus our own auth
+        	 * section, if any) and recompute the IP checksum. On
         	 * adjust_tail failure drop, as the frame is half-rewritten. */
         	int want = (int)(sizeof(*eth) +
         	                 (iph ? sizeof(*iph) : sizeof(*ip6)) +

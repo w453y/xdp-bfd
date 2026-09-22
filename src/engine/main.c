@@ -76,15 +76,14 @@ static int tick_fd = -1;
 static unsigned tick_us = TICK_US_DEFAULT;
 
 
-/* Loop passes, and passes on which the control socket had a packet
- * (loop_rx_wakeups), for the stats dump. */
+/* Main loop passes, for the stats dump. */
 uint64_t loop_passes;
 /* --demand, static mode only; under bfdd demand arrives per session in the
  * ADD. */
 static int static_demand;
 const char *static_auth = NULL;
 static int check_only;
-uint64_t loop_rx_wakeups;
+uint64_t loop_rx_wakeups;   /* passes on which rx_sock had a packet */
 
 /* Inter-pass gap histogram, log2 buckets in microseconds. */
 uint64_t loop_gap_us[24];
@@ -610,8 +609,8 @@ int main(int argc, char **argv)
 
 		if (shutdown_wanted) {
 			/* Announce AdminDown to every peer before exiting.
-			 * fsm_announce_down skips dp-hold orphans, which must
-			 * survive unnoticed. */
+			 * dp-hold orphans are skipped: they must survive
+			 * unnoticed. */
 			int announced = 0;
 
 			for (int i = 0; i < MAX_SESSIONS; i++) {
@@ -755,8 +754,8 @@ int main(int argc, char **argv)
 				fsm_rx(rs, &p, t);
 		}
 
-		/* RFC 5883 multihop control packets, port 4784. Same demux as
-		 * single-hop: your_disc first, address pair as fallback. */
+		/* RFC 5883 multihop control packets, port 4784. Same
+		 * rx_accept as single-hop, with the session's minimum TTL. */
 		for (int d = 0; rdm4 && rxm_sock >= 0 && d < drain_budget; d++) {
 			__u8 pm_buf[BFD_MAX_LEN] = {0};
 		struct bfd_ctrl_pkt pm;

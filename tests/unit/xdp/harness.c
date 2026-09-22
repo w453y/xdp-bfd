@@ -16,11 +16,10 @@ static uint16_t csum16(const void *p, int len, uint32_t seed)
 	return (uint16_t)~sum;
 }
 
-/* A single-hop IPv4 BFD control packet. ttl is a parameter because GTSM is
- * the first thing worth asserting and the whole point is to vary it. */
+/* An IPv4 BFD control packet with a chosen TTL, so GTSM can be varied.
+ * frag_off is set by the caller after building; see case_frag. */
 static void build_v4(struct frame *f, uint8_t ttl, uint16_t dport,
 		     const struct bfd_ctrl_pkt *bfd, unsigned int extra)
-/* frag_off is set by the caller after building, see case_frag */
 {
 	static const unsigned char dmac[6] = { 0x02, 0, 0, 0, 0, 1 };
 	static const unsigned char smac[6] = { 0x02, 0, 0, 0, 0, 2 };
@@ -71,7 +70,6 @@ static struct bfd_ctrl_pkt ctrl_up(void)
 	return p;
 }
 
-/* A single-hop IPv6 BFD control packet. */
 /* A v6 frame with exactly one extension header (8 bytes, hdrlen 0) between
  * the IPv6 header and UDP. `ext` is the ip6 next-header (e.g. HOPOPTS),
  * `inner` is the extension header's own next-header. */
@@ -111,6 +109,7 @@ static void build_v6_exthdr(struct frame *f, uint8_t ext, uint8_t inner,
 	f->len = sizeof(*eth) + sizeof(*ip6) + 8 + sizeof(*udp) + sizeof(*bfd);
 }
 
+/* An IPv6 BFD control packet with a chosen hop limit. */
 static void build_v6(struct frame *f, uint8_t hlim, uint16_t dport,
 		     const struct bfd_ctrl_pkt *bfd, unsigned int extra)
 {

@@ -181,8 +181,8 @@ void stats_dump(void)
 
 	fprintf(f, "{\n  \"now_us\": %llu,\n", (unsigned long long)now_us());
 	fprintf(f, "  \"kernel_tx\": %s,\n", use_ktx ? "true" : "false");
-	/* Values in force, not as requested: a failed map write or mmap zeroes
-	 * them. */
+	/* The dead-man bound in force, not as requested: a failed map write or
+	 * mmap zeroes it. */
 	fprintf(f, "  \"deadman_us\": %llu,\n",
 		(unsigned long long)(ktx_deadman_ns / 1000));
 	fprintf(f, "  \"demand_poll_us\": %llu,\n",

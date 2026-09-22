@@ -107,8 +107,9 @@ static void dp_sessions_orphan(const char *why)
 }
 
 /* Outbound queue. dp_conn is non-blocking and the tick cannot wait, so writes
- * queue here and partial writes resume later. Only overflow drops the
- * connection. 64KB holds about fifteen counter sweeps at 64 sessions. */
+ * queue here and partial writes resume later. Only overflow or a send error
+ * drops the connection. 64KB holds about fifteen counter sweeps at 64
+ * sessions. */
 static char dp_out[65536];
 static size_t dp_out_len;
 
@@ -630,7 +631,7 @@ static void dp_process(const uint8_t *buf, size_t len)
 			dp_handle_echo_req(h, (const void *)payload);
 		break;
 	case ECHO_REPLY:
-		break;   /* our own probes, nothing to do in v0 */
+		break;   /* unsolicited: we send no ECHO_REQUEST */
 	case DP_REQUEST_SESSION_COUNTERS:
 		if (plen >= sizeof(uint32_t))
 			dp_handle_counters_req(h, (const void *)payload);
@@ -687,8 +688,8 @@ void dp_read(void)
 			break;
 		dp_process(dp_buf + off, mlen);
 		off += mlen;
-		/* dp_process may have dropped the connection on a full output
-		 * queue, which zeroes dp_have. */
+		/* dp_process may have dropped the connection (full output
+		 * queue or send error), which zeroes dp_have. */
 		if (dp_conn < 0)
 			return;
 	}

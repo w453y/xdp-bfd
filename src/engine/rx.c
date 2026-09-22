@@ -60,8 +60,8 @@ struct session *rx_accept(const __u8 *pkt, size_t n, int ttl,
 	 * bfd_ctrl_check checks the length. */
 	memcpy(&h, pkt, sizeof(h));
 
-	/* The same predicate the XDP path uses, so the two planes cannot
-	 * disagree about what is acceptable. */
+	/* The same predicate the XDP path uses. Its A-bit rule is disarmed
+	 * here and applied by rx_auth_ok, once the session is known. */
 	if (bfd_ctrl_check(h.vers_diag, h.flags, h.detect_mult, h.len,
 			   h.my_disc, (__u32)n,
 			   !!(h.flags & BFD_F_AUTH)) != BFD_CTRL_ACCEPT) {

@@ -661,9 +661,9 @@ static void case_unknown_session(void)
 	map_reset();
 }
 
-/* UDP behind one v6 extension header aimed at a
- * BFD port is dropped and counted; the same behind a non-BFD port, and a
- * plain ICMPv6 packet (neighbour discovery), still pass. */
+/* UDP behind one v6 extension header aimed at a BFD port is dropped and
+ * counted; the same behind a non-BFD port, and a plain ICMPv6 packet
+ * (neighbour discovery), still pass. */
 static void case_v6_exthdr(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();

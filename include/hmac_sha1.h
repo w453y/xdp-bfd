@@ -10,8 +10,8 @@
 
 #include <linux/types.h>
 
-/* Both spellings exist only on the BPF side, where bpf_helpers.h
- * supplies them. The host build needs its own. */
+/* bpf_helpers.h supplies __always_inline on the BPF side; the host build
+ * needs its own. */
 #ifndef __always_inline
 #define __always_inline inline __attribute__((always_inline))
 #endif
@@ -21,8 +21,8 @@
 #define SHA1_UNROLL
 #endif
 
-/* On BPF the compression and padding are real calls: inlined six times, their
- * message schedules overrun the 512-byte stack. */
+/* On BPF, sha1_compress and hmac_sha1_blocks are real calls: fully inlined,
+ * their message schedules overrun the 512-byte stack. */
 #if defined(__bpf__)
 #define SHA1_CORE static __attribute__((noinline))
 #else

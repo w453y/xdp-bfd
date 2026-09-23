@@ -25,6 +25,8 @@
 uint64_t dp_hold_us;	  /* --dp-hold: keep sessions across bfdd restarts */
 uint64_t dp_reconcile_us; /* sweep deadline after reconnect */
 #define DP_RECONCILE_US (10ull * 1000000)
+/* A few replies' worth, kept free of notifications. */
+#define DP_REPLY_ROOM 1024
 
 /* bfdd's RBIT_* positions differ from the wire flags. */
 static uint32_t rflags_from_wire(uint8_t wire)
@@ -107,8 +109,11 @@ void dp_notify_state(struct session *s)
 		struct bfddp_state_change sc;
 	} __attribute__((packed)) m = { 0 };
 
-	if (!dp_connected())
+	/* Held for bfdd's return, which dp_notify_flush_pending serves. */
+	if (!dp_connected()) {
+		s->notify_pending = 1;
 		return;
+	}
 
 	m.h.version = 1;
 	m.h.type = htons(BFD_STATE_CHANGE);
@@ -124,10 +129,11 @@ void dp_notify_state(struct session *s)
 	m.sc.diagnostics = s->diag;
 	m.sc.detection_multiplier = s->r_mult;
 
-	/* Queue full: defer rather than drop the connection. A flap storm
-	 * collapses to one message per session.
+	/* Queue short: defer rather than drop the connection. A flap storm
+	 * collapses to one message per session. DP_REPLY_ROOM stays free for
+	 * replies, which bfdd waits on and which cannot be deferred.
 	 */
-	if (sizeof(m) > dp_out_room()) {
+	if (sizeof(m) + DP_REPLY_ROOM > dp_out_room()) {
 		s->notify_pending = 1;
 		return;
 	}
@@ -219,9 +225,11 @@ static struct session *dp_add_find(uint32_t lid, const struct bfddp_session_msg 
 	struct session *stale;
 
 	if (s) {
-		/* bfdd may reconnect with stable lids; unmark, or the reconcile
-		 * sweep tears it down.
+		/* bfdd reconnected with stable lids. It ran the session itself
+		 * meanwhile, so it needs our state as well as the unmark.
 		 */
+		if (s->orphaned)
+			*adopted = 1;
 		s->orphaned = 0;
 		return s;
 	}
@@ -374,11 +382,16 @@ static void dp_handle_add(const struct bfddp_session_msg *sm, uint64_t t)
 		return;
 
 	s->lid = lid;
-	if (fresh || !s->wire_disc)
+	if (fresh || !s->wire_disc) {
 		/* RFC 5880: constant while Up, so an adopted session keeps its
-		 * own.
+		 * own, and bfdd may reissue that number as a lid later.
 		 */
-		s->wire_disc = lid;
+		uint32_t d = lid;
+
+		while (!d || (sess_by_wire(d) && sess_by_wire(d) != s))
+			d = (uint32_t)random() | 1;
+		s->wire_disc = d;
+	}
 	dp_add_addrs(s, sm, fresh);
 
 	old_tx = s->min_tx_us;

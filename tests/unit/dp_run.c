@@ -17,6 +17,8 @@
 
 #include "session.h"
 #include "dplane.h"
+#include "fsm.h"
+#include "util.h"
 #include "bfddp.h"
 
 #include "ktx_stubs.h"
@@ -28,6 +30,7 @@
 #include "dp/t_auth.c"
 #include "dp/t_notify.c"
 #include "dp/t_resolve.c"
+#include "dp/t_resync.c"
 
 int main(void)
 {
@@ -52,6 +55,9 @@ int main(void)
 	case_address_move();
 	case_flags();
 	case_notify_coalesce();
+	case_reconnect_resyncs_state();
+	case_counters_reply_fits_during_storm();
+	case_adopted_disc_not_reissued();
 	case_local_resolve();
 	case_local_resolve_v6();
 	case_local_resolve_mhop();

@@ -246,6 +246,39 @@ def test_dp_hold_survives_a_bfdd_crash(frr_hold):
     )
 
 
+def test_dp_hold_survives_a_reconnect(frr_hold):
+    """The connection drops but bfdd lives, and reconnects past its own
+    detection time with the same lids: the session stays Up on both sides.
+    """
+    pa, _ = frr_hold
+    before = _peer_downs(NAME_B)
+    log = "/tmp/frr_hold_engine.log"
+    connects = sh("cat %s" % log, check=False).count("bfdd connected")
+    # Keep bfdd away past its own detection time, so its view goes stale.
+    block = "iptables -I OUTPUT -o lo -p tcp --dport 50700 -j REJECT"
+    sh("sudo nsenter -t %d -n %s" % (pa, block))
+    sh("sudo nsenter -t %d -n ss -K dst 127.0.0.1 dport = 50700" % pa, check=False)
+    time.sleep(3.0)
+    sh("sudo nsenter -t %d -n %s" % (pa, block.replace("-I", "-D")))
+
+    end = time.time() + 20.0
+    while time.time() < end:
+        if sh("cat %s" % log, check=False).count("bfdd connected") > connects:
+            break
+        time.sleep(0.5)
+    else:
+        pytest.fail("bfdd never reconnected\n%s" % sh("tail -20 %s" % log, check=False))
+
+    end = time.time() + 10.0
+    while time.time() < end and not _brief_up(NAME_A):
+        time.sleep(0.5)
+    assert _brief_up(NAME_A), "bfdd shows the session %s after reconnecting\n%s" % (
+        frr_vtysh(NAME_A, "show bfd peers brief"),
+        sh("tail -20 %s" % log, check=False),
+    )
+    assert _peer_downs(NAME_B) == before, "the far peer went down across the reconnect"
+
+
 RAISED_MS = 50
 
 

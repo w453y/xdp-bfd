@@ -171,6 +171,30 @@ int main(void)
 	ktx_cfg_for(s, NOW, &c, &k);
 	report("poll-not-carried-while-down", c.poll != 0, "a Poll belongs to an Up session");
 
+	/* --- echo (RFC 5880 s6.8.9) --- */
+	s = arm();
+	s->echo_on = 1;
+	s->echo_tx_us = 20000;
+	s->r_min_echo = 0;
+	ktx_cfg_for(s, NOW, &c, &k);
+	report("echo-off-when-peer-refuses", c.echo_iv_us != 0, "peer Required Min Echo RX 0");
+
+	s = arm();
+	s->echo_on = 1;
+	s->echo_tx_us = 20000;
+	s->r_min_echo = 50000;
+	ktx_cfg_for(s, NOW, &c, &k);
+	report("echo-no-faster-than-peer-asks", c.echo_iv_us != 50000, "max(ours, peer's)");
+
+	s = arm();
+	s->echo_on = 1;
+	s->echo_tx_us = 20000;
+	s->r_min_echo = 10000;
+	s->is_mhop = 1;
+	s->min_ttl = 250;
+	ktx_cfg_for(s, NOW, &c, &k);
+	report("echo-never-multihop", c.echo_iv_us != 0, "RFC 5883");
+
 	printf("\n%d failure(s)\n", fails);
 	return fails ? 1 : 0;
 }

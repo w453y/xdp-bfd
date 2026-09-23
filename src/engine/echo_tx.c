@@ -235,7 +235,9 @@ static unsigned int echo_build_v6(struct session *s, uint8_t *frame, uint32_t no
 /* The nonce is matched on return for RTT. */
 void echo_tx_maybe(struct session *s, uint64_t t)
 {
-	if (echo_sock < 0 || !s->echo_tx_us || s->state != ST_UP)
+	uint32_t iv = echo_interval(s);
+
+	if (echo_sock < 0 || !iv)
 		return;
 	if (!s->mac_valid)
 		return;
@@ -248,7 +250,7 @@ void echo_tx_maybe(struct session *s, uint64_t t)
 			s->echo_gap_max_us = gap;
 	}
 	s->echo_last_send_us = t;
-	s->next_echo_tx_us = t + s->echo_tx_us;
+	s->next_echo_tx_us = t + iv;
 
 	if (s->echo_sent_us) {
 		s->echo_lost++;

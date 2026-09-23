@@ -214,6 +214,17 @@ static inline int demand_sweep_held(const struct session *s)
 	return s->demand && s->state == ST_UP && s->r_state == ST_UP;
 }
 
+/* RFC 5880 s6.8.9: only while Up, only if the peer's Required Min Echo RX is
+ * nonzero, and no faster than it; never over multiple hops (RFC 5883). 0 when
+ * no echo may be sent.
+ */
+static inline uint32_t echo_interval(const struct session *s)
+{
+	if (!s->echo_tx_us || s->is_mhop || s->state != ST_UP || !s->r_min_echo)
+		return 0;
+	return s->echo_tx_us > s->r_min_echo ? s->echo_tx_us : s->r_min_echo;
+}
+
 /* Must agree with the program's xdp_auth_fast. */
 static inline int auth_fast_capable(const struct session *s)
 {

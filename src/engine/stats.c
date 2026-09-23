@@ -119,12 +119,12 @@ static void one_session(FILE *f, const struct session *s, int first)
 	fprintf(f, " \"tx_fail\": %llu,", (unsigned long long)s->tx_fail);
 	fprintf(f, " \"rx_pkts\": %llu, \"tx_pkts\": %llu,", (unsigned long long)s->rx_pkts,
 		(unsigned long long)s->tx_pkts);
-	/* on is SESSION_ECHO; active excludes a zero interval; alive is the
+	/* on is SESSION_ECHO; active is echo_interval(); alive is the
 	 * kernel's verdict, null until an echo returns.
 	 */
 	fprintf(f,
 		" \"echo\": {\"on\": %s, \"active\": %s, \"tx\": %llu, \"rx\": %llu, \"lost\": %llu, \"rtt_last_us\": %llu, \"rtt_min_us\": %llu, \"rtt_max_us\": %llu, \"alive\": %s}}",
-		s->echo_on ? "true" : "false", (s->echo_on && s->echo_tx_us) ? "true" : "false",
+		s->echo_on ? "true" : "false", echo_interval(s) ? "true" : "false",
 		(unsigned long long)s->echo_tx_pkts, (unsigned long long)s->echo_rx_pkts,
 		(unsigned long long)s->echo_lost, (unsigned long long)s->echo_rtt_last_us,
 		(unsigned long long)s->echo_rtt_min_us, (unsigned long long)s->echo_rtt_max_us,

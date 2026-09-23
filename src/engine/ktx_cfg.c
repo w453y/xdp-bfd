@@ -12,7 +12,7 @@ void ktx_cfg_for(const struct session *s, int64_t now, struct tx_cfg *c, struct 
 {
 	/* Disarmed while the peer demands (s6.8.7); userspace answers Polls. */
 	*c = (struct tx_cfg){
-		.echo_iv_us = s->echo_tx_us,
+		.echo_iv_us = echo_interval(s),
 		.min_echo_rx_us = s->min_echo_rx_us,
 		.min_ttl = s->min_ttl,
 		.auth_type = auth_fast_capable(s) ? s->auth_type : 0,

@@ -226,52 +226,30 @@ def sessions():
 
 
 def pick(sess):
-    """Choose the sessions the cases need, or explain what is missing."""
+    """Choose the sessions the cases need, or explain what is missing. The
+    first match in map order wins each role.
+    """
+    # Only sessions the fast path answers for: not in demand hold (enable) and
+    # not authenticated, since every frame built here is unauthenticated. Map
+    # order is not stable, so either would make results depend on it.
+    roles = (("v4", 4, True), ("v6", 6, True), ("mh4", 4, False), ("mh6", 6, False))
     got = {}
     for s in sess:
-        # Only sessions the fast path answers for: not in demand hold (enable)
-        # and not authenticated, since every frame built here is
-        # unauthenticated. Map order is not stable, so either would make
-        # results depend on it.
-        if (
-            s["family"] == 4
-            and s["min_ttl"] == 255
-            and s["enable"]
-            and not s["auth_type"]
-            and "v4" not in got
-        ):
-            got["v4"] = s
-        if (
-            s["family"] == 6
-            and s["min_ttl"] == 255
-            and s["enable"]
-            and not s["auth_type"]
-            and "v6" not in got
-        ):
-            got["v6"] = s
-        if (
-            s["family"] == 4
-            and s["min_ttl"] < 255
-            and s["enable"]
-            and not s["auth_type"]
-            and "mh4" not in got
-        ):
-            got["mh4"] = s
+        for role, fam, single in roles:
+            if (
+                role not in got
+                and s["family"] == fam
+                and (s["min_ttl"] == 255) == single
+                and s["enable"]
+                and not s["auth_type"]
+            ):
+                got[role] = s
         # A configured peer nothing answers on: its rx_pkts moves only when we
         # inject. Matched on address, since enable == 0 also matches a multihop
         # peer during bring-up.
-        if s["family"] == 4 and s["peer"] == PHANTOM4 and "phantom" not in got:
-            got["phantom"] = s
-        if s["family"] == 6 and s["peer"] == PHANTOM6 and "phantom6" not in got:
-            got["phantom6"] = s
-        if (
-            s["family"] == 6
-            and s["min_ttl"] < 255
-            and s["enable"]
-            and not s["auth_type"]
-            and "mh6" not in got
-        ):
-            got["mh6"] = s
+        for role, fam, addr in (("phantom", 4, PHANTOM4), ("phantom6", 6, PHANTOM6)):
+            if role not in got and s["family"] == fam and s["peer"] == addr:
+                got[role] = s
     return got
 
 
@@ -324,6 +302,16 @@ UNSUPPORTED = (
 )
 
 
+def spec(fam, src, dst, **kw):
+    """A frame from src to dst. The defaults are a well-formed single-hop
+    control packet with your_disc 0 and the peer Down; a case sets only what
+    it changes.
+    """
+    d = dict(family=fam, src=src, dst=dst, ttl=255, dport=3784, ydisc=0, state=1)
+    d.update(kw)
+    return d
+
+
 def unsupported_cases(sess, fam):
     """The unsupported-flag set for one family; both families exercise each
     parse path.
@@ -332,17 +320,21 @@ def unsupported_cases(sess, fam):
     for cname, cdesc, fl, counter in UNSUPPORTED:
         # ydisc naming no session with the peer Up, so a build without the flag
         # check drops at demux instead of touching a live session.
-        spec = dict(
-            family=fam,
-            src=sess["peer"],
-            dst=sess["local"],
-            ttl=255,
-            dport=3784,
-            ydisc=0x11111111,
-            state=3,
-            flags=fl,
+        out.append(
+            (
+                "%s-v%d" % (cname, fam),
+                cdesc,
+                spec(
+                    fam,
+                    sess["peer"],
+                    sess["local"],
+                    ydisc=0x11111111,
+                    state=3,
+                    flags=fl,
+                ),
+                [(counter, COUNT)],
+            )
         )
-        out.append(("%s-v%d" % (cname, fam), cdesc, spec, counter, COUNT))
     return out
 
 
@@ -350,20 +342,15 @@ def malformed_cases(sess, fam):
     """The malformed set for one family; both families exercise each parse
     path.
     """
-    out = []
-    for cname, cdesc, extra in MALFORMED:
-        spec = dict(
-            family=fam,
-            src=sess["peer"],
-            dst=sess["local"],
-            ttl=255,
-            dport=3784,
-            ydisc=0,
-            state=1,
+    return [
+        (
+            "%s-v%d" % (cname, fam),
+            cdesc,
+            spec(fam, sess["peer"], sess["local"], **extra),
+            [("malformed", COUNT)],
         )
-        spec.update(extra)
-        out.append(("%s-v%d" % (cname, fam), cdesc, spec, "malformed", COUNT))
-    return out
+        for cname, cdesc, extra in MALFORMED
+    ]
 
 
 def phantom_cases(ph, fam):
@@ -371,14 +358,8 @@ def phantom_cases(ph, fam):
     injector moves the phantom's rx_pkts.
     """
     rx = [("rx:%s:%s" % (ph["peer"], ph["local"]), COUNT)]
-    base = dict(
-        family=fam,
-        src=ph["peer"],
-        dst=ph["local"],
-        ttl=ph["min_ttl"],
-        dport=4784,
-        ydisc=ph["my_disc"],
-        state=1,
+    base = spec(
+        fam, ph["peer"], ph["local"], ttl=ph["min_ttl"], dport=4784, ydisc=ph["my_disc"]
     )
     return [
         (
@@ -386,288 +367,159 @@ def phantom_cases(ph, fam):
             "TTL at the minimum reaches the session state update",
             dict(base),
             rx,
-            None,
         ),
         (
             "long-frame-v%d" % fam,
             "trailing bytes past the BFD payload do not confuse the parser",
             dict(base, pad=200),
             rx,
-            None,
         ),
     ]
 
 
-def build_cases(got):
-    """Each case: what to send, which counter moves, and by how much."""
+def v4_cases(s, got):
+    """Single-hop v4: GTSM, demux, IP options, fragments, Poll/Final, the
+    header rules, and the echo reflector's refusals.
+    """
+    peer, local = s["peer"], s["local"]
+    c = [
+        (
+            "gtsm-v4",
+            "TTL 64 to a single-hop session is off-link",
+            spec(4, peer, local, ttl=64),
+            [("rejected", COUNT)],
+        ),
+        (
+            "disc-mismatch",
+            "your_disc naming no session of ours",
+            spec(4, peer, local, ydisc=0x11111111, state=3),
+            [("rejected", COUNT)],
+        ),
+        (
+            "ip-options",
+            "single-hop BFD never carries IP options",
+            spec(4, peer, local, options=True),
+            # Its own slot, not rejected: options are refused for what the IP
+            # header is, not for anything in the BFD.
+            [("ip-options", COUNT), ("rejected", 0)],
+        ),
+        (
+            "frag-first",
+            "a first fragment aimed at 3784 is dropped, not bounced back out "
+            "with MF set",
+            spec(4, peer, local, mf=True),
+            [("rejected", COUNT)],
+        ),
+    ]
+    # Only meaningful with a multihop session configured, which makes parse_l3
+    # defer the TTL verdict.
+    if any(k in got for k in ("mh4", "mh6", "phantom", "phantom6")):
+        c.append(
+            (
+                "gtsm-unconfigured-pair",
+                "a low-TTL packet naming an address pair we have no session "
+                "for dies in XDP even with multihop configured",
+                spec(4, UNKNOWN_SRC, UNKNOWN_DST, ttl=64, l2dst=MAC),
+                [("rejected", COUNT)],
+            )
+        )
+    pf = session_value(peer, local)
+    if pf:
+        # Poll/Final (RFC 5880 s6.5). Everything but P is replayed from the
+        # session's own state, so the collateral check holds; only the reply
+        # proves the F bit.
+        c.append(
+            (
+                "poll-final",
+                "a packet with Poll set is answered with Final",
+                spec(
+                    4,
+                    peer,
+                    local,
+                    ydisc=s["my_disc"],
+                    state=pf["remote_state"],
+                    mydisc=pf["remote_disc"],
+                    mult=pf["detect_mult"],
+                    mintx=pf["min_tx_us"],
+                    minrx=pf["min_rx_us"],
+                    minecho=pf.get("remote_min_echo_us", 0),
+                    flags=0x20,
+                    l2dst=MAC,
+                    capture=True,
+                ),
+                [("cap:final", COUNT)],
+            )
+        )
+    c += malformed_cases(s, 4)
+    c += unsupported_cases(s, 4)
+    c += [
+        (
+            "echo-not-self",
+            "a 3785 packet that is not self-addressed is never reflected",
+            spec(4, peer, local, dport=3785, l2dst=MAC, capture=True),
+            [("not-self", AtLeast(COUNT)), ("cap:replies", 0)],
+        ),
+        (
+            "echo-unknown-peer",
+            "echo from a peer we do not serve",
+            spec(4, UNKNOWN_ECHO, UNKNOWN_ECHO, dport=3785, l2dst=MAC, capture=True),
+            [("declined", COUNT), ("cap:replies", 0)],
+        ),
+    ]
+    return c
+
+
+def v6_cases(s):
+    """Single-hop v6. The v6 reflector is a separate helper, so its declined
+    and not-self branches need their own cases.
+    """
+    peer, local = s["peer"], s["local"]
+    c = [
+        (
+            "gtsm-v6",
+            "hop_limit 64 to a single-hop v6 session",
+            spec(6, peer, local, ttl=64),
+            [("rejected", COUNT)],
+        )
+    ]
+    c += malformed_cases(s, 6)
+    c += unsupported_cases(s, 6)
+    c += [
+        (
+            "disc-mismatch-v6",
+            "your_disc naming no session of ours",
+            spec(6, peer, local, ydisc=0x11111111, state=3),
+            [("rejected", COUNT)],
+        ),
+        (
+            "echo-unknown-peer-v6",
+            "echo from a v6 peer we do not serve",
+            spec(6, UNKNOWN_ECHO6, UNKNOWN_ECHO6, dport=3785, l2dst=MAC, capture=True),
+            [("declined", COUNT), ("cap:replies", 0)],
+        ),
+        (
+            "echo-not-self-v6",
+            "a v6 3785 packet that is not self-addressed is never reflected",
+            spec(6, peer, local, dport=3785, l2dst=MAC, capture=True),
+            [("not-self", AtLeast(COUNT)), ("cap:replies", 0)],
+        ),
+    ]
+    return c
+
+
+def mhop_cases(got):
+    """Multihop GTSM against the session's minimum, and that the relaxed TTL
+    check does not leak onto single-hop.
+    """
     c = []
-
-    if "v4" in got:
-        s = got["v4"]
-        c.append(
-            (
-                "gtsm-v4",
-                "TTL 64 to a single-hop session is off-link",
-                dict(
-                    family=4,
-                    src=s["peer"],
-                    dst=s["local"],
-                    ttl=64,
-                    dport=3784,
-                    ydisc=0,
-                    state=1,
-                ),
-                "rejected",
-                COUNT,
-            )
-        )
-        c.append(
-            (
-                "disc-mismatch",
-                "your_disc naming no session of ours",
-                dict(
-                    family=4,
-                    src=s["peer"],
-                    dst=s["local"],
-                    ttl=255,
-                    dport=3784,
-                    ydisc=0x11111111,
-                    state=3,
-                ),
-                "rejected",
-                COUNT,
-            )
-        )
-        c.append(
-            (
-                "ip-options",
-                "single-hop BFD never carries IP options",
-                dict(
-                    family=4,
-                    src=s["peer"],
-                    dst=s["local"],
-                    ttl=255,
-                    dport=3784,
-                    ydisc=0,
-                    state=1,
-                    options=True,
-                ),
-                # Its own slot, not rejected: options are refused for
-                # what the IP header is, not for anything in the BFD.
-                [("ip-options", COUNT), ("rejected", 0)],
-                None,
-            )
-        )
-        c.append(
-            (
-                "frag-first",
-                "a first fragment aimed at 3784 is dropped, "
-                "not bounced back out with MF set",
-                dict(
-                    family=4,
-                    src=s["peer"],
-                    dst=s["local"],
-                    ttl=255,
-                    dport=3784,
-                    ydisc=0,
-                    state=1,
-                    mf=True,
-                ),
-                "rejected",
-                COUNT,
-            )
-        )
-        # Only meaningful with a multihop session configured, which makes
-        # parse_l3 defer the TTL verdict.
-        if any(k in got for k in ("mh4", "mh6", "phantom", "phantom6")):
-            c.append(
-                (
-                    "gtsm-unconfigured-pair",
-                    "a low-TTL packet naming an address pair we have no "
-                    "session for dies in XDP even with multihop configured",
-                    dict(
-                        family=4,
-                        src=UNKNOWN_SRC,
-                        dst=UNKNOWN_DST,
-                        ttl=64,
-                        dport=3784,
-                        ydisc=0,
-                        state=1,
-                        l2dst=MAC,
-                    ),
-                    "rejected",
-                    COUNT,
-                )
-            )
-        pf = session_value(s["peer"], s["local"])
-        if pf:
-            # Poll/Final (RFC 5880 s6.5). Everything but P is replayed from the
-            # session's own state, so the collateral check holds; only the
-            # reply proves the F bit.
-            c.append(
-                (
-                    "poll-final",
-                    "a packet with Poll set is answered " "with Final",
-                    dict(
-                        family=4,
-                        src=s["peer"],
-                        dst=s["local"],
-                        ttl=255,
-                        dport=3784,
-                        ydisc=s["my_disc"],
-                        state=pf["remote_state"],
-                        mydisc=pf["remote_disc"],
-                        mult=pf["detect_mult"],
-                        mintx=pf["min_tx_us"],
-                        minrx=pf["min_rx_us"],
-                        minecho=pf.get("remote_min_echo_us", 0),
-                        flags=0x20,
-                        l2dst=MAC,
-                        capture=True,
-                    ),
-                    [("cap:final", COUNT)],
-                    None,
-                )
-            )
-
-        c.extend(malformed_cases(s, 4))
-        c.extend(unsupported_cases(s, 4))
-        c.append(
-            (
-                "echo-not-self",
-                "a 3785 packet that is not self-addressed " "is never reflected",
-                dict(
-                    family=4,
-                    src=s["peer"],
-                    dst=s["local"],
-                    ttl=255,
-                    dport=3785,
-                    ydisc=0,
-                    state=1,
-                    l2dst=MAC,
-                    capture=True,
-                ),
-                [("not-self", AtLeast(COUNT)), ("cap:replies", 0)],
-                None,
-            )
-        )
-
-        c.append(
-            (
-                "echo-unknown-peer",
-                "echo from a peer we do not serve",
-                dict(
-                    family=4,
-                    src=UNKNOWN_ECHO,
-                    dst=UNKNOWN_ECHO,
-                    ttl=255,
-                    dport=3785,
-                    ydisc=0,
-                    state=1,
-                    l2dst=MAC,
-                    capture=True,
-                ),
-                [("declined", COUNT), ("cap:replies", 0)],
-                None,
-            )
-        )
-
-    if "v6" in got:
-        s = got["v6"]
-        c.append(
-            (
-                "gtsm-v6",
-                "hop_limit 64 to a single-hop v6 session",
-                dict(
-                    family=6,
-                    src=s["peer"],
-                    dst=s["local"],
-                    ttl=64,
-                    dport=3784,
-                    ydisc=0,
-                    state=1,
-                ),
-                "rejected",
-                COUNT,
-            )
-        )
-        c.extend(malformed_cases(s, 6))
-        c.extend(unsupported_cases(s, 6))
-        c.append(
-            (
-                "disc-mismatch-v6",
-                "your_disc naming no session of ours",
-                dict(
-                    family=6,
-                    src=s["peer"],
-                    dst=s["local"],
-                    ttl=255,
-                    dport=3784,
-                    ydisc=0x11111111,
-                    state=3,
-                ),
-                "rejected",
-                COUNT,
-            )
-        )
-        # The v6 reflector is a separate helper, so its declined and not-self
-        # branches need their own cases.
-        c.append(
-            (
-                "echo-unknown-peer-v6",
-                "echo from a v6 peer we do not " "serve",
-                dict(
-                    family=6,
-                    src=UNKNOWN_ECHO6,
-                    dst=UNKNOWN_ECHO6,
-                    ttl=255,
-                    dport=3785,
-                    ydisc=0,
-                    state=1,
-                    l2dst=MAC,
-                    capture=True,
-                ),
-                [("declined", COUNT), ("cap:replies", 0)],
-                None,
-            )
-        )
-        c.append(
-            (
-                "echo-not-self-v6",
-                "a v6 3785 packet that is not " "self-addressed is never reflected",
-                dict(
-                    family=6,
-                    src=s["peer"],
-                    dst=s["local"],
-                    ttl=255,
-                    dport=3785,
-                    ydisc=0,
-                    state=1,
-                    l2dst=MAC,
-                    capture=True,
-                ),
-                [("not-self", AtLeast(COUNT)), ("cap:replies", 0)],
-                None,
-            )
-        )
-
     if "mh4" in got:
         s = got["mh4"]
         c.append(
             (
                 "mhop-below-min",
                 "TTL under the negotiated minimum",
-                dict(
-                    family=4,
-                    src=s["peer"],
-                    dst=s["local"],
-                    ttl=s["min_ttl"] - 10,
-                    dport=4784,
-                    ydisc=0,
-                    state=1,
-                ),
-                "rejected",
-                COUNT,
+                spec(4, s["peer"], s["local"], ttl=s["min_ttl"] - 10, dport=4784),
+                [("rejected", COUNT)],
             )
         )
         if "v4" in got:
@@ -675,95 +527,70 @@ def build_cases(got):
             c.append(
                 (
                     "mhop-does-not-leak",
-                    "low TTL at a single-hop session " "while multihop is live",
-                    dict(
-                        family=4,
-                        src=t["peer"],
-                        dst=t["local"],
-                        ttl=s["min_ttl"],
-                        dport=3784,
-                        ydisc=0,
-                        state=1,
-                    ),
-                    "rejected",
-                    COUNT,
+                    "low TTL at a single-hop session while multihop is live",
+                    spec(4, t["peer"], t["local"], ttl=s["min_ttl"]),
+                    [("rejected", COUNT)],
                 )
             )
-
     if "mh6" in got:
         s = got["mh6"]
         c.append(
             (
                 "mhop-below-min-v6",
                 "hop_limit under the minimum, v6",
-                dict(
-                    family=6,
-                    src=s["peer"],
-                    dst=s["local"],
-                    ttl=s["min_ttl"] - 10,
-                    dport=4784,
-                    ydisc=0,
-                    state=1,
-                ),
-                "rejected",
-                COUNT,
+                spec(6, s["peer"], s["local"], ttl=s["min_ttl"] - 10, dport=4784),
+                [("rejected", COUNT)],
             )
         )
+    return c
 
-    # One case per family: the v4 and v6 reflectors are separate paths.
-    seen_fams = set()
+
+def echo_reflect_cases():
+    """One pair per family, since the v4 and v6 reflectors are separate paths.
+    Judged by the capture alone: `reflected` is global and the mesh moves it
+    constantly. The capture counts only frames addressed to the injector's
+    MAC, and proves a correct frame left the NIC.
+    """
+    c, seen = [], set()
     for addr, fam in echo_peer_addrs():
-        if fam in seen_fams:
+        if fam in seen:
             continue
-        seen_fams.add(fam)
-        # Judged by the capture alone: `reflected` is global and the mesh moves
-        # it constantly. The capture counts only frames addressed to the
-        # injector's MAC, and proves a correct frame left the NIC.
+        seen.add(fam)
         c.append(
             (
                 "echo-reflect-v%d" % fam,
                 "echo from a peer of an echo-active session is returned",
-                dict(
-                    family=fam,
-                    src=addr,
-                    dst=addr,
-                    ttl=255,
-                    dport=3785,
-                    ydisc=0,
-                    state=1,
-                    l2dst=MAC,
-                    capture=True,
-                ),
+                spec(fam, addr, addr, dport=3785, l2dst=MAC, capture=True),
                 [("cap:replies", COUNT)],
-                None,
             )
         )
-        # Same packet with the TTL wrong: echo-ttl must move, so the zero below
-        # is not vacuous.
+        # The same packet with the TTL wrong: echo-ttl must move, so the zero
+        # below is not vacuous.
         c.append(
             (
                 "echo-gtsm-v%d" % fam,
                 "an echo arriving below TTL 255 is not reflected",
-                dict(
-                    family=fam,
-                    src=addr,
-                    dst=addr,
-                    ttl=64,
-                    dport=3785,
-                    ydisc=0,
-                    state=1,
-                    l2dst=MAC,
-                    capture=True,
-                ),
+                spec(fam, addr, addr, ttl=64, dport=3785, l2dst=MAC, capture=True),
                 [("echo-ttl", COUNT), ("cap:replies", 0)],
-                None,
             )
         )
+    return c
 
-    for kind, fam in (("phantom", 4), ("phantom6", 6)):
-        if kind in got:
-            c.extend(phantom_cases(got[kind], fam))
 
+def build_cases(got):
+    """Each case: its name, what it shows, the frame to send, and which
+    counters move by how much.
+    """
+    c = []
+    if "v4" in got:
+        c += v4_cases(got["v4"], got)
+    if "v6" in got:
+        c += v6_cases(got["v6"])
+    c += mhop_cases(got)
+    c += echo_reflect_cases()
+    for role, fam in (("phantom", 4), ("phantom6", 6)):
+        if role in got:
+            c += phantom_cases(got[role], fam)
     return c
 
 
@@ -778,8 +605,7 @@ def orchestrate(args):
     cases = build_cases(got)
 
     if args.list:
-        for name, desc, _, counter, delta in cases:
-            checks = counter if isinstance(counter, list) else [(counter, delta)]
+        for name, desc, _, checks in cases:
             shown = " ".join(
                 c + (str(d) if isinstance(d, AtLeast) else "%+d" % d) for c, d in checks
             )
@@ -819,7 +645,7 @@ def orchestrate(args):
     report = {"cases": [], "collateral": []}
     sess_before = session_states()
 
-    for name, desc, spec, counter, expect in cases:
+    for name, desc, spec, checks in cases:
         if args.only and name != args.only:
             continue
 
@@ -836,7 +662,6 @@ def orchestrate(args):
         # so the delta arithmetic is unchanged.
         after.update({"cap:%s" % k: v for k, v in cap.items()})
 
-        checks = counter if isinstance(counter, list) else [(counter, expect)]
         results, ok, recorded = [], True, []
         for cname, cexp in checks:
             b, a = before.get(cname, 0), after.get(cname, 0)

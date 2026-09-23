@@ -123,6 +123,12 @@ int bfd_observer(struct xdp_md *ctx)
 		}
 	}
 
+	/* The port names the session type: 3784 single-hop, 4784 multihop. */
+	if (cfg && (udp->dest == bpf_htons(BFD_PORT_MHOP)) != !!cfg->mhop) {
+		count(BFD_STAT_REJECTED);
+		return XDP_DROP;
+	}
+
 	if (!cfg) {
 		__u32 zero = 0;
 		__u32 *fl = bpf_map_lookup_elem(&prog_flags, &zero);

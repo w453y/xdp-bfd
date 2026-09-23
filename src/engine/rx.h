@@ -13,7 +13,7 @@ enum rx_verdict {
 	RX_MALFORMED, /* bfd_ctrl_check refused the header */
 	/* GTSM, or the cmsg never arrived */
 	RX_TTL,
-	RX_NO_SESSION, /* demux named no session of ours */
+	RX_NO_SESSION, /* no session of ours, or not one of this port's type */
 	RX_AUTH,       /* the A bit or the digest did not satisfy it */
 };
 

@@ -682,3 +682,24 @@ static void case_v6_exthdr(void)
 
 	map_reset_v6();
 }
+
+/* The port names the session type: a multihop session only on 4784, a
+ * single-hop one only on 3784, whatever the TTL.
+ */
+static void case_port_names_session_type(void)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct frame f;
+
+	map_reset();
+	set_flags(FLAG_MHOP);
+	arm_session_ttl(32);
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+	expect("mhop-session-on-3784-drops", run_frame(&f, NULL, NULL), XDP_DROP);
+
+	map_reset();
+	arm_session();
+	build_v4(&f, 255, BFD_PORT_MHOP, &p, 0);
+	expect("1hop-session-on-4784-drops", run_frame(&f, NULL, NULL), XDP_DROP);
+	map_reset();
+}

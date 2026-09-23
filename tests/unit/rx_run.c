@@ -64,6 +64,7 @@ static struct session *arm(int auth, uint8_t min_ttl)
 	s->state = ST_UP;
 	s->detect_mult = 3;
 	s->min_ttl = min_ttl;
+	s->is_mhop = min_ttl < 255;
 	if (auth) {
 		struct auth_key *k = &s->auth_keys[0];
 
@@ -139,6 +140,16 @@ int main(void)
 	key_set_v4(&A_PEER, inet_addr(PEER4));
 	key_set_v4(&A_LOCAL, inet_addr(LOCAL4));
 	key_set_v4(&A_OTHER, inet_addr("10.0.0.9"));
+
+	/* --- the port names the session type (RFC 5881 s4, RFC 5883 s5) --- */
+	arm(0, 200);
+	n = build(buf, ST_UP, MY_DISC);
+	check("mhop-session-on-3784-refused", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_NO_SESSION,
+	      "multihop is 4784 only");
+	arm(0, 255);
+	n = build(buf, ST_UP, MY_DISC);
+	check("1hop-session-on-4784-refused", buf, n, 255, &A_PEER, &A_LOCAL, 1, RX_NO_SESSION,
+	      "single-hop is 3784 only");
 
 	/* --- the happy path, and the demux --- */
 	arm(0, 255);

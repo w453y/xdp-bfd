@@ -342,6 +342,7 @@ static void arm_session_ttl(__u32 min_ttl)
 	cfg.state = ST_UP;
 	cfg.mult = 3;
 	cfg.min_ttl = min_ttl;
+	cfg.mhop = min_ttl < 255;
 
 	st.remote_state = ST_UP;
 
@@ -410,6 +411,7 @@ static void arm_session_v6_ttl(__u32 min_ttl)
 	cfg.state = ST_UP;
 	cfg.mult = 3;
 	cfg.min_ttl = min_ttl;
+	cfg.mhop = min_ttl < 255;
 
 	st.remote_state = ST_UP;
 

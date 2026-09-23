@@ -22,6 +22,7 @@ void ktx_cfg_for(const struct session *s, int64_t now, struct tx_cfg *c, struct 
 		.enable = ktx_answers(s),
 		.demand = demand_bit_out(s),
 		.demand_hold = demand_sweep_held(s),
+		.mhop = s->is_mhop ? 1 : 0,
 		.my_disc = s->wire_disc,
 		.your_disc = s->rdisc,
 		.min_tx_us = s->min_tx_us,

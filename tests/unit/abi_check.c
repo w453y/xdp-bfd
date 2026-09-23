@@ -113,6 +113,7 @@ _Static_assert(offsetof(struct tx_cfg, mult) == 24, "offsetof(struct tx_cfg, mul
 _Static_assert(offsetof(struct tx_cfg, poll) == 25, "offsetof(struct tx_cfg, poll)");
 _Static_assert(offsetof(struct tx_cfg, demand) == 26, "offsetof(struct tx_cfg, demand)");
 _Static_assert(offsetof(struct tx_cfg, demand_hold) == 27, "offsetof(struct tx_cfg, demand_hold)");
+_Static_assert(offsetof(struct tx_cfg, mhop) == 28, "offsetof(struct tx_cfg, mhop)");
 _Static_assert(offsetof(struct tx_cfg, poll_seq) == 32, "offsetof(struct tx_cfg, poll_seq)");
 _Static_assert(offsetof(struct tx_cfg, echo_iv_us) == 36, "offsetof(struct tx_cfg, echo_iv_us)");
 _Static_assert(offsetof(struct tx_cfg, min_echo_rx_us) == 40,

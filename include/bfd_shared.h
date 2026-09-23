@@ -258,7 +258,7 @@ struct tx_cfg {
 	__u8 demand; /* D bit on replies */
 	/* the peer's silence is requested; the engine sees the remote state */
 	__u8 demand_hold;
-	__u8 pad[1];
+	__u8 mhop;	      /* 4784 (RFC 5883), else 3784 */
 	__u32 poll_seq;	      /* acked through session_state.final_seq */
 	__u32 echo_iv_us;     /* echo interval; 0 = echo off */
 	__u32 min_echo_rx_us; /* 0 unless echo is on */

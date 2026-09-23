@@ -114,6 +114,7 @@ int main(void)
 	case_detect_vectors();
 	case_gtsm_v6();
 	case_deferred_gtsm();
+	case_port_names_session_type();
 	case_unknown_session();
 	case_v6_exthdr();
 	case_auth_ratelimit();

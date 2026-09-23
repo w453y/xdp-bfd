@@ -74,6 +74,14 @@ struct session *rx_accept(const __u8 *pkt, size_t n, int ttl, const struct bfd_a
 		return NULL;
 	}
 
+	/* The port names the session type: 3784 single-hop (RFC 5881), 4784
+	 * multihop (RFC 5883).
+	 */
+	if (!!mhop != !!s->is_mhop) {
+		*why = RX_NO_SESSION;
+		return NULL;
+	}
+
 	/* RFC 5883: the session's own minimum, known only after the demux. */
 	if (mhop && (ttl < 0 || ttl < (int)s->min_ttl)) {
 		*why = RX_TTL;

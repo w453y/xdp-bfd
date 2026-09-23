@@ -85,6 +85,7 @@ int main(void)
 	O(tx_cfg, poll);
 	O(tx_cfg, demand);
 	O(tx_cfg, demand_hold);
+	O(tx_cfg, mhop);
 	O(tx_cfg, poll_seq);
 	O(tx_cfg, echo_iv_us);
 	O(tx_cfg, min_echo_rx_us);

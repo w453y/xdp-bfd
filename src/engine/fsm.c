@@ -23,7 +23,7 @@
 
 int tx_sock = -1, tx6_sock = -1;
 
-/* Send hook; tests replace it to exercise the send-failure path. */
+/* Tests replace this to fail sends. */
 ssize_t (*fsm_send_hook)(int fd, const void *buf, size_t len, const struct sockaddr *dst,
 			 socklen_t dlen) = NULL;
 
@@ -35,10 +35,8 @@ static ssize_t fsm_send(int fd, const void *buf, size_t len, const struct sockad
 	return sendto(fd, buf, len, 0, dst, dlen);
 }
 
-/* Per-slot TX sockets bound to the session's local address, source port
- * SRC_PORT + slot. INADDR_ANY would source from the primary address and
- * break the peer's demux of your_disc=0 packets. Stored as fd+1: 0 not
- * opened, -1 bind failed.
+/* TX sockets bound to the session's local address and SRC_PORT + slot, so the
+ * peer can demux your_disc 0. Stored as fd+1: 0 not opened, -1 bind failed.
  */
 static int slot_tx[MAX_SESSIONS];
 static struct bfd_addr slot_tx_ip[MAX_SESSIONS];
@@ -58,9 +56,7 @@ static int slot_sock(int slot, const struct session *s)
 	if (s->family == AF_INET6) {
 		fd = socket(AF_INET6, SOCK_DGRAM, 0);
 		if (fd < 0)
-			/* fd exhaustion: fall back for now, slot stays 0 so a
-			 * later call retries
-			 */
+			/* Out of fds: fall back; a later call retries. */
 			return -1;
 		int hops = 255, on = 1;
 
@@ -73,9 +69,7 @@ static int slot_sock(int slot, const struct session *s)
 	} else {
 		fd = socket(AF_INET, SOCK_DGRAM, 0);
 		if (fd < 0)
-			/* fd exhaustion: fall back for now, slot stays 0 so a
-			 * later call retries
-			 */
+			/* Out of fds: fall back; a later call retries. */
 			return -1;
 		int ttl = 255;
 
@@ -96,7 +90,6 @@ static int slot_sock(int slot, const struct session *s)
 	return fd;
 }
 
-/* ---------- FSM ---------- */
 /* Transition log lines per session per second before summarising. */
 #define BFD_LOG_BURST 5
 
@@ -105,10 +98,8 @@ void state_transition(struct session *s, int newstate, int diag, uint64_t t, con
 	if (s->state == newstate)
 		return;
 
-	/* Rate-limit the transition log per session: a forger on an
-	 * unauthenticated session can flap it per packet. Log the first few
-	 * each second and summarise the rest. The transition and the notify
-	 * still happen.
+	/* Rate-limited: a forger can flap an unauthenticated session per
+	 * packet. The transition and notify still happen.
 	 */
 	if (t - s->log_win_us >= 1000000ull) {
 		if (s->log_suppressed)
@@ -133,9 +124,7 @@ void state_transition(struct session *s, int newstate, int diag, uint64_t t, con
 		s->down_events++;
 	s->last_transition_us = t;
 	if (newstate == ST_DOWN && diag == 1 && s->last_rx_us) {
-		/* Account the silence here, before detect_iv_us is reset, so a
-		 * Down from the sweep (on_sweep_event) is counted too.
-		 */
+		/* Before detect_iv_us is reset, so a sweep Down is counted too. */
 		uint64_t silent = t - s->last_rx_us;
 		uint64_t budget = (uint64_t)(s->r_mult ? s->r_mult : s->detect_mult) *
 				  s->detect_iv_us;
@@ -150,9 +139,7 @@ void state_transition(struct session *s, int newstate, int diag, uint64_t t, con
 		s->polling = 0;
 		s->applied_tx_us = s->min_tx_us;
 	}
-	/* Each time round to Up is a fresh negotiation: the peer that
-	 * comes back has not heard our D bit, whoever it is.
-	 */
+	/* Each return to Up renegotiates demand. */
 	s->demand_announced = 0;
 	s->just_up = (newstate == ST_UP);
 	s->next_tx_us = t;
@@ -163,17 +150,13 @@ void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 {
 	int ps = (p->flags >> 6) & 3;
 
-	/* Accepted packets only; p->len was already validated. */
 	s->rx_pkts++;
 	s->rx_bytes += p->len;
 
-	/* dp_notify_state reads the session, so decide what changed, assign,
-	 * then notify. Flags-only and mult-only changes count.
-	 */
+	/* dp_notify_state reads the session: assign, then notify. */
 	uint32_t ntx = ntohl(p->min_tx), nrx = ntohl(p->min_rx);
 	uint32_t nec = ntohl(p->min_echo_rx);
 	uint8_t nfl = p->flags & 0x3f;
-	/* min_echo_rx counts as a change too, as in ktx_poll_map. */
 	int rparams_changed = (ntx != s->r_min_tx || nrx != s->r_min_rx || nec != s->r_min_echo ||
 			       nfl != s->r_flags || p->detect_mult != s->r_mult);
 
@@ -185,15 +168,12 @@ void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 	s->r_mult = p->detect_mult;
 	s->r_flags = nfl;
 
-	/* Notify only in Up. Below Up the state is about to change and
-	 * state_transition notifies anyway; notifying here would duplicate
-	 * every bring-up. ktx_poll_map follows the same rule.
-	 */
+	/* Only in Up; below Up, state_transition notifies. */
 	if (s->state == ST_UP && rparams_changed)
 		dp_notify_state(s);
 
-	/* Poll-aware detect basis: decreases apply only once traffic
-	 * actually paces at the new interval (RFC 5880 s6.8.3).
+	/* RFC 5880 s6.8.3: a decrease applies once traffic paces at the new
+	 * interval.
 	 */
 	{
 		uint32_t cand = s->r_min_tx > s->min_rx_us ? s->r_min_tx : s->min_rx_us;
@@ -239,11 +219,9 @@ void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 
 void fsm_detect(struct session *s, uint64_t t)
 {
-	/* RFC 5880 s6.7: clear bfd.AuthSeqKnown after twice the detection time
-	 * without a packet, so a peer that restarts with a new sequence can
-	 * resync. Runs before the early returns, since Down sessions need it
-	 * most; clearing auth_seeded hands the cleared window to the fast path
-	 * on the next Up.
+	/* RFC 5880 s6.7: forget bfd.AuthSeqKnown after twice the detection
+	 * time, so a restarted peer can resync. Clearing auth_seeded pushes the
+	 * cleared window on the next Up.
 	 */
 	if (s->auth_type && s->auth_rx_seen && s->last_rx_us) {
 		uint64_t iv = s->detect_iv_us
@@ -260,9 +238,7 @@ void fsm_detect(struct session *s, uint64_t t)
 
 	if (s->state == ST_DOWN || s->state == ST_ADMINDOWN || !s->last_rx_us)
 		return;
-	/* We asked this peer to stop transmitting, so the gap since its
-	 * last packet measures our own request, not the path.
-	 */
+	/* We asked the peer to stop, so its silence is not a fault. */
 	if (demand_detect_held(s))
 		return;
 	uint64_t iv = s->detect_iv_us;
@@ -276,15 +252,13 @@ void fsm_detect(struct session *s, uint64_t t)
 	uint8_t mult = s->r_mult ? s->r_mult : s->detect_mult;
 	uint64_t budget = (uint64_t)mult * iv;
 
-	/* Sessions carried by the fast path are detected by the sweep. This
-	 * stays as a backstop at twice the budget, in case the event ring
-	 * stops delivering.
+	/* The sweep detects fast-path sessions; this is a backstop at twice the
+	 * budget.
 	 */
 	if (use_ktx && !s->ktx_uncovered && ktx_events_fd() >= 0)
 		budget *= 2;
 
 	if ((uint64_t)sd > budget) {
-		/* Debug only: the transition logs the same reason. */
 		log_debug("[%llu] lid=%u DETECT TIMEOUT (silent %.1fms)\n", (unsigned long long)t,
 			  s->lid, sd / 1000.0);
 		s->rdisc = 0;
@@ -292,9 +266,7 @@ void fsm_detect(struct session *s, uint64_t t)
 	}
 }
 
-/* --demand-poll-us: longest a demanding session may go unverified; 0 disables
- * the periodic poll.
- */
+/* --demand-poll-us; 0 disables the periodic poll. */
 uint64_t demand_poll_us = BFD_DEMAND_POLL_US_DEFAULT;
 
 /* Begin a Poll sequence (RFC 5880 s6.8.3). */
@@ -303,18 +275,14 @@ void fsm_start_poll(struct session *s, uint64_t t)
 	s->poll_seq++;
 	s->polling = 1;
 
-	/* Restart detection from now on a demanding session. The peer has been
-	 * silent because we asked, so the stale arrival would time out at once
-	 * (bfdd resets its recvtimer here too). An unanswered poll then times
-	 * out on the detect budget.
+	/* The peer was silent because we asked: restart detection now, as bfdd
+	 * does.
 	 */
 	if (s->demand)
 		s->last_rx_us = t;
 }
 
-/* Build and send one control packet. Separate from fsm_tx so teardown can send
- * without the pacing logic.
- */
+/* One control packet, without the pacing, so teardown can use it. */
 static void tx_one(struct session *s)
 {
 	__u8 buf[BFD_MAX_LEN] = { 0 };
@@ -325,9 +293,7 @@ static void tx_one(struct session *s)
 
 	o.vers_diag = (1 << 5) | (s->diag & 0x1f);
 	o.flags = (s->state << 6) | (s->send_final ? F_F : (s->polling ? F_P : 0));
-	/* Count the announcement after the send; one that never left does not
-	 * use the quota.
-	 */
+	/* Only a packet that left spends the announcement quota. */
 	if (demand_bit_out(s)) {
 		o.flags |= F_D;
 		announcing = s->demand_announced < DEMAND_ANNOUNCE_N;
@@ -340,12 +306,10 @@ static void tx_one(struct session *s)
 	o.min_rx = htonl(s->min_rx_us);
 	o.min_echo_rx = htonl(s->min_echo_rx_us);
 
-	/* RFC 5880 s6.7: the sequence advances per packet for both keyed
-	 * forms. A session that cannot build its auth section sends nothing,
-	 * since an unauthenticated packet is one the peer must reject.
+	/* RFC 5880 s6.7: with no sendable key send nothing; the peer must
+	 * reject an unauthenticated packet.
 	 */
 	if (s->auth_present) {
-		/* Must authenticate but has no sendable key: send nothing. */
 		if (!s->auth_type) {
 			if (!s->auth_gap_warned) {
 				s->auth_gap_warned = 1;
@@ -390,9 +354,8 @@ static void tx_one(struct session *s)
 		sent = fsm_send(txfd, buf, olen, (void *)&dst, sizeof(dst));
 	}
 
-	/* Nothing below may run for a packet that did not leave: a failed send
-	 * must not clear a pending Final, just_up or the demand quota. The
-	 * next scheduled TX retries.
+	/* A failed send must not clear a pending Final, just_up or the demand
+	 * quota.
 	 */
 	if (sent != (ssize_t)olen) {
 		s->tx_fail++;
@@ -407,18 +370,15 @@ static void tx_one(struct session *s)
 	s->just_up = 0;
 }
 
-/* RFC 5880 s6.8.16: announce AdminDown on teardown so the peer goes down now
- * with diag 3 instead of waiting out detection. Three packets, since nothing
- * retransmits once the slot is freed. Not used for dp_hold orphans.
+/* RFC 5880 s6.8.16: AdminDown on teardown, three times since nothing
+ * retransmits once the slot is freed. Not for dp_hold orphans.
  */
 void fsm_announce_down(struct session *s)
 {
 	if (!s->used || !s->wire_disc || s->state == ST_ADMINDOWN)
 		return;
 
-	/* Set directly, not via state_transition: bfdd asked for the teardown
-	 * and needs no notification.
-	 */
+	/* Not via state_transition: bfdd asked for this. */
 	s->state = ST_ADMINDOWN;
 	s->diag = 7; /* Administratively Down */
 	s->send_final = 0;
@@ -428,8 +388,8 @@ void fsm_announce_down(struct session *s)
 		tx_one(s);
 }
 
-/* Advance next_tx_us by one jittered interval. Also used by the holds below,
- * so the schedule keeps rolling while nothing is sent.
+/* Advance next_tx_us by one jittered interval. The holds call it too, so the
+ * schedule keeps rolling.
  */
 static void tx_reschedule(struct session *s, uint64_t t)
 {
@@ -440,10 +400,8 @@ static void tx_reschedule(struct session *s, uint64_t t)
 	else
 		iv = SLOW_TX_US;
 
-	/* RFC 5880 s6.8.7 jitter: 75-100% of the interval, 75-90% if
-	 * detect_mult is 1. The 1s slow rate is jittered too, so a mesh coming
-	 * up together does not synchronise. The 1s floor of s6.8.7 applies to
-	 * bfd.DesiredMinTxInterval, not to the jittered gap.
+	/* RFC 5880 s6.8.7: 75-100% of the interval, 75-90% if detect_mult is 1.
+	 * The 1s slow rate is jittered too.
 	 */
 	span = s->detect_mult == 1 ? iv * 3 / 20 : iv / 4;
 	iv = iv * 3 / 4 + (random() % (span + 1));
@@ -456,23 +414,16 @@ void fsm_tx(struct session *s, uint64_t t)
 	if (s->admin_down && s->state != ST_ADMINDOWN)
 		state_transition(s, ST_ADMINDOWN, 7, t, "admin shutdown");
 
-	/* RFC 5880 s6.8.7: a passive session must not transmit while
-	 * bfd.RemoteDiscr is zero. The schedule keeps rolling so the first
-	 * packet after the peer appears is on time.
-	 */
+	/* RFC 5880 s6.8.7: passive stays silent until bfd.RemoteDiscr is known. */
 	if (s->passive && !s->rdisc) {
 		if (t >= s->next_tx_us)
 			tx_reschedule(s, t);
 		return;
 	}
 
-	/* Periodic Poll to verify a demand-mode path (RFC 5880 s6.6).
-	 *
-	 * Detection is held while demanding, so nothing would take a dead path
-	 * down. Poll once per demand_poll_us, never faster than the detect
-	 * budget; the poll re-arms detection. Measured from last_rx_us, which
-	 * any packet or Final refreshes. Not while the D bit is still being
-	 * announced, nor before any packet has arrived.
+	/* RFC 5880 s6.6: detection is held while demanding, so poll to verify
+	 * the path, once per demand_poll_us and never faster than the detect
+	 * budget.
 	 */
 	if (demand_poll_us && demand_detect_held(s) && s->last_rx_us && !demand_announce_due(s)) {
 		uint64_t iv = s->detect_iv_us;
@@ -492,8 +443,8 @@ void fsm_tx(struct session *s, uint64_t t)
 		}
 	}
 
-	/* RFC 5880 s6.8.7: the peer is demanding, so stop periodic TX but keep
-	 * the schedule rolling. bfdd does the same in ptm_bfd_xmt_TO.
+	/* RFC 5880 s6.8.7: the peer demands, or wants no packets; hold periodic
+	 * TX.
 	 */
 	if (demand_tx_held(s) || zero_rx_tx_held(s)) {
 		if (t >= s->next_tx_us)
@@ -514,11 +465,9 @@ void fsm_tx(struct session *s, uint64_t t)
 
 	if (use_ktx && !s->ktx_uncovered && ktx_answers(s) && !s->send_final && !s->just_up &&
 	    !demand_announce_due(s)) {
-		/* The fast path only replies at the peer's pace. If that is
-		 * slower than our required rate, transmit from here.
-		 * last_ktx_us is when the fast path last replied; it is zero
-		 * until the first reply, so userspace transmits until the
-		 * kernel has.
+		/* The fast path replies only at the peer's pace; transmit from
+		 * here if that is slower than our rate. last_ktx_us is 0 until
+		 * its first reply.
 		 */
 		uint64_t pace = s->applied_tx_us > s->r_min_rx ? s->applied_tx_us : s->r_min_rx;
 

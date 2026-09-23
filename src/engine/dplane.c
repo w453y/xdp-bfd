@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* dplane.c - bfddp messages and session lifecycle.
- *
- * bfdd connects here and drives session lifecycle; we report state
- * changes back. All bfddp fields are network byte order.
- */
+/* dplane.c - bfddp messages and session lifecycle. Fields are network order. */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,9 +25,7 @@ uint64_t dp_hold_us;	  /* --dp-hold: keep sessions across bfdd restarts */
 uint64_t dp_reconcile_us; /* sweep deadline after reconnect */
 #define DP_RECONCILE_US (10ull * 1000000)
 
-/* Map the peer's wire flags to the RBIT_* encoding bfdd expects in
- * remote_flags; the bit positions differ.
- */
+/* bfdd's RBIT_* positions differ from the wire flags. */
 static uint32_t rflags_from_wire(uint8_t wire)
 {
 	uint32_t r = 0;
@@ -70,8 +64,8 @@ void sess_teardown_one(struct session *s, const char *why)
 	memset(s, 0, sizeof(*s));
 }
 
-/* Connection lost: with --dp-hold, keep sessions running as orphans until bfdd
- * reconnects and reclaims them; otherwise tear them down.
+/* Connection lost: with --dp-hold, keep sessions as orphans for bfdd to
+ * reclaim; otherwise tear them down.
  */
 void dp_sessions_orphan(const char *why)
 {
@@ -93,9 +87,7 @@ void dp_sessions_orphan(const char *why)
 			 (unsigned long long)(dp_hold_us / 1000000));
 }
 
-/* bfdd connected: if sessions are held from a previous connection, give it
- * DP_RECONCILE_US to re-add them before the rest are torn down.
- */
+/* bfdd is back: tear down in DP_RECONCILE_US whatever it has not re-added. */
 void dp_sessions_reclaim(void)
 {
 	for (int i = 0; i < MAX_SESSIONS; i++)
@@ -131,9 +123,8 @@ void dp_notify_state(struct session *s)
 	m.sc.diagnostics = s->diag;
 	m.sc.detection_multiplier = s->r_mult;
 
-	/* On a full queue, defer rather than drop the connection: mark the
-	 * session and re-send its current state from dp_notify_flush_pending.
-	 * A flap storm collapses to one message per session.
+	/* Queue full: defer rather than drop the connection. A flap storm
+	 * collapses to one message per session.
 	 */
 	if (sizeof(m) > dp_out_room()) {
 		s->notify_pending = 1;
@@ -143,9 +134,7 @@ void dp_notify_state(struct session *s)
 	dp_send(&m, sizeof(m));
 }
 
-/* Re-send current state for sessions deferred while the queue was full. Called
- * after dp_flush.
- */
+/* Called after dp_flush. */
 void dp_notify_flush_pending(void)
 {
 	if (!dp_connected())
@@ -155,10 +144,9 @@ void dp_notify_flush_pending(void)
 			dp_notify_state(&sessions[i]);
 }
 
-/* Wildcard local address. bfdd sends 0.0.0.0 or :: when no local-address is
- * configured, but the fast path keys sessions on (peer, local). Resolve the
- * source the kernel would use to reach the peer; connect() on a datagram
- * socket only runs the route lookup.
+/* bfdd sends 0.0.0.0 or :: without a local-address, but the fast path keys on
+ * (peer, local). connect() on a datagram socket finds the source the kernel
+ * would use.
  */
 static int addr_unspecified(const struct bfd_addr *a, int family)
 {
@@ -197,10 +185,7 @@ static void dp_resolve_local(struct session *s)
 	close(fd);
 }
 
-/* Re-resolve a wildcard session's source while it is not Up, at most once a
- * second. If the route moved, drop the old key so ktx_mirror pushes under the
- * new one.
- */
+/* Once a second while not Up; if the route moved, drop the old key. */
 void dp_reresolve_wildcard(struct session *s, uint64_t now)
 {
 	struct bfd_addr old;
@@ -223,8 +208,8 @@ void dp_reresolve_wildcard(struct session *s, uint64_t now)
 	}
 }
 
-/* The session an ADD names: its own, a live one adopted under a new lid, or a
- * fresh one. NULL if the table is full.
+/* Its own session, a live one adopted under a new lid, or a fresh one. NULL if
+ * the table is full.
  */
 static struct session *dp_add_find(uint32_t lid, const struct bfddp_session_msg *sm, int *fresh,
 				   int *adopted)
@@ -233,18 +218,16 @@ static struct session *dp_add_find(uint32_t lid, const struct bfddp_session_msg 
 	struct session *stale;
 
 	if (s) {
-		/* any bfdd message naming this lid proves it survived the
-		 * reconnect; unmark, or the reconcile sweep tears down a live
-		 * session (bfdd can reconnect with stable lids)
+		/* bfdd may reconnect with stable lids; unmark, or the reconcile
+		 * sweep tears it down.
 		 */
 		s->orphaned = 0;
 		return s;
 	}
 	stale = sess_by_addr_pair_local(sm);
 	if (stale && dp_hold_us && stale->state == ST_UP) {
-		/* Graceful restart: bfdd re-registered this addr pair under a
-		 * new lid. Adopt the live session in place; wire_disc, FSM
-		 * state, kernel maps and counters all survive.
+		/* Graceful restart: bfdd re-registered the pair under a new
+		 * lid. Adopt the live session in place.
 		 */
 		log_info("dplane: ADD lid=%u adopts live session (old lid=%u)\n", lid, stale->lid);
 		stale->orphaned = 0;
@@ -265,9 +248,7 @@ static struct session *dp_add_find(uint32_t lid, const struct bfddp_session_msg 
 	return s;
 }
 
-/* Addresses, resolving a wildcard local. An UPDATE may move the address pair;
- * clear the old pair's map entries.
- */
+/* An UPDATE may move the address pair; clear the old pair's map entries. */
 static void dp_add_addrs(struct session *s, const struct bfddp_session_msg *sm, int fresh)
 {
 	struct bfd_addr old_peer = s->peer, old_local = s->local;
@@ -285,22 +266,18 @@ static void dp_add_addrs(struct session *s, const struct bfddp_session_msg *sm, 
 		log_info("dplane: ADD lid=%u moved address pair, clearing the old\n", s->lid);
 		ktx_clear_key(&old_peer, &old_local, s->wire_disc);
 		echo_peer_refresh(&old_peer, s);
-		/* echo_disc mapped the discriminator to the OLD key, so let
-		 * echo_tx_maybe re-insert it under the new one.
-		 */
+		/* echo_disc still maps the old key. */
 		s->echo_disc_done = 0;
 	}
 }
 
-/* Authentication (RFC 5880 s6.7). SESSION_AUTH says whether the session
- * authenticates; keys arrive separately in DP_SESSION_AUTH. The TX sequence
- * starts at a random value (s6.7.3).
+/* RFC 5880 s6.7: SESSION_AUTH says whether it authenticates; keys come in
+ * DP_SESSION_AUTH. The TX sequence starts random (s6.7.3).
  */
 static void dp_add_auth(struct session *s, uint32_t flags)
 {
 	int authed = !!(flags & SESSION_AUTH);
 
-	/* A cleared flag withdraws the keys. */
 	if (!authed && s->auth_present) {
 		memset(s->auth_keys, 0, sizeof(s->auth_keys));
 		s->auth_nkeys = 0;
@@ -315,27 +292,21 @@ static void dp_add_auth(struct session *s, uint32_t flags)
 	session_auth_evaluate(s, (int64_t)time(NULL));
 }
 
-/* Record the ifindex for echo TX, attach the fast path to the session's
- * interface, and warn once if it cannot be covered. Multihop sessions are
- * exempt, since they can ingress anywhere.
- */
+/* Multihop sessions can ingress anywhere, so they attach nowhere. */
 static void dp_add_iface(struct session *s, const struct bfddp_session_msg *sm)
 {
 	uint32_t sif = ntohl(sm->ifindex);
 
-	/* Echo TX sends at L2, so it needs the session's own egress interface. */
+	/* Echo TX sends at L2 on this interface. */
 	if (sif != s->ifindex) {
 		s->ifindex = sif;
 		s->echo_mac_valid = 0;
 	}
 
-	/* bfdd places sessions by routing, so attach the program to this
-	 * interface too.
-	 */
 	if (use_ktx && !s->is_mhop && sif && !ktx_covers((int)sif)) {
 		char ifn[sizeof(sm->ifname) + 1];
 
-		/* bfddp's ifname need not be NUL-terminated. */
+		/* Need not be NUL-terminated. */
 		snprintf(ifn, sizeof(ifn), "%.*s", (int)sizeof(sm->ifname), sm->ifname);
 		ktx_attach_if((int)sif, ifn);
 	}
@@ -347,23 +318,18 @@ static void dp_add_iface(struct session *s, const struct bfddp_session_msg *sm)
 	}
 }
 
-/* The transmit interval and state after the parameters changed. */
 static void dp_add_timers(struct session *s, uint64_t t, int fresh, uint32_t old_tx,
 			  uint32_t old_rx)
 {
 	if (!fresh && s->state == ST_UP && (s->min_tx_us != old_tx || s->min_rx_us != old_rx)) {
-		/* RFC 5880 s6.8.3: parameter change while Up requires a
-		 * Poll sequence. An increased min_tx must not slow actual
-		 * TX until the poll terminates; a decrease applies now.
+		/* RFC 5880 s6.8.3: a change while Up needs a Poll. An increase
+		 * waits for the Final; a decrease applies now.
 		 */
 		if (s->min_tx_us < s->applied_tx_us || !s->applied_tx_us)
 			s->applied_tx_us = s->min_tx_us;
 		fsm_start_poll(s, t);
 	} else if (!s->polling) {
-		/* Not while a Poll is outstanding: s6.8.3 keeps the old
-		 * interval until the peer's Final, which fsm_rx or
-		 * ktx_poll_map handles.
-		 */
+		/* Not mid-Poll: the old interval holds until the Final. */
 		s->applied_tx_us = s->min_tx_us;
 	}
 	if (fresh) {
@@ -374,10 +340,7 @@ static void dp_add_timers(struct session *s, uint64_t t, int fresh, uint32_t old
 	}
 
 	if (!fresh && !s->admin_down && s->state == ST_ADMINDOWN) {
-		/* SHUTDOWN flag cleared on an existing session: leave
-		 * AdminDown and restart the FSM. Entry into AdminDown is
-		 * in fsm_tx; without this, the exit never happens.
-		 */
+		/* SHUTDOWN cleared: leave AdminDown; nothing else does. */
 		state_transition(s, ST_DOWN, 0, now_us(), "admin shutdown cleared");
 		s->next_tx_us = now_us();
 	}
@@ -412,8 +375,8 @@ static void dp_handle_add(const struct bfddp_session_msg *sm, uint64_t t)
 
 	s->lid = lid;
 	if (fresh || !s->wire_disc)
-		/* adopted sessions keep their wire discriminator (RFC 5880:
-		 * constant while Up)
+		/* RFC 5880: constant while Up, so an adopted session keeps its
+		 * own.
 		 */
 		s->wire_disc = lid;
 	dp_add_addrs(s, sm, fresh);
@@ -435,9 +398,8 @@ static void dp_handle_add(const struct bfddp_session_msg *sm, uint64_t t)
 	dp_add_auth(s, flags);
 	ktx_update_mhop_flag();
 	dp_add_iface(s, sm);
-	/* echo_peers holds peers of echo-active sessions, so the reflector
-	 * returns only their echoes. The entry is shared by every session with
-	 * that peer, so recompute it rather than update it.
+	/* Shared by every session with this peer, so recompute rather than
+	 * update.
 	 */
 	echo_peer_refresh(&s->peer, NULL);
 	dp_add_timers(s, t, fresh, old_tx, old_rx);
@@ -497,9 +459,8 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h, const u
 
 		ktx_session_counters(s, &krx, &ktx);
 
-		/* Sum userspace (establishment) and kernel (steady state)
-		 * counts. Kernel bytes are estimated at 24 per packet, so a
-		 * peer that pads is undercounted on bytes only.
+		/* Userspace plus kernel counts. Kernel bytes assume 24 per
+		 * packet.
 		 */
 		uint64_t rx = s->rx_pkts + krx;
 		uint64_t rx_bytes = s->rx_bytes + krx * BFD_MIN_LEN;
@@ -510,10 +471,7 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h, const u
 		m.c.control_output_bytes = htobe64(tx * BFD_MIN_LEN);
 		m.c.control_output_packets = htobe64(tx);
 
-		/* Our own echoes only. Echoes the kernel reflects for a peer
-		 * cannot be attributed to a session, since echo_peers is keyed
-		 * on address alone.
-		 */
+		/* Our own echoes only: echo_peers is keyed on address alone. */
 		m.c.echo_input_bytes = htobe64(s->echo_rx_pkts * BFD_MIN_LEN);
 		m.c.echo_input_packets = htobe64(s->echo_rx_pkts);
 		m.c.echo_output_bytes = htobe64(s->echo_tx_pkts * BFD_MIN_LEN);
@@ -522,9 +480,7 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h, const u
 	dp_send(&m, sizeof(m));
 }
 
-/* Take the session's authentication keys. The whole chain arrives with its
- * send and accept periods; key selection follows the clock from here.
- */
+/* The whole chain arrives once; key choice follows the clock. */
 static void dp_session_auth(const struct bfddp_session_auth *sa, size_t plen)
 {
 	uint32_t lid = ntohl(sa->lid);
@@ -535,7 +491,6 @@ static void dp_session_auth(const struct bfddp_session_auth *sa, size_t plen)
 	if (!s)
 		return;
 
-	/* The message is only as long as the keys it carries. */
 	if (count > BFDDP_AUTH_KEY_COUNT_MAX ||
 	    plen < BFDDP_SESSION_AUTH_MIN + (size_t)count * sizeof(sa->keys[0])) {
 		log_err("dplane: lid=%u malformed authentication message, %u keys in %zu bytes\n",
@@ -550,8 +505,8 @@ static void dp_session_auth(const struct bfddp_session_auth *sa, size_t plen)
 		struct auth_key *dst = &s->auth_keys[kept];
 		uint8_t kl = k->key_len;
 
-		/* Drop, not truncate, a key too long for the digest: a
-		 * truncated key fails every packet.
+		/* Drop rather than truncate: a truncated key fails every
+		 * packet.
 		 */
 		if (kl == 0 || kl > sizeof(dst->kpad)) {
 			log_err("dplane: lid=%u key id %u has an unusable length %u, ignored\n",

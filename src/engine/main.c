@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * main.c - userspace BFD endpoint (RFC 5880/5881 subset).
- *
- * Runs as a distributed-BFD data plane for FRR: bfdd connects over the
- * bfddp protocol and drives session lifecycle, this engine runs the
- * sessions and reports state changes back. Stock FRR, no patches.
- *
- * Modes:
- *   ./bfd_tx <local-ip> <peer-ip> [--kernel-tx <if>]    static session
- *     --auth <type>:<keyid>:<key>   authenticate that static session
- *                                   (simple, keyed-sha1, meticulous-sha1)
- *   ./bfd_tx --dplane <port|sock-path> [--kernel-tx <if>]  bfdd-driven
+/* main.c - the engine: a BFD data plane driven by FRR bfdd over bfddp, or one
+ * static session.
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -35,21 +25,17 @@
 #include "sock.h"
 #include "static.h"
 
-/* Loop clock: a timerfd, so sub-millisecond ticks are honoured. SO_RCVTIMEO
- * would round anything under 1ms up.
- */
+/* A timerfd, since SO_RCVTIMEO rounds under 1ms up. */
 static int tick_fd = -1;
 
-/* Main loop passes, for the stats dump. */
+/* For the stats dump. */
 uint64_t loop_passes;
-uint64_t loop_rx_wakeups; /* passes on which the v4 control socket had a packet */
+uint64_t loop_rx_wakeups; /* passes with a v4 control packet */
 
-/* Inter-pass gap histogram, log2 buckets in microseconds. */
+/* Log2 buckets, microseconds. */
 uint64_t loop_gap_us[24];
 
-/* SIGTERM and SIGINT request an orderly exit, so peers get AdminDown instead
- * of a detect timeout.
- */
+/* An orderly exit sends AdminDown instead of leaving peers to time out. */
 static volatile sig_atomic_t shutdown_wanted;
 
 static void shutdown_on_signal(int sig)
@@ -58,9 +44,7 @@ static void shutdown_on_signal(int sig)
 	shutdown_wanted = 1;
 }
 
-/* --check: load the object (ABI check and verifier), report the verdict and
- * kernel, and exit without attaching.
- */
+/* --check: load the object and exit without attaching. */
 static int check_load(void)
 {
 	struct utsname un;
@@ -85,9 +69,6 @@ static int tick_open(unsigned int tick_us)
 
 	if (tick_us != TICK_US_DEFAULT)
 		log_info("engine: main loop tick %uus (default %uus)\n", tick_us, TICK_US_DEFAULT);
-	/* No SO_RCVTIMEO: poll() is the only wait and every drain is
-	 * MSG_DONTWAIT.
-	 */
 	tick_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
 	if (tick_fd < 0) {
 		perror("timerfd_create");
@@ -101,9 +82,7 @@ static int tick_open(unsigned int tick_us)
 	return 0;
 }
 
-/* Re-choose keys whose periods have moved on. The chain arrives once, so
- * rollovers are noticed here; once a second suits periods in whole seconds.
- */
+/* Keys arrive once with their periods; notice rollovers once a second. */
 static void auth_rollover_tick(void)
 {
 	static int64_t last;
@@ -119,24 +98,17 @@ static void auth_rollover_tick(void)
 
 		if (!s->used || !s->auth_nkeys)
 			continue;
-		/* Nothing changes until the next boundary, and a session
-		 * whose keys never expire has none.
-		 */
 		if (s->auth_next_change == 0 || now < s->auth_next_change)
 			continue;
 		if (session_auth_evaluate(s, now))
 			log_info("lid=%u authentication key %u is now in use\n", s->lid,
 				 s->auth_keyid);
-		/* The acceptable set is evaluated here too, so the program
-		 * is refreshed whether or not the transmit key moved.
-		 */
+		/* Refresh the accept set even if the send key did not move. */
 		ktx_mirror(s);
 	}
 }
 
-/* Announce AdminDown to every peer before exiting. dp-hold orphans are
- * skipped: they must survive unnoticed.
- */
+/* dp-hold orphans stay silent. */
 static void shutdown_announce(void)
 {
 	int announced = 0;
@@ -161,10 +133,7 @@ static void poll_add(struct pollfd *pfd, int *np, int fd)
 	(*np)++;
 }
 
-/* Wait for the tick or any input: the timerfd, the sweep event ring, the RX
- * sockets, and the dplane listener and connection. Services the dplane and
- * sets ready[] for the RX sockets that have packets.
- */
+/* Services the dplane and marks the RX sockets with packets. */
 static void loop_wait(int ready[RX_NSOCK])
 {
 	struct pollfd pfd[4 + RX_NSOCK] = { 0 };
@@ -180,7 +149,6 @@ static void loop_wait(int ready[RX_NSOCK])
 	poll_add(pfd, &np, dp_c);
 
 	poll(pfd, np, -1);
-	/* Drain the timer so it does not stay readable. */
 	if (pfd[0].revents & POLLIN)
 		(void)!read(tick_fd, &exp, sizeof(exp));
 
@@ -216,9 +184,8 @@ static void loop_gap_record(uint64_t t)
 	prev = t;
 }
 
-/* Authenticated session whose keys never arrived: SESSION_AUTH but no
- * DP_SESSION_AUTH, as from a bfdd without the key extension. Unlike a
- * rollover gap this never heals, so warn after a 1s grace.
+/* SESSION_AUTH but no DP_SESSION_AUTH: a bfdd without the key extension. It
+ * never heals, so warn after 1s.
  */
 static void auth_keys_watch(struct session *cs, uint64_t t)
 {
@@ -231,9 +198,6 @@ static void auth_keys_watch(struct session *cs, uint64_t t)
 			cs->auth_nokeys_warned = 1;
 		}
 	} else {
-		/* keys arrived, or authentication withdrawn: disarm, and
-		 * re-arm for a future recurrence.
-		 */
 		cs->auth_keys_deadline_us = 0;
 		cs->auth_nokeys_warned = 0;
 	}
@@ -248,12 +212,9 @@ static void session_pass(uint64_t t)
 				sess_teardown_one(&sessions[i], "not re-added by bfdd");
 	}
 
-	/* Apply the sweep's verdicts first, so this pass sees sessions the
-	 * kernel already declared down.
-	 */
+	/* Sweep verdicts first, so this pass sees them. */
 	ktx_drain_events();
 
-	/* One batch map fetch for the whole pass. */
 	ktx_poll_all();
 	for (int i = 0; i < MAX_SESSIONS; i++) {
 		struct session *cs = &sessions[i];
@@ -276,9 +237,8 @@ static void session_pass(uint64_t t)
 
 int main(int argc, char **argv)
 {
-	/* Packets drained per socket per pass. The bound keeps a flood from
-	 * starving TX, detection and the dplane; one per session clears a
-	 * legitimate burst in one pass.
+	/* Per socket per pass, so a flood cannot starve TX, detection or the
+	 * dplane.
 	 */
 	const int drain_budget = MAX_SESSIONS;
 	struct opts o;
@@ -308,9 +268,7 @@ int main(int argc, char **argv)
 		return 1;
 
 	srandom(getpid() ^ time(NULL));
-	/* Both handlers set a flag and nothing else; the work happens in the
-	 * loop below, so neither needs to be async-signal-safe.
-	 */
+	/* The handlers only set flags. */
 	signal(SIGUSR1, stats_on_signal);
 	signal(SIGTERM, shutdown_on_signal);
 	signal(SIGINT, shutdown_on_signal);
@@ -324,14 +282,9 @@ int main(int argc, char **argv)
 
 		auth_rollover_tick();
 
-		/* Anything that did not fit the socket last pass. Cheap when
-		 * the queue is empty, which is the normal case.
-		 */
 		dp_flush();
 
-		/* Room the flush just freed goes to sessions whose state
-		 * change was deferred rather than dropped.
-		 */
+		/* Deferred state changes go out in the room the flush freed. */
 		dp_notify_flush_pending();
 
 		if (shutdown_wanted) {
@@ -346,8 +299,8 @@ int main(int argc, char **argv)
 		loop_wait(ready);
 		t = now_us();
 		loop_passes++;
-		/* Heartbeat for the dead-man gate in bfd_xdp.c. Taken after
-		 * poll() returns, so a loop stuck in poll stops beating.
+		/* After poll(), so a loop stuck in poll stops the dead-man
+		 * heartbeat.
 		 */
 		ktx_heartbeat(t);
 		loop_gap_record(t);

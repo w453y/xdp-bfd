@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-/* stats.c - a JSON snapshot of everything the engine knows.
- *
- * SIGUSR1 sets a flag and the dump runs from the main loop, so nothing
- * here has to be async-signal-safe. Written to a temp path and renamed,
- * so a reader never sees a half-written snapshot.
+/* stats.c - a JSON snapshot for SIGUSR1, written from the loop and renamed into
+ * place.
  */
 #include <errno.h>
 #include <signal.h>
@@ -21,9 +18,7 @@
 #include "fsm.h"
 #include "stats.h"
 
-/* Under /run, which the packaged unit creates (RuntimeDirectory=xdp-bfd).
- * Other runs should pass --stats-dump.
- */
+/* The packaged unit creates /run/xdp-bfd. */
 const char *stats_path = "/run/xdp-bfd/stats.json";
 volatile sig_atomic_t stats_wanted;
 
@@ -33,7 +28,6 @@ void stats_on_signal(int sig)
 	stats_wanted = 1;
 }
 
-/* Emit a string as a JSON value, escaped. */
 static void json_str(FILE *f, const char *v)
 {
 	fputc('"', f);
@@ -66,9 +60,7 @@ static void json_str(FILE *f, const char *v)
 	fputc('"', f);
 }
 
-/* Sum a per-CPU stat slot. Zero when the map is absent, which is the
- * honest answer without kernel TX rather than an error.
- */
+/* Per-CPU slot sum; 0 without the map. */
 static unsigned long long slot_total(__u32 key, int ncpu)
 {
 	unsigned long long tot = 0;
@@ -103,8 +95,8 @@ static void one_session(FILE *f, const struct session *s, int first)
 	json_str(f, s->last_reason);
 	fputc(',', f);
 	fprintf(f, " \"last_rx_us\": %llu,", (unsigned long long)s->last_rx_us);
-	/* Next to last_rx_us: the gap between them is how long the program has
-	 * been declining to answer.
+	/* The gap from last_rx_us is how long the program has declined to
+	 * answer.
 	 */
 	fprintf(f, " \"last_ktx_us\": %llu,", (unsigned long long)s->last_ktx_us);
 	fprintf(f, " \"last_detect_us\": %u, \"last_overshoot_us\": %u,", s->last_detect_us,
@@ -118,9 +110,7 @@ static void one_session(FILE *f, const struct session *s, int first)
 		s->polling ? "true" : "false");
 	fprintf(f, " \"demand_polls\": %u,", s->demand_polls);
 	fprintf(f, " \"orphaned\": %s,", s->orphaned ? "true" : "false");
-	/* Configured demand, the peer's demand, and the two holds they
-	 * produce; in demand mode these routinely differ.
-	 */
+	/* In demand mode these routinely differ. */
 	fprintf(f, " \"demand\": {\"on\": %s, \"peer\": %s, \"tx_held\": %s, \"detect_held\": %s},",
 		s->demand ? "true" : "false", (s->r_flags & BFD_F_DEMAND) ? "true" : "false",
 		demand_tx_held(s) ? "true" : "false", demand_detect_held(s) ? "true" : "false");
@@ -129,9 +119,8 @@ static void one_session(FILE *f, const struct session *s, int first)
 	fprintf(f, " \"tx_fail\": %llu,", (unsigned long long)s->tx_fail);
 	fprintf(f, " \"rx_pkts\": %llu, \"tx_pkts\": %llu,", (unsigned long long)s->rx_pkts,
 		(unsigned long long)s->tx_pkts);
-	/* "on" is SESSION_ECHO from the ADD; "active" is whether echo actually
-	 * runs, since a zero interval is off. "alive" is the kernel's verdict,
-	 * null until an echo has returned.
+	/* on is SESSION_ECHO; active excludes a zero interval; alive is the
+	 * kernel's verdict, null until an echo returns.
 	 */
 	fprintf(f,
 		" \"echo\": {\"on\": %s, \"active\": %s, \"tx\": %llu, \"rx\": %llu, \"lost\": %llu, \"rtt_last_us\": %llu, \"rtt_min_us\": %llu, \"rtt_max_us\": %llu, \"alive\": %s}}",
@@ -144,9 +133,7 @@ static void one_session(FILE *f, const struct session *s, int first)
 
 void stats_dump(void)
 {
-	/* Names from the same list the program counts with, so this cannot
-	 * drift from the numbering.
-	 */
+	/* From the list the program counts with. */
 	static const char *const names[] = {
 #define BFD_STAT_NAME(n, s) s,
 		BFD_STAT_LIST(BFD_STAT_NAME)
@@ -177,9 +164,7 @@ void stats_dump(void)
 
 	fprintf(f, "{\n  \"now_us\": %llu,\n", (unsigned long long)now_us());
 	fprintf(f, "  \"kernel_tx\": %s,\n", use_ktx ? "true" : "false");
-	/* The dead-man bound in force, not as requested: a failed map write or
-	 * mmap zeroes it.
-	 */
+	/* As in force: a failed map write or mmap zeroes it. */
 	fprintf(f, "  \"deadman_us\": %llu,\n", (unsigned long long)(ktx_deadman_ns / 1000));
 	fprintf(f, "  \"demand_poll_us\": %llu,\n", (unsigned long long)demand_poll_us);
 	fprintf(f, "  \"xdp_ifindex\": %d,\n", ktx_ifindex);

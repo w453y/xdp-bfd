@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* bfd_loader.c - attach, dump sessions each second, log liveness events. */
+/* bfd_loader.c - debugging observer: attach, dump sessions each second, log liveness events. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,7 +28,6 @@ static FILE *evlog;
 
 #define addr_str bfd_addr_str
 
-/* Slot names, generated from the same list as the enum. */
 static const char *const stat_name[] = {
 #define BFD_STAT_NAME(n, s) s,
 	BFD_STAT_LIST(BFD_STAT_NAME)
@@ -36,15 +35,13 @@ static const char *const stat_name[] = {
 };
 #define NSTATS ((__u32)BFD_STAT_MAX)
 
-/* Seek before ftell: the position of a fresh append stream is unspecified. */
+/* Seek first: a fresh append stream's position is unspecified. */
 static int file_is_empty(FILE *f)
 {
 	return f && !fseek(f, 0, SEEK_END) && ftell(f) == 0;
 }
 
-/* Age of a timestamp against an earlier snapshot, signed so a newer timestamp
- * does not wrap.
- */
+/* Signed, so a newer timestamp does not wrap. */
 static double age_ms(__u64 now, __u64 then)
 {
 	__s64 d = (__s64)(now - then);
@@ -133,9 +130,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	/* Standalone observer tracks everything; bfd_tx leaves this 0 so
-	 * only control-plane-configured sessions create map state.
-	 */
+	/* Promiscuous: track every pair. bfd_tx leaves it off. */
 	int flags_fd = bpf_object__find_map_fd_by_name(obj, "prog_flags");
 
 	if (flags_fd >= 0) {
@@ -168,7 +163,7 @@ int main(int argc, char **argv)
 	time_t last_dump = 0;
 
 	while (!stop) {
-		ring_buffer__poll(rb, 100); /* 100ms: events are prompt */
+		ring_buffer__poll(rb, 100);
 
 		if (time(NULL) == last_dump)
 			continue;

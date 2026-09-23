@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* bfd_auth.h - the authentication section (RFC 5880 s6.7): simple password and
- * keyed SHA1, plain and meticulous, the types bfdd produces.
- *
- * The digest follows bfdd, not the RFC: bfdd zeroes the digest field and
- * computes an HMAC, where s6.7.3 describes a plain SHA1 with the key in the
- * field. The two do not interoperate.
+/* bfd_auth.h - the RFC 5880 s6.7 section bfdd produces: simple password, keyed
+ * and meticulous SHA1. The digest follows bfdd, an HMAC with the field zeroed,
+ * not the RFC's keyed SHA1; the two do not interoperate (FRR #23274).
  */
 #ifndef BFD_AUTH_H
 #define BFD_AUTH_H
@@ -12,10 +9,7 @@
 #include "bfd_shared.h"
 #include "hmac_sha1.h"
 
-/* HMAC over a control packet with the digest field zeroed, as bfdd does.
- * Userspace only; the fast path calls hmac_sha1_blocks directly. `pkt` must
- * hold BFD_MIN_LEN + BFD_AUTH_SHA1_LEN bytes.
- */
+/* Userspace only. pkt holds BFD_MIN_LEN + BFD_AUTH_SHA1_LEN bytes. */
 static inline int bfd_auth_sha1(const __u8 *pkt, const __u8 kpad[SHA1_BLOCK_LEN],
 				__u8 out[SHA1_DIGEST_LEN])
 {
@@ -32,7 +26,7 @@ static inline int bfd_auth_sha1(const __u8 *pkt, const __u8 kpad[SHA1_BLOCK_LEN]
 	return hmac_sha1_blocks(kpad, blk, BFD_MIN_LEN + BFD_AUTH_SHA1_LEN, out, tmp);
 }
 
-/* How long a packet of this type is. 0 for a type we do not produce. */
+/* 0 for a type we do not produce. */
 static inline __u8 bfd_auth_pkt_len(__u8 auth_type, __u8 keylen)
 {
 	if (auth_type == BFD_AUTH_SIMPLE)
@@ -44,8 +38,8 @@ static inline __u8 bfd_auth_pkt_len(__u8 auth_type, __u8 keylen)
 	return 0;
 }
 
-/* Append the auth section to a 24-byte packet whose `len` and A bit are set;
- * return the packet length, or 0 on refusal. `pkt` needs room for BFD_MAX_LEN.
+/* Append to a 24-byte packet with len and the A bit set. Returns the length, 0
+ * on refusal; pkt needs BFD_MAX_LEN.
  */
 static inline __u8 bfd_auth_build(__u8 *pkt, __u8 auth_type, __u8 keyid, const __u8 *key,
 				  __u8 keylen, const __u8 kpad[SHA1_BLOCK_LEN], __u32 seq)
@@ -80,19 +74,16 @@ static inline __u8 bfd_auth_build(__u8 *pkt, __u8 auth_type, __u8 keyid, const _
 	return len;
 }
 
-/* Is the sequence inside the replay window (RFC 5880 s6.7.4)? [rx_seq, rx_seq
- * + 3*mult], starting at +1 for meticulous, in circular unsigned space.
- */
+/* RFC 5880 s6.7.4: [rx_seq, rx_seq + 3*mult], from +1 if meticulous, circular. */
 static inline int bfd_auth_seq_ok(__u32 seq, __u32 rx_seq, int meticulous, __u8 mult)
 {
 	__u32 lo = meticulous ? 1u : 0u;
 	__u32 span = 3u * (mult ? mult : 3u);
-	__u32 d = seq - rx_seq; /* circular distance, deliberately unsigned */
+	__u32 d = seq - rx_seq; /* circular, deliberately unsigned */
 
 	return d >= lo && d <= span;
 }
 
-/* Why an authenticated packet was not accepted. */
 enum bfd_auth_verdict {
 	BFD_AUTH_OK = 0,
 	BFD_AUTH_MALFORMED, /* section absent, short, or the wrong type */
@@ -101,10 +92,8 @@ enum bfd_auth_verdict {
 	BFD_AUTH_REPLAY, /* sequence number outside the replay window */
 };
 
-/* Check a received packet's auth section. `rx_seq` and `seen` carry the replay
- * window and change only on success; the first packet sets the window, as in
- * bfdd, so a restarted peer can resync. `mult` is the packet's Detect Mult
- * (s6.7.4).
+/* rx_seq and seen change only on success. The first packet sets the window, as
+ * bfdd does. mult is the packet's Detect Mult (s6.7.4).
  */
 static inline int bfd_auth_check(const __u8 *pkt, __u8 len, __u8 auth_type, __u8 keyid,
 				 const __u8 *key, __u8 keylen, const __u8 kpad[SHA1_BLOCK_LEN],
@@ -126,9 +115,7 @@ static inline int bfd_auth_check(const __u8 *pkt, __u8 len, __u8 auth_type, __u8
 	if (auth_type == BFD_AUTH_SIMPLE) {
 		__u8 diff = 0;
 
-		/* Constant time over the configured length: a password
-		 * compare that returns early leaks it a byte at a time.
-		 */
+		/* Constant time: an early return leaks the password a byte at a time. */
 		for (i = 0; i < keylen; i++)
 			diff |= (__u8)(a[BFD_AUTH_SIMPLE_HDR + i] ^ key[i]);
 		return diff ? BFD_AUTH_BADKEY : BFD_AUTH_OK;
@@ -152,7 +139,7 @@ static inline int bfd_auth_check(const __u8 *pkt, __u8 len, __u8 auth_type, __u8
 			return BFD_AUTH_BADDIGEST;
 	}
 
-	/* Advance on every accepted packet, or the window never moves. */
+	/* Every accepted packet moves the window. */
 	*rx_seq = seq;
 	*seen = 1;
 	return BFD_AUTH_OK;

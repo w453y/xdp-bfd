@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* sock.c - the engine's UDP sockets. \see sock.h */
+/* sock.c - the engine's UDP sockets. */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
@@ -14,9 +14,7 @@
 #include "fsm.h"
 #include "sock.h"
 
-/* Multihop (RFC 5883) arrives on 4784, on its own sockets. Establishment goes
- * through userspace; XDP handles both ports once Up.
- */
+/* Multihop (RFC 5883) uses 4784. XDP takes over both ports once Up. */
 struct rx_sock rx_socks[RX_NSOCK] = {
 	{ -1, AF_INET, 0, "socket v4 control", "bind 3784 (is another BFD daemon running?)" },
 	{ -1, AF_INET, 1, "socket v4 multihop (multihop disabled)",
@@ -54,9 +52,8 @@ static int rx_open(struct rx_sock *r)
 		setsockopt(fd, IPPROTO_IP, IP_PKTINFO, &on, sizeof(on));
 		setsockopt(fd, IPPROTO_IP, IP_RECVTTL, &on, sizeof(on));
 	}
-	/* GTSM (RFC 5881 s5, RFC 5883 s5) checks the received TTL per packet:
-	 * Linux honours IP_MINTTL and IPV6_MINHOPCOUNT only for TCP, and the
-	 * multihop minimum is per session anyway.
+	/* GTSM is checked per packet: Linux honours IP_MINTTL and
+	 * IPV6_MINHOPCOUNT only for TCP.
 	 */
 	r->fd = fd;
 	return 0;
@@ -74,9 +71,7 @@ int rx_open_all(void)
 	return 0;
 }
 
-/* Source and destination addresses, and the TTL or hop limit, -1 if the cmsg
- * is missing.
- */
+/* Returns the TTL or hop limit, -1 if the cmsg is missing. */
 static int rx_meta(struct msghdr *mh, int family, struct bfd_addr *src, struct bfd_addr *dst)
 {
 	int ttl = -1;
@@ -115,10 +110,10 @@ int rx_drain(const struct rx_sock *r, uint64_t t, int budget)
 	int d;
 
 	for (d = 0; d < budget; d++) {
-		/* Zeroed per packet, as rx_accept requires. */
+		/* rx_accept wants it zeroed per packet. */
 		__u8 buf[BFD_MAX_LEN] = { 0 };
 		struct bfd_ctrl_pkt p;
-		struct sockaddr_in6 from; /* large enough for either family */
+		struct sockaddr_in6 from; /* either family */
 		struct iovec iov = { .iov_base = buf, .iov_len = sizeof(buf) };
 		char cbuf[CMSG_SPACE(sizeof(struct in6_pktinfo)) + CMSG_SPACE(sizeof(int))];
 		struct msghdr mh = {

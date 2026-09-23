@@ -12,7 +12,6 @@
 
 struct session sessions[MAX_SESSIONS];
 
-/* ---------- session table ---------- */
 struct session *sess_alloc(void)
 {
 	for (int i = 0; i < MAX_SESSIONS; i++)
@@ -84,21 +83,16 @@ struct session *sess_by_addr(const struct bfd_addr *peer, const struct bfd_addr 
 	return NULL;
 }
 
-/* Consider a boundary for the soonest one still ahead of us. */
 static void auth_note_boundary(int64_t at, int64_t now, int64_t *soonest)
 {
-	/* Zero means "always", -1 means "never expires": neither is an
-	 * instant at which anything changes.
-	 */
+	/* 0 means always and -1 never: not instants. */
 	if (at <= 0 || at <= now)
 		return;
 	if (*soonest == 0 || at < *soonest)
 		*soonest = at;
 }
 
-/* Pick the transmit key and when that choice can next change. Returns non-zero
- * if the key changed.
- */
+/* Non-zero if the send key changed. */
 int session_auth_evaluate(struct session *s, int64_t now)
 {
 	uint8_t type = 0, key_id = 0, keylen = 0;
@@ -115,9 +109,7 @@ int session_auth_evaluate(struct session *s, int64_t now)
 		auth_note_boundary(k->accept_start, now, &soonest);
 		auth_note_boundary(k->accept_end, now, &soonest);
 
-		/* First match wins, which is the order the chain was sent
-		 * in and so the same key the control plane would pick.
-		 */
+		/* First match wins, as bfdd picks. */
 		if (chosen == NULL && s->auth_present && auth_key_sendable(k, now))
 			chosen = k;
 	}
@@ -141,9 +133,7 @@ int session_auth_evaluate(struct session *s, int64_t now)
 		s->auth_type = type;
 		s->auth_keyid = key_id;
 		s->auth_keylen = keylen;
-		/* A sendable key again, so the next gap is a new event and
-		 * gets its own line.
-		 */
+		/* The next gap gets its own log line. */
 		if (type)
 			s->auth_gap_warned = 0;
 	}
@@ -152,9 +142,7 @@ int session_auth_evaluate(struct session *s, int64_t now)
 	return changed;
 }
 
-/* The key a received packet names, if still acceptable. Any acceptable key
- * counts, so a rollover does not refuse the peer.
- */
+/* Any acceptable key counts, so a rollover does not refuse the peer. */
 const struct auth_key *session_auth_key_for(const struct session *s, uint8_t key_id, int64_t now)
 {
 	unsigned int i;

@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* ktx.h - kernel-TX: loading the program (ktx_load.c), mirroring sessions
- * into its maps (ktx.c), and the tx_cfg a session maps to (ktx_cfg.c).
- */
+/* ktx.h - the kernel fast path: load (ktx_load.c), mirror (ktx.c), config (ktx_cfg.c). */
 #ifndef BFD_ENGINE_KTX_H
 #define BFD_ENGINE_KTX_H
 
@@ -42,9 +40,7 @@ const char *ktx_poll_mode(void);
 void ktx_poll_map(struct session *s, uint64_t t);
 void ktx_session_counters(const struct session *s, uint64_t *rx, uint64_t *tx);
 
-/* ktx_cfg.c: the program's view of a session, derived from it and the clock
- * alone, so it can be driven without a loaded program.
- */
+/* ktx_cfg.c */
 void ktx_cfg_for(const struct session *s, int64_t now, struct tx_cfg *c, struct session_key *k);
 
 #endif /* BFD_ENGINE_KTX_H */

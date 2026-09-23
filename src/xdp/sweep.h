@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
-/* sweep.h - detection sweep timer.
- *
- * Include after maps.h.
- */
+/* sweep.h - the detection sweep timer. Include after maps.h. */
 #ifndef BFD_XDP_SWEEP_H
 #define BFD_XDP_SWEEP_H
 
-/* Sweep: called for each session every sweep_interval(). */
 struct bpf_map;
 static long check_session(struct bpf_map *map, struct session_key *k, struct session_state *st,
 			  void *ctx)
@@ -15,9 +11,7 @@ static long check_session(struct bpf_map *map, struct session_key *k, struct ses
 
 	struct tx_cfg *ec = bpf_map_lookup_elem(&tx_config, k);
 
-	/* Echo liveness: advisory only, never merged into the session verdict,
-	 * since a userspace TX stall looks like a path fault.
-	 */
+	/* Echo liveness is advisory: a userspace TX stall looks like a path fault. */
 	if (ec && ec->echo_iv_us && st->echo_last_seen_ns) {
 		__u64 eb = (__u64)st->detect_mult * ec->echo_iv_us * 1000ull;
 		__s64 ed = (__s64)(now - st->echo_last_seen_ns);
@@ -25,9 +19,7 @@ static long check_session(struct bpf_map *map, struct session_key *k, struct ses
 		st->echo_alive = (ed >= 0 && (__u64)ed <= eb);
 	}
 
-	/* Effective interval from the RX path; recomputed for entries that
-	 * predate the field.
-	 */
+	/* Recomputed for entries that predate the field. */
 	__u64 iv_us = st->detect_iv_us;
 
 	if (!iv_us) {
@@ -42,22 +34,18 @@ static long check_session(struct bpf_map *map, struct session_key *k, struct ses
 	__s64 delta = (__s64)(now - st->last_seen_ns);
 
 	if (delta < 0)
-		return 0; /* packet raced past our now-snapshot */
+		return 0; /* a packet raced past our snapshot */
 
-	/* RFC 5880 s6.7: forget the receive sequence window after twice the
-	 * detection time without a packet, so a restarted peer can resync.
-	 * Here as well as in the engine, because the program drops
-	 * out-of-window packets before userspace sees them. Not skipped under
-	 * demand hold: a peer can restart inside a demanded silence.
+	/* RFC 5880 s6.7: forget the window after twice the detection time, as
+	 * the engine does; the program drops out-of-window packets before
+	 * userspace sees them. Also under demand hold.
 	 */
 	if (st->auth_rx_seen && (__u64)delta > 2ull * detect_ns) {
 		st->auth_rx_seen = 0;
 		st->auth_rx_seq = 0;
 	}
 
-	/* Demand mode (RFC 5880 s6.6): this silence was requested. Leave
-	 * `alive` set so no DETECT-DOWN is emitted.
-	 */
+	/* RFC 5880 s6.6: requested silence; stay alive. */
 	if (ec && ec->demand_hold)
 		return 0;
 
@@ -68,9 +56,6 @@ static long check_session(struct bpf_map *map, struct session_key *k, struct ses
 	return 0;
 }
 
-/* Sweep interval from the tunables map, else the compiled default. Read at
- * each arm.
- */
 static __always_inline __u64 sweep_interval(void)
 {
 	__u32 k = BFD_TUNE_SWEEP_NS;
@@ -79,10 +64,8 @@ static __always_inline __u64 sweep_interval(void)
 	return (v && *v) ? *v : SWEEP_NS;
 }
 
-/* Has the engine been silent longer than allowed? Fails open with no bound or
- * a zero bound (gate off), and with a zero heartbeat (not written yet, at
- * startup). Signed subtraction: the engine's store can land after `now` was
- * taken.
+/* Fails open with no bound or a zero heartbeat. Signed: the engine's store can
+ * land after now was taken.
  */
 static __always_inline int deadman_tripped(__u64 now)
 {
@@ -108,10 +91,8 @@ static int sweep_fire(void *map, __u32 *key, struct sweep *sw)
 	return 0;
 }
 
-/* Arm the sweep from the first packet, since bpf_timer cannot be armed from
- * userspace. The CAS lets exactly one CPU do it, and `inited` is set first so
- * two CPUs never init the same timer. A failure is recorded in init_err and
- * counted, not retried.
+/* bpf_timer cannot be armed from userspace, so the first packet arms it. The
+ * CAS lets one CPU do it; a failure is counted, not retried.
  */
 static __always_inline void ensure_sweeper(void)
 {

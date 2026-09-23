@@ -16,9 +16,7 @@ int rx_auth_ok(struct session *s, const __u8 *buf, __u8 len)
 	const struct auth_key *k;
 	int v;
 
-	/* Authentication is a property of the session, not of which key is
-	 * usable now.
-	 */
+	/* A property of the session, not of which key is usable now. */
 	if (!!(h->flags & BFD_F_AUTH) != !!s->auth_present)
 		return 0;
 	if (!s->auth_present)
@@ -27,9 +25,7 @@ int rx_auth_ok(struct session *s, const __u8 *buf, __u8 len)
 	if (len < BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR)
 		return 0;
 
-	/* Accept any key inside its accept period, not only the one we send
-	 * with, so a rollover does not refuse the peer.
-	 */
+	/* Any key in its accept period, so a rollover does not refuse the peer. */
 	k = session_auth_key_for(s, buf[BFD_MIN_LEN + 2], (int64_t)time(NULL));
 	if (!k) {
 		log_debug("lid=%u no key %u is currently accepted\n", s->lid, buf[BFD_MIN_LEN + 2]);
@@ -52,31 +48,23 @@ struct session *rx_accept(const __u8 *pkt, size_t n, int ttl, const struct bfd_a
 	struct session *s;
 	__u32 ydisc;
 
-	/* From the caller's zeroed buffer, so a short datagram reads as zeros;
-	 * bfd_ctrl_check checks the length.
-	 */
+	/* A short datagram reads as zeros; bfd_ctrl_check checks the length. */
 	memcpy(&h, pkt, sizeof(h));
 
-	/* The same predicate the XDP path uses. Its A-bit rule is disarmed
-	 * here and applied by rx_auth_ok, once the session is known.
-	 */
+	/* The predicate XDP uses, with its A-bit rule left to rx_auth_ok. */
 	if (bfd_ctrl_check(h.vers_diag, h.flags, h.detect_mult, h.len, h.my_disc, (__u32)n,
 			   !!(h.flags & BFD_F_AUTH)) != BFD_CTRL_ACCEPT) {
 		*why = RX_MALFORMED;
 		return NULL;
 	}
 
-	/* Single-hop GTSM (RFC 5881): exactly 255, and before the demux,
-	 * because the rule does not depend on which session it names.
-	 */
+	/* RFC 5881: exactly 255, before the demux. */
 	if (!mhop && ttl != 255) {
 		*why = RX_TTL;
 		return NULL;
 	}
 
-	/* Demux (RFC 5880 s6.8.6), as XDP does it: your_disc names our
-	 * session, or is zero with the peer in Down or AdminDown.
-	 */
+	/* RFC 5880 s6.8.6: your_disc names us, or is 0 with the peer Down or AdminDown. */
 	ydisc = ntohl(h.your_disc);
 	s = sess_by_wire(ydisc);
 	if (!s && ydisc == 0 && BFD_STATE(&h) <= ST_DOWN)
@@ -86,10 +74,7 @@ struct session *rx_accept(const __u8 *pkt, size_t n, int ttl, const struct bfd_a
 		return NULL;
 	}
 
-	/* Multihop GTSM (RFC 5883) against this session's own minimum, the
-	 * same rule the kernel applies against cfg->min_ttl. After the
-	 * demux because that is when the minimum is known.
-	 */
+	/* RFC 5883: the session's own minimum, known only after the demux. */
 	if (mhop && (ttl < 0 || ttl < (int)s->min_ttl)) {
 		*why = RX_TTL;
 		return NULL;

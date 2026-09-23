@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* bfd_xdp.c - packet parse, RX-clocked TX, echo reflection, and the
- * kernel-side detection sweep.
- */
+/* bfd_xdp.c - parse, RX-clocked TX, echo reflection and the detection sweep. */
 
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
@@ -14,7 +12,7 @@
 
 #include "bfd_shared.h"
 
-/* maps.h must precede every header that references a map. */
+/* maps.h first: the rest reference maps. */
 #include "tunables.h"
 #include "maps.h"
 #include "stats.h"
@@ -48,9 +46,8 @@ int bfd_observer(struct xdp_md *ctx)
 	struct ipv6hdr *ip6 = c.ip6;
 	struct udphdr *udp = c.udp;
 
-	/* Echo reflection (RFC 5880 s6.4): return a self-addressed UDP/3785
-	 * packet to its originator. Swap MACs and decrement TTL 255->254,
-	 * which the originator's GTSM expects; the payload is untouched.
+	/* RFC 5880 s6.4: return a self-addressed echo to its originator at TTL
+	 * 254, which its GTSM expects.
 	 */
 	if (udp->dest == bpf_htons(BFD_ECHO_PORT)) {
 		if (ip6)
@@ -60,9 +57,7 @@ int bfd_observer(struct xdp_md *ctx)
 		return echo_reflect_v4(eth, iph, udp, data_end);
 	}
 
-	/* Single-hop (3784) and multihop (4784, RFC 5883) both land here.
-	 * The reply below goes back to whichever port it arrived on.
-	 */
+	/* Single-hop 3784 and multihop 4784 (RFC 5883); the reply uses the arrival port. */
 	if (udp->dest != bpf_htons(BFD_PORT_1HOP) && udp->dest != bpf_htons(BFD_PORT_MHOP))
 		return XDP_PASS;
 
@@ -72,9 +67,8 @@ int bfd_observer(struct xdp_md *ctx)
 		count(BFD_STAT_MALFORMED);
 		return XDP_DROP;
 	}
-	/* The UDP and IP lengths must fit the frame received, or a short frame
-	 * could claim a longer packet. Dropped as malformed: nothing but our
-	 * socket consumes the BFD ports.
+	/* The lengths must fit the frame, or a short frame could claim a longer
+	 * packet. Nothing else consumes the BFD ports, so drop.
 	 */
 	{
 		__u32 have = (__u32)((long)data_end - (long)udp);
@@ -103,11 +97,7 @@ int bfd_observer(struct xdp_md *ctx)
 		}
 	}
 
-	/* Only sessions the control plane configured are tracked, unless the
-	 * loader asked for promiscuous mode. Looked up before header
-	 * validation because whether the A bit is allowed depends on the
-	 * session; the key comes from addresses already parsed.
-	 */
+	/* Before header validation: whether the A bit is allowed depends on the session. */
 	struct tx_cfg *cfg = bpf_map_lookup_elem(&tx_config, &c.key);
 
 	int hv = bfd_hdr_verdict(bfd, udp, cfg ? cfg->auth_present : 0);
@@ -117,9 +107,8 @@ int bfd_observer(struct xdp_md *ctx)
 
 	count(BFD_STAT_WELL_FORMED);
 
-	/* Deferred GTSM: a packet below TTL 255 is accepted only for a
-	 * configured session whose minimum admits it. Before the promiscuous
-	 * PASS, which is for observation and must not relax GTSM.
+	/* Deferred GTSM: below 255 only for a configured session whose minimum
+	 * admits it. Before the promiscuous PASS, which must not relax it.
 	 */
 	{
 		__u8 pttl = iph ? iph->ttl : (ip6 ? ip6->hop_limit : 0);
@@ -137,10 +126,8 @@ int bfd_observer(struct xdp_md *ctx)
 	if (!cfg) {
 		__u32 zero = 0;
 		__u32 *fl = bpf_map_lookup_elem(&prog_flags, &zero);
-		/* A valid control packet for an unconfigured address pair:
-		 * drop it, so a flood cannot fill the socket queue ahead of
-		 * sessions coming up. The promiscuous flag keeps XDP_PASS for
-		 * bfd_loader, a debugging tool.
+		/* Drop, so a flood cannot fill the socket queue ahead of
+		 * sessions coming up. bfd_loader sets the promiscuous flag.
 		 */
 		if (!fl || !(*fl & 1)) {
 			count(BFD_STAT_UNKNOWN_SESSION);
@@ -148,10 +135,7 @@ int bfd_observer(struct xdp_md *ctx)
 		}
 	}
 
-	/* Demux (RFC 5880 s6.8.6): your_disc names our session, or is 0 with
-	 * the peer in Down/AdminDown. A failing packet must not refresh
-	 * liveness or be answered.
-	 */
+	/* RFC 5880 s6.8.6: your_disc names us, or is 0 with the peer Down or AdminDown. */
 	__u8 rstate = BFD_STATE(bfd);
 
 	if (cfg && cfg->my_disc) {
@@ -176,24 +160,18 @@ int bfd_observer(struct xdp_md *ctx)
 			return XDP_PASS;
 	}
 
-	/* Authentication (RFC 5880 s6.7), after demux and before anything in
-	 * the packet is believed.
-	 */
+	/* RFC 5880 s6.7, after demux and before anything in the packet is believed. */
 	struct auth_scratch *asc = NULL;
 
-	/* auth_present, not auth_type: verification uses the accept set, so it
-	 * runs even with no send key.
-	 */
+	/* The accept set verifies even with no send key. */
 	if (cfg && cfg->auth_present) {
 		__u32 azero = 0;
 		__u64 anow = bpf_ktime_get_ns();
 		__u64 awin = (__u64)(st->detect_iv_us ? st->detect_iv_us : cfg->min_rx_us) * 1000;
 
-		/* Bound the HMACs a forger can force: after BFD_AUTH_FAIL_MAX
-		 * digest failures in a detect interval, drop further A-bit
-		 * packets for this session before hashing. A flood can take
-		 * this one session down; the bucket is per session, so the
-		 * others are untouched.
+		/* After BFD_AUTH_FAIL_MAX digest failures in a detect interval,
+		 * drop A-bit packets for this session before hashing. A flood
+		 * can take this one session down, no other.
 		 */
 		if (anow - st->auth_fail_ts > awin) {
 			st->auth_fail_ts = anow;
@@ -205,9 +183,8 @@ int bfd_observer(struct xdp_md *ctx)
 		}
 
 		asc = bpf_map_lookup_elem(&auth_scratch, &azero);
-		/* The capability check belongs to the send key, because it
-		 * decides what we could BUILD. With no send key there is
-		 * nothing to build and the accept set still verifies.
+		/* Only a send key needs the capability check; the accept set
+		 * verifies without one.
 		 */
 		if (!asc || (cfg->auth_type && !xdp_auth_fast(cfg)) ||
 		    !xdp_auth_verify(ctx, iph ? BFD_OFF_V4 : BFD_OFF_V6, bfd, cfg, st, asc)) {
@@ -219,9 +196,7 @@ int bfd_observer(struct xdp_md *ctx)
 
 	__u64 now = bpf_ktime_get_ns();
 
-	/* Poll-aware detect basis (RFC 5880 s6.8.3): increases apply at once,
-	 * decreases only once the observed gap fits the new interval.
-	 */
+	/* RFC 5880 s6.8.3: increases apply at once, decreases once the gap fits. */
 	{
 		__u32 local_rx = LOCAL_MIN_RX_US;
 
@@ -237,8 +212,8 @@ int bfd_observer(struct xdp_md *ctx)
 			st->detect_iv_us = cand;
 	}
 
-	/* Not atomic: RSS keeps one session on one CPU. Generic XDP with RPS
-	 * could break that, at worst accepting one replayed packet.
+	/* Not atomic: RSS keeps a session on one CPU. Generic XDP with RPS
+	 * could accept one replayed packet.
 	 */
 	st->last_seen_ns = now;
 	st->rx_pkts++;
@@ -254,25 +229,18 @@ int bfd_observer(struct xdp_md *ctx)
 	st->remote_flags = bfd->flags & 0x3f;
 	st->detect_mult = bfd->detect_mult;
 
-	/* Poll termination (RFC 5880 s6.8.4): ack via the kernel-owned
-	 * final_seq, since tx_cfg belongs to userspace. The F carries no
-	 * sequence, so it ends whichever Poll is current.
-	 */
+	/* RFC 5880 s6.8.4: ack through the kernel-owned final_seq; tx_cfg belongs to userspace. */
 	if (cfg && cfg->poll && (bfd->flags & BFD_F_FINAL))
 		st->final_seq = cfg->poll_seq;
 
 	if (__sync_val_compare_and_swap(&st->alive, 0, 1) == 0)
 		emit(&c.key, st, now, 1);
 
-	/* RX-clocked TX: rewrite this frame into our reply and bounce it, in
-	 * softirq. Not while the peer says Down or AdminDown, and not for a
-	 * session that must authenticate but has no sendable key.
+	/* Rewrite this frame into our reply and bounce it. Not while the peer
+	 * is Down or AdminDown, nor without a sendable key.
 	 */
 	if (cfg && cfg->enable && rstate >= 2 && !(cfg->auth_present && !xdp_auth_fast(cfg))) {
-		/* Dead-man gate: stop answering once the engine stops beating,
-		 * so a wedged engine cannot hold sessions Up. The peer's own
-		 * detection then decides.
-		 */
+		/* A wedged engine must not hold sessions Up. */
 		if (deadman_tripped(now)) {
 			count(BFD_STAT_DEADMAN_HOLD);
 			return XDP_PASS;

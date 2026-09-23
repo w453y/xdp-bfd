@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* ktx_load.c - load bfd_xdp.o, check it matches this engine, set its
- * tunables, and attach it.
- */
+/* ktx_load.c - load bfd_xdp.o, check its ABI, set tunables, attach. */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
@@ -21,20 +19,16 @@
 #include "log.h"
 #include "ktx.h"
 
-const char *ktx_obj_path; /* --bpf-obj, or NULL for the default search */
-/* Attach mode. Native by default; generic (skb) mode serves drivers without
- * native XDP and is for functional testing, not timing.
- */
+const char *ktx_obj_path; /* --bpf-obj, or NULL to search */
+/* Generic (skb) mode is for drivers without native XDP, and for testing. */
 unsigned int ktx_xdp_flags = XDP_FLAGS_DRV_MODE;
-/* --sweep-us, in nanoseconds; 0 leaves the compiled default. */
+/* 0 keeps the compiled default. */
 __u64 ktx_sweep_ns;
-/* --deadman-us, in nanoseconds; 0 switches the gate off entirely. */
+/* 0 disables the gate. */
 __u64 ktx_deadman_ns = BFD_DEADMAN_NS_DEFAULT;
-/* Heartbeat cell, mmapped so a beat is a plain store; NULL if mmap failed. */
+/* mmapped so a beat is a plain store. */
 static __u64 *ktx_hb;
-/* Attached interfaces. The link fd is never closed, since closing it detaches
- * the program. link_fd -1 is a flags attach, which outlives the process.
- */
+/* Closing a link fd detaches. link_fd -1 is a flags attach, which outlives us. */
 #define KTX_MAX_IFACES 8
 struct ktx_iface {
 	int ifindex;
@@ -43,31 +37,26 @@ struct ktx_iface {
 };
 static struct ktx_iface ktx_ifaces[KTX_MAX_IFACES];
 static int ktx_niface;
-/* --kernel-tx interface; others attach on demand, see ktx_covers(). */
+/* The --kernel-tx interface; others attach on demand. */
 int ktx_ifindex;
 static struct bpf_program *ktx_prog;
 
 int ktx_cfg_fd = -1;
 int sess_fd = -1, echo_peers_fd = -1;
 int echo_disc_fd = -1;
-int stats_fd = -1; /* needed by the stats dump */
+int stats_fd = -1;
 int ktx_flags_fd = -1;
 static struct bpf_object *bpf_obj;
 
-/* Dead-man heartbeat: one __u64 store. The program compares it against
- * bpf_ktime_get_ns, the same clock in nanoseconds.
- */
+/* The same clock as bpf_ktime_get_ns. */
 void ktx_heartbeat(uint64_t now)
 {
 	if (ktx_hb)
 		*ktx_hb = now * 1000ull;
 }
 
-/* Refuse an object whose shared structs or enum-sized maps differ from ours.
- *
- * The engine and bfd_xdp.o are built separately and paired at runtime, so a
- * stale object would read the maps with a different layout. Sizes come from
- * the object's BTF; an object without BTF loads with a warning.
+/* Refuse an object whose shared structs or enum-sized maps differ from ours,
+ * going by its BTF. Without BTF it loads with a warning.
  */
 static int ktx_abi_check(struct bpf_object *o, const char *path)
 {
@@ -81,7 +70,6 @@ static int ktx_abi_check(struct bpf_object *o, const char *path)
 		{ "bfd_event", sizeof(struct bfd_event) },
 		{ "bfd_ctrl_pkt", sizeof(struct bfd_ctrl_pkt) },
 	};
-	/* Enum-sized maps: compare max_entries against our count. */
 	static const struct {
 		const char *map;
 		__u32 n;
@@ -99,9 +87,6 @@ static int ktx_abi_check(struct bpf_object *o, const char *path)
 			__s32 id = btf__find_by_name_kind(btf, want[i].name, BTF_KIND_STRUCT);
 			__s64 got;
 
-			/* Missing from an object that has BTF: it predates
-			 * this check.
-			 */
 			if (id < 0) {
 				log_err("kernel-tx: %s has no BTF record of struct %s, so it predates this check\n",
 					path, want[i].name);
@@ -154,14 +139,14 @@ int ktx_load(void)
 	bpf_obj = bpf_object__open_file(obj, NULL);
 	if (!bpf_obj || ktx_abi_check(bpf_obj, obj) || bpf_object__load(bpf_obj)) {
 		log_err("%s load failed\n", obj);
-		/* Close a refused object too; ktx_load may be called again. */
+		/* ktx_load may be called again. */
 		if (bpf_obj)
 			bpf_object__close(bpf_obj);
 		bpf_obj = NULL;
 		return -1;
 	}
-	/* Tunables go in after load and before attach, so the first packet
-	 * cannot arm the sweeper on the default and then be corrected.
+	/* Before attach, so the first packet cannot arm the sweeper on the
+	 * default.
 	 */
 	if (ktx_sweep_ns) {
 		int tune_fd = bpf_object__find_map_fd_by_name(bpf_obj, "tunables");
@@ -173,9 +158,7 @@ int ktx_load(void)
 		}
 	}
 
-	/* Map the heartbeat before writing the bound, so a failed mmap leaves
-	 * no bound in the map. Both happen before attach.
-	 */
+	/* Map first, so a failed mmap leaves no bound. */
 	if (ktx_deadman_ns) {
 		int hb_fd = bpf_object__find_map_fd_by_name(bpf_obj, "heartbeat");
 		void *m = MAP_FAILED;
@@ -189,16 +172,12 @@ int ktx_load(void)
 			ktx_deadman_ns = 0;
 		} else {
 			ktx_hb = m;
-			/* Beat once so the cell is fresh before the first loop
-			 * pass.
-			 */
+			/* Fresh before the first pass. */
 			ktx_heartbeat(now_us());
 		}
 	}
 
-	/* Write the bound. On failure, disarm the gate so the log matches what
-	 * is in force.
-	 */
+	/* On failure disarm, so the log matches what is in force. */
 	if (ktx_deadman_ns) {
 		int tune_fd = bpf_object__find_map_fd_by_name(bpf_obj, "tunables");
 		__u32 k = BFD_TUNE_DEADMAN_NS;
@@ -215,9 +194,7 @@ int ktx_load(void)
 		return -1;
 	}
 
-	/* The maps come from the object, not from any one link, which is
-	 * what lets every attached interface share one set.
-	 */
+	/* From the object, so every attached interface shares one set. */
 	ktx_cfg_fd = bpf_object__find_map_fd_by_name(bpf_obj, "tx_config");
 	sess_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_sessions");
 	echo_peers_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_peers");
@@ -225,9 +202,7 @@ int ktx_load(void)
 	ktx_flags_fd = bpf_object__find_map_fd_by_name(bpf_obj, "prog_flags");
 	stats_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_stats");
 
-	/* Sweep verdict ring. Optional: fsm_detect covers detection without
-	 * it.
-	 */
+	/* Optional: fsm_detect covers detection without it. */
 	ktx_events_init(bpf_object__find_map_fd_by_name(bpf_obj, "bfd_events"));
 
 	if (ktx_deadman_ns)
@@ -253,7 +228,7 @@ int ktx_covers(int ifindex)
 	return 0;
 }
 
-/* Attach the loaded program to one more interface. Idempotent. */
+/* Idempotent. */
 int ktx_attach_if(int ifindex, const char *ifname)
 {
 	if (ktx_covers(ifindex))
@@ -269,9 +244,8 @@ int ktx_attach_if(int ifindex, const char *ifname)
 	unsigned int flags = ktx_xdp_flags;
 	const char *mode = (flags & XDP_FLAGS_SKB_MODE) ? "generic" : "native";
 
-	/* Attach via bpf_link so the kernel detaches the program when we exit,
-	 * even on SIGKILL. Fall back per interface to generic mode, then to a
-	 * flags attach if bpf_link is unavailable.
+	/* bpf_link detaches on exit, even on SIGKILL. Fall back to generic
+	 * mode, then to a flags attach.
 	 */
 	LIBBPF_OPTS(bpf_link_create_opts, lopts, .flags = flags);
 	int fd = bpf_link_create(bpf_program__fd(ktx_prog), ifindex, BPF_XDP, &lopts);

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-/* echo_tx.c - echo originator (RFC 5880 s6.4).
- *
- * Self-addressed UDP/3785 to the neighbour's MAC at TTL 255, on a raw L2
- * socket, since a normal socket would route it to loopback.
+/* echo_tx.c - echo originator (RFC 5880 s6.4): self-addressed UDP/3785 on a raw
+ * L2 socket, since a UDP socket would route it to loopback.
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -62,9 +60,7 @@ void echo_tx_init(const char *ifname)
 			memcpy(echo_src_mac, ifr.ifr_hwaddr.sa_data, 6);
 		close(mfd);
 	}
-	/* Protocol 0, not ETH_P_ALL: this socket only sends, and
-	 * ETH_P_ALL would queue every inbound frame on it.
-	 */
+	/* Protocol 0: send-only, and ETH_P_ALL would queue every inbound frame. */
 	echo_sock = socket(AF_PACKET, SOCK_RAW, 0);
 	if (echo_sock < 0)
 		perror("echo raw socket");
@@ -73,9 +69,7 @@ void echo_tx_init(const char *ifname)
 		 echo_src_mac[4], echo_src_mac[5], echo_sock);
 }
 
-/* Egress interface and its MAC for this session's echo. Falls back to
- * --kernel-tx when bfdd named none, as for multihop.
- */
+/* Falls back to --kernel-tx when bfdd named no interface, as for multihop. */
 static int echo_egress(struct session *s, uint32_t *ifindex, const uint8_t **mac)
 {
 	struct ifreq ifr;
@@ -89,9 +83,6 @@ static int echo_egress(struct session *s, uint32_t *ifindex, const uint8_t **mac
 
 	if (!s->echo_mac_valid) {
 		memset(&ifr, 0, sizeof(ifr));
-		/* if_indextoname writes at most IF_NAMESIZE, the size of
-		 * ifr_name.
-		 */
 		if (!if_indextoname(s->ifindex, ifr.ifr_name))
 			return 0;
 		mfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -111,10 +102,7 @@ static int echo_egress(struct session *s, uint32_t *ifindex, const uint8_t **mac
 	return 1;
 }
 
-/* 24-byte payload. My Disc names the session and Your Disc is zero; the nonce
- * rides in Required Min Echo RX, which the kernel reads back into
- * echo_last_nonce.
- */
+/* Your Disc is zero; the nonce rides in Required Min Echo RX, which the kernel reads back. */
 static void echo_payload(struct session *s, uint8_t *b, uint32_t nonce)
 {
 	uint32_t v;
@@ -135,9 +123,7 @@ static void echo_payload(struct session *s, uint8_t *b, uint32_t nonce)
 	memcpy(b + 20, &v, 4);
 }
 
-/* v4: self-addressed, TTL 255, IP checksum plus a UDP checksum over the
- * 12-byte pseudo-header. Returns the frame length.
- */
+/* Returns the frame length. */
 static unsigned int echo_build_v4(struct session *s, uint8_t *frame, uint32_t nonce,
 				  const uint8_t *src_mac)
 {
@@ -194,9 +180,7 @@ static unsigned int echo_build_v4(struct session *s, uint8_t *frame, uint32_t no
 	return 14 + 20 + 8 + 24;
 }
 
-/* v6: the UDP checksum is mandatory, over the 40-byte pseudo-header. Hop limit
- * 255.
- */
+/* The v6 UDP checksum is mandatory. */
 static unsigned int echo_build_v6(struct session *s, uint8_t *frame, uint32_t nonce,
 				  const uint8_t *src_mac)
 {
@@ -248,7 +232,7 @@ static unsigned int echo_build_v6(struct session *s, uint8_t *frame, uint32_t no
 	return 14 + 40 + 8 + 24;
 }
 
-/* Send one echo if due. The nonce is matched on return for RTT. */
+/* The nonce is matched on return for RTT. */
 void echo_tx_maybe(struct session *s, uint64_t t)
 {
 	if (echo_sock < 0 || !s->echo_tx_us || s->state != ST_UP)
@@ -266,7 +250,6 @@ void echo_tx_maybe(struct session *s, uint64_t t)
 	s->echo_last_send_us = t;
 	s->next_echo_tx_us = t + s->echo_tx_us;
 
-	/* The previous echo never came back before this one is due. */
 	if (s->echo_sent_us) {
 		s->echo_lost++;
 		s->echo_sent_us = 0;

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* opts.c - command line. \see opts.h */
+/* opts.c - command line. */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,7 +15,7 @@
 #include "stats.h"
 #include "opts.h"
 
-/* A whole decimal number: "10s" must not parse as 10. Nonzero if not. */
+/* "10s" must not parse as 10. Nonzero if not a whole number. */
 static int num(const char *a, unsigned long long *v)
 {
 	char *end;
@@ -24,9 +24,7 @@ static int num(const char *a, unsigned long long *v)
 	return end == a || *end;
 }
 
-/* The account bfdd runs as: owner of the UNIX control socket, and the uid
- * SO_PEERCRED must match.
- */
+/* The account bfdd runs as. */
 static int dp_peer(const char *a)
 {
 	const struct passwd *pw = getpwnam(a);
@@ -72,7 +70,6 @@ static int xdp_mode(const char *m)
 	return 0;
 }
 
-/* An option taking a value; the value is argv[i + 1]. */
 static int opt_value(const char *opt, const char *a, struct opts *o)
 {
 	unsigned long long v;
@@ -94,27 +91,21 @@ static int opt_value(const char *opt, const char *a, struct opts *o)
 	else if (!strcmp(opt, "--dp-peer"))
 		return dp_peer(a);
 	else if (!strcmp(opt, "--sweep-us")) {
-		/* Below ~0.5ms timer churn outweighs the gain; above 100ms the
-		 * sweep is slower than any detect budget.
-		 */
+		/* Under 0.5ms the timer churns; over 100ms beats any detect budget. */
 		if (num(a, &v) || v < 500 || v > 100000) {
 			log_err("--sweep-us: expected 500-100000, got '%s'\n", a);
 			return -1;
 		}
 		ktx_sweep_ns = v * 1000ull;
 	} else if (!strcmp(opt, "--deadman-us")) {
-		/* 0 turns the gate off. Otherwise at least 50ms, above the
-		 * worst measured loop gap, and at most a minute.
-		 */
+		/* 0 is off; 50ms is above the worst loop gap measured. */
 		if (num(a, &v) || (v && (v < 50000 || v > 60000000))) {
 			log_err("--deadman-us: expected 0 (off) or 50000-60000000, got '%s'\n", a);
 			return -1;
 		}
 		ktx_deadman_ns = v * 1000ull;
 	} else if (!strcmp(opt, "--demand-poll-us")) {
-		/* 0 turns it off. The 10ms floor only catches typos; the
-		 * interval is raised to the detect budget anyway.
-		 */
+		/* 0 is off; the floor only catches typos, the detect budget raises it. */
 		if (num(a, &v) || (v && (v < 10000 || v > 600000000))) {
 			log_err("--demand-poll-us: expected 0 (off) or 10000-600000000, got '%s'\n",
 				a);
@@ -122,9 +113,7 @@ static int opt_value(const char *opt, const char *a, struct opts *o)
 		}
 		demand_poll_us = v;
 	} else if (!strcmp(opt, "--tick-us")) {
-		/* How often the per-session TX and detect pass runs. Floor
-		 * 200us, since each pass walks every session; ceiling 100ms.
-		 */
+		/* Each pass walks every session. */
 		if (num(a, &v) || v < 200 || v > 100000) {
 			log_err("--tick-us: expected 200-100000, got '%s'\n", a);
 			return -1;
@@ -171,9 +160,7 @@ int opts_parse(int argc, char **argv, struct opts *o)
 				continue;
 			}
 		}
-		/* Reject unknown options, and options missing their value,
-		 * before they are taken as positional arguments.
-		 */
+		/* Before they are taken as addresses. */
 		if (a[0] == '-') {
 			log_err("unrecognised option '%s', or an option missing its value\n", a);
 			return -1;
@@ -192,7 +179,6 @@ int opts_parse(int argc, char **argv, struct opts *o)
 
 int opts_complete(const struct opts *o, const char *argv0)
 {
-	/* Static mode needs both addresses, even alongside --dplane. */
 	if (o->local && !o->peer) {
 		log_err("static: %s given without a peer address\n", o->local);
 		return 0;

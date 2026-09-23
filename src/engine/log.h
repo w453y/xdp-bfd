@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-/* log.h - levels for the engine's output.
- *
- *   ERROR  the engine cannot do its job; never gated, on stderr.
- *   INFO   lifecycle: attach, bfdd connect/disconnect, session add/delete
- *          and state transitions. The default.
- *   DEBUG  per-packet and per-timeout detail.
- *
- * Transitions are INFO because a flap cannot be debugged retroactively.
+/* log.h - ERROR always goes to stderr; INFO (default) is lifecycle and every
+ * transition, since a flap cannot be debugged afterwards; DEBUG is per packet.
  */
 #ifndef BFD_ENGINE_LOG_H
 #define BFD_ENGINE_LOG_H
@@ -19,12 +13,10 @@ enum bfd_log_level {
 	BFD_LOG_DEBUG = 2,
 };
 
-/* Set once from --log-level before the loop starts; read everywhere. */
+/* --log-level */
 extern int bfd_log_level;
 
-/* Error sink; NULL means stderr. The fuzz target redirects it without touching
- * the process's stderr.
- */
+/* NULL means stderr; the fuzz target redirects it. */
 extern FILE *bfd_log_err_fp;
 
 #define log_err(...) fprintf(bfd_log_err_fp ? bfd_log_err_fp : stderr, __VA_ARGS__)

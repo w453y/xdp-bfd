@@ -15,9 +15,7 @@
 #include "ktx.h"
 #include "static.h"
 
-/* --auth <type>:<keyid>:<key>, to test authentication between two static
- * engines. The key has no lifetime.
- */
+/* --auth <type>:<keyid>:<key>, a key without lifetime. */
 static int static_auth_apply(struct session *s, const char *spec)
 {
 	const char *c1 = strchr(spec, ':');
@@ -69,9 +67,7 @@ static int static_auth_apply(struct session *s, const char *spec)
 
 	s->auth_present = 1;
 	s->auth_nkeys = 1;
-	/* Picks the send key and fills auth_type, auth_keyid and the pads,
-	 * the same call the dplane path makes when keys arrive.
-	 */
+	/* As the dplane path does when keys arrive. */
 	session_auth_evaluate(s, (int64_t)time(NULL));
 	if (!s->auth_type) {
 		log_err("--auth: no key is sendable, nothing would go out\n");
@@ -80,9 +76,7 @@ static int static_auth_apply(struct session *s, const char *spec)
 	return 0;
 }
 
-/* Both addresses, same family. A colon means v6. Unchecked, a typo would
- * yield a zero address and a session that can never match.
- */
+/* A colon means v6; both must be one family. */
 static int static_addrs(struct session *s, const char *local, const char *peer)
 {
 	int fam = strchr(local, ':') ? AF_INET6 : AF_INET;

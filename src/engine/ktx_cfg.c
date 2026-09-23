@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* ktx_cfg.c - what the fast path is told about a session. A pure function of
- * the session and the clock, split from ktx_mirror so tests/unit/ktx_cfg_run.c
- * can drive it.
- */
+/* ktx_cfg.c - the tx_cfg a session maps to; pure, so ktx_cfg_run.c drives it. */
 #define _GNU_SOURCE
 #include <string.h>
 
@@ -10,14 +7,10 @@
 #include "session.h"
 #include "ktx.h"
 
-/* `c` is what tx_config carries and `k` its key. `now` is in seconds, for key
- * lifetimes.
- */
+/* now is wall-clock seconds, for key lifetimes. */
 void ktx_cfg_for(const struct session *s, int64_t now, struct tx_cfg *c, struct session_key *k)
 {
-	/* RX-clocked TX is disarmed while the peer is demanding (s6.8.7);
-	 * userspace then answers Polls.
-	 */
+	/* Disarmed while the peer demands (s6.8.7); userspace answers Polls. */
 	*c = (struct tx_cfg){
 		.echo_iv_us = s->echo_tx_us,
 		.min_echo_rx_us = s->min_echo_rx_us,
@@ -42,9 +35,7 @@ void ktx_cfg_for(const struct session *s, int64_t now, struct tx_cfg *c, struct 
 	};
 	memcpy(c->auth_kpad, s->auth_kpad, sizeof(c->auth_kpad));
 
-	/* Every key a packet may be signed with now. Lifetimes are in wall-clock
-	 * seconds, which the program cannot read, so they are evaluated here.
-	 */
+	/* Lifetimes are wall-clock, which the program cannot read. */
 	{
 		unsigned int i;
 

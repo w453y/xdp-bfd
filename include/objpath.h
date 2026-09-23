@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* objpath.h - locate bfd_xdp.o: --bpf-obj, then beside the binary, then the
- * install directory, then the cwd.
- */
+/* objpath.h - find bfd_xdp.o: --bpf-obj, beside the binary, the install directory, the cwd. */
 #ifndef BFD_OBJPATH_H
 #define BFD_OBJPATH_H
 
@@ -29,10 +27,9 @@ static inline const char *bfd_obj_path(const char *override)
 	if (slash && (size_t)(slash - buf) + sizeof("/" BFD_XDP_OBJ) <= sizeof(buf)) {
 		strcpy(slash, "/" BFD_XDP_OBJ);
 		if (!access(buf, R_OK))
-			return buf; /* beside the binary: the build tree */
+			return buf; /* the build tree */
 	}
 
-	/* Install location, set by the package build as -DBFD_XDP_OBJDIR. */
 #ifdef BFD_XDP_OBJDIR
 	if (sizeof(BFD_XDP_OBJDIR "/" BFD_XDP_OBJ) <= sizeof(buf)) {
 		strcpy(buf, BFD_XDP_OBJDIR "/" BFD_XDP_OBJ);
@@ -41,7 +38,7 @@ static inline const char *bfd_obj_path(const char *override)
 	}
 #endif
 
-	return BFD_XDP_OBJ; /* last resort: the cwd */
+	return BFD_XDP_OBJ; /* the cwd */
 }
 
 #endif /* BFD_OBJPATH_H */

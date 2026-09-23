@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* stats.h - counters and the event ringbuf.
- *
- * Include after maps.h.
- */
+/* stats.h - counters and the event ringbuf. Include after maps.h. */
 #ifndef BFD_XDP_STATS_H
 #define BFD_XDP_STATS_H
 
@@ -11,9 +8,7 @@ static __always_inline void count(__u32 idx)
 	__u64 *v = bpf_map_lookup_elem(&bfd_stats, &idx);
 
 	if (v)
-		/* Plain increment: a per-CPU slot, and XDP runs with
-		 * preemption off.
-		 */
+		/* Per-CPU slot, preemption off. */
 		*v += 1;
 }
 

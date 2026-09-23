@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-/* ktx.c - kernel-TX mirror: tx_cfg push, map polling and sweep events.
- *
- * tx_cfg has a single writer (us). The kernel acks a Poll sequence
- * through session_state.final_seq rather than touching tx_cfg.
+/* ktx.c - mirror sessions into the program's maps and read them back. tx_cfg
+ * has one writer, us; the kernel acks a Poll through session_state.final_seq.
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -23,29 +21,23 @@
 #include "fsm.h"
 #include "echo_tx.h"
 
-/* The sweep publishes its detection verdicts here; see on_sweep_event. */
 static struct ring_buffer *sweep_rb;
 
 int use_ktx;
-/* bfd_sessions snapshot, batch-fetched once per loop pass by ktx_poll_all(). */
+/* bfd_sessions, batch-fetched once per pass. */
 static struct session_key poll_keys[MAX_SESSIONS];
 static struct session_state poll_vals[MAX_SESSIONS];
 static __u32 poll_n;
-/* Batch lookup unavailable: ktx_poll_map does one lookup per session. */
 static int poll_batch_unsupported;
 
-/* How ktx_poll_map reads the session map, for the stats dump. */
+/* For the stats dump. */
 const char *ktx_poll_mode(void)
 {
 	return poll_batch_unsupported ? "single" : "batch";
 }
 
-/* Apply a detection verdict published by the sweep.
- *
- * The event carries the kernel's timestamp, so detection latency is what the
- * sweep measured, and loop lateness is reported separately as
- * last_detect_lag_us. fsm_detect still covers sessions the fast path does not
- * carry.
+/* A detection verdict from the sweep, stamped with the kernel's time.
+ * fsm_detect still covers sessions the fast path does not carry.
  */
 static int on_sweep_event(void *ctx, void *data, size_t len)
 {
@@ -55,15 +47,15 @@ static int on_sweep_event(void *ctx, void *data, size_t len)
 
 	(void)ctx;
 	if (len < sizeof(*ev) || ev->event != 0)
-		return 0; /* ALIVE is carried by the map already */
+		return 0; /* ALIVE is in the map already */
 
 	s = sess_by_addr(&ev->key.peer, &ev->key.local);
 	if (!s || !s->used)
 		return 0;
 	if (s->state != ST_UP && s->state != ST_INIT)
-		return 0; /* already down, or never came up */
+		return 0; /* already down, or never up */
 
-	/* Overtaken: a packet arrived after the sweep looked. */
+	/* A packet arrived after the sweep looked. */
 	decided_us = ev->last_seen_ns / 1000;
 	if (s->last_rx_us > decided_us)
 		return 0;
@@ -73,7 +65,6 @@ static int on_sweep_event(void *ctx, void *data, size_t len)
 	s->last_detect_lag_us = now > decided_us ? (uint32_t)(now - decided_us) : 0;
 	s->kernel_detects++;
 
-	/* Bill the silence against the kernel's timestamp, not ours. */
 	state_transition(s, ST_DOWN, 1, decided_us, "detect timeout (sweep)");
 	return 0;
 }
@@ -123,7 +114,6 @@ void ktx_poll_all(void)
 	poll_n = count;
 }
 
-/* Find a session in the unordered batch snapshot. */
 static const struct session_state *poll_find(const struct session *s)
 {
 	for (__u32 i = 0; i < poll_n; i++)
@@ -133,8 +123,8 @@ static const struct session_state *poll_find(const struct session *s)
 	return NULL;
 }
 
-/* prog_flags bit 1: a multihop session exists, so the parser must defer the
- * TTL check instead of dropping TTL < 255 early.
+/* prog_flags bit 1: a multihop session exists, so the parser defers the TTL
+ * check.
  */
 void ktx_update_mhop_flag(void)
 {
@@ -170,13 +160,9 @@ void ktx_mirror(struct session *s)
 	if (!ktx_push_needed(s, &c, &k))
 		return;
 
-	/* Seed the auth sequence into the map before enabling the fast path,
-	 * so the kernel takes over a sequence that never goes backwards.
-	 *
-	 * The read-modify-write can revert fields the observer path advanced
-	 * in between (rx_pkts, alive, final_seq). The window is two syscalls,
-	 * once per seed, and each revert heals itself; closing it needs an ABI
-	 * change.
+	/* Seed the auth sequence before enabling the fast path, so it never
+	 * goes backwards. The read-modify-write can revert what the observer
+	 * advanced in between; each revert heals itself.
 	 */
 	if (c.enable && s->auth_type && !s->auth_seeded) {
 		struct session_key sk = {};
@@ -192,7 +178,7 @@ void ktx_mirror(struct session *s)
 				s->auth_seeded = 1;
 		}
 	}
-	/* Cache the pushed config only if the update landed. */
+	/* Cache it only if the update landed. */
 	if (bpf_map_update_elem(ktx_cfg_fd, &k, &c, 0)) {
 		log_err("ktx: lid=%u tx_config push failed: %s\n", s->lid, strerror(errno));
 		s->pushed_valid = 0;
@@ -203,9 +189,8 @@ void ktx_mirror(struct session *s)
 	s->pushed_valid = 1;
 }
 
-/* echo_peers is keyed on peer address alone, so sessions sharing a peer share
- * an entry. Membership is recomputed from the session table, not refcounted.
- * `skip` is the session being torn down.
+/* Keyed on peer alone, so sessions share entries; recomputed, not refcounted.
+ * skip is the session being torn down.
  */
 void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip)
 {
@@ -230,9 +215,7 @@ void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip)
 		bpf_map_delete_elem(echo_peers_fd, peer);
 }
 
-/* Clear kernel state for an address pair. Separate from ktx_clear so an
- * address change can drop the old key.
- */
+/* Separate from ktx_clear so an address change can drop the old key. */
 void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local, uint32_t wire_disc)
 {
 	if (!use_ktx)
@@ -258,7 +241,7 @@ void ktx_clear(struct session *s)
 }
 
 
-/* Kernel packet counters for one session; 0 if unavailable. */
+/* 0 if unavailable. */
 void ktx_session_counters(const struct session *s, uint64_t *rx, uint64_t *tx)
 {
 	struct session_key k = {};
@@ -299,27 +282,22 @@ void ktx_poll_map(struct session *s, uint64_t t)
 	}
 	if (ms.last_seen_ns / 1000 > s->last_rx_us)
 		s->last_rx_us = ms.last_seen_ns / 1000;
-	/* Time of the last fast-path reply, from tx_pkts moving.
-	 *
-	 * The program has no stack budget left to store a TX timestamp. A
-	 * reply is sent in the same softirq as the packet that triggered it,
-	 * so last_rx_us is its transmit time. Resolution is one poll pass.
+	/* The program cannot store a TX time, but a reply leaves in the softirq
+	 * of the packet that caused it.
 	 */
 	if (ms.tx_pkts != s->ktx_tx_pkts) {
 		s->ktx_tx_pkts = ms.tx_pkts;
 		s->last_ktx_us = s->last_rx_us;
 	}
-	/* Once the fast path is armed userspace stops seeing packets, so take
-	 * the peer's state from the map. The demand gates need it.
+	/* Once armed, userspace sees no packets; the demand gates need the
+	 * peer's state.
 	 */
 	if (ms.last_seen_ns)
 		s->r_state = ms.remote_state;
 	if (ms.detect_iv_us)
 		s->detect_iv_us = ms.detect_iv_us;
-	/* Sequence numbers are read back from whichever plane owns them. The
-	 * TX sequence always comes back, so userspace never repeats one. The
-	 * RX window only comes back while the fast path answers; after that
-	 * userspace owns it and fsm_detect may reset it.
+	/* The TX sequence always comes back, so userspace never repeats one.
+	 * The RX window comes back only while the fast path answers.
 	 */
 	if (s->auth_type) {
 		if (ms.auth_tx_seq > s->auth_tx_seq)
@@ -333,9 +311,7 @@ void ktx_poll_map(struct session *s, uint64_t t)
 		memcpy(s->peer_mac, ms.peer_mac, 6);
 		s->mac_valid = 1;
 	}
-	/* Our echo returned. The arrival stamp is the kernel's, taken in
-	 * softirq at RX, so this is wire RTT and not poll latency.
-	 */
+	/* Kernel RX stamp, so this is wire RTT. */
 	if (s->echo_sent_us && ms.echo_last_nonce == s->echo_nonce && ms.echo_last_seen_ns) {
 		uint64_t arr = ms.echo_last_seen_ns / 1000;
 
@@ -353,20 +329,17 @@ void ktx_poll_map(struct session *s, uint64_t t)
 			s->echo_rtt_n++;
 		}
 		s->echo_rx_pkts++;
-		s->echo_sent_us = 0; /* no longer outstanding */
+		s->echo_sent_us = 0;
 	}
 	s->echo_alive_k = ms.echo_alive;
 	if (s->polling && ms.final_seq == s->poll_seq) {
-		/* The peer's F acked this Poll sequence: end the poll and push
-		 * poll=0.
-		 */
+		/* The peer's F ended this Poll. */
 		s->polling = 0;
 		s->applied_tx_us = s->min_tx_us;
 		ktx_mirror(s);
 	}
-	/* Carry the peer's timers back, detect multiplier included. fsm_rx no
-	 * longer runs once the fast path is armed, and fsm_detect sizes its
-	 * budget from r_mult.
+	/* fsm_rx no longer runs once armed, and fsm_detect sizes its budget
+	 * from r_mult.
 	 */
 	if (ms.min_tx_us &&
 	    (ms.min_tx_us != s->r_min_tx || ms.min_rx_us != s->r_min_rx ||

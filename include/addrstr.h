@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* addrstr.h - render a 16-byte session address (v4 stored v4-mapped).
- * Userspace only.
- */
+/* addrstr.h - print a 16-byte session address. Userspace only. */
 #ifndef BFD_ADDRSTR_H
 #define BFD_ADDRSTR_H
 

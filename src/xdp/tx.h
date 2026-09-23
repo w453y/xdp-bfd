@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* tx.h - RX-clocked TX: rewrite the received frame into our control
- * packet and bounce it with XDP_TX. The peer's transmit clock becomes
- * ours, executed in softirq.
- *
- * Ordering constraint: the v6 UDP checksum fold runs BEFORE
- * bpf_xdp_adjust_tail, which invalidates the pointers it reads.
+/* tx.h - RX-clocked TX: rewrite the received frame into our control packet and
+ * bounce it with XDP_TX. The v6 checksum fold must run before
+ * bpf_xdp_adjust_tail, which invalidates its pointers.
  */
 #ifndef BFD_XDP_TX_H
 #define BFD_XDP_TX_H
@@ -22,14 +19,13 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx, struct ethhdr *eth,
 	__u8 send_final = (bfd->flags & BFD_F_POLL) ? BFD_F_FINAL : 0;
 	__u32 auth_sum = 0;
 
-	/* L2 swap */
 	__u8 tmp[6];
 
 	__builtin_memcpy(tmp, eth->h_dest, 6);
 	__builtin_memcpy(eth->h_dest, eth->h_source, 6);
 	__builtin_memcpy(eth->h_source, tmp, 6);
 
-	/* L3 swap (checksum unaffected by swapping halves) */
+	/* Swapping halves leaves the checksum alone. */
 	if (iph) {
 		__be32 tip = iph->saddr;
 
@@ -42,13 +38,9 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx, struct ethhdr *eth,
 		ip6->daddr = t6;
 	}
 
-	/* Multihop: send at TTL 255 (RFC 5883), not at the decremented
-	 * TTL this frame arrived with.
-	 */
+	/* RFC 5883: send at 255, not at the TTL this arrived with. */
 	if (iph && iph->ttl != 255) {
-		/* No incremental fixup: the v4 checksum is recomputed
-		 * in full below.
-		 */
+		/* The v4 checksum is recomputed below. */
 		iph->ttl = 255;
 	} else if (ip6 && ip6->hop_limit != 255) {
 		ip6->hop_limit = 255; /* no checksum in v6 */
@@ -56,24 +48,19 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx, struct ethhdr *eth,
 
 	__be16 in_dport = udp->dest;
 
-	/* L4: our source port, and back to the port this frame
-	 * arrived on so multihop replies reach 4784. No UDP
-	 * checksum (legal in v4).
+	/* Back to the arrival port, so multihop replies reach 4784. No UDP
+	 * checksum, legal in v4.
 	 */
 	udp->source = cfg->src_port ? bpf_htons(cfg->src_port) : bpf_htons(BFD_SRC_PORT);
 	udp->dest = in_dport;
 	udp->check = 0;
 
-	/* BFD payload from config. P while a Poll sequence is
-	 * active, F when answering the peer's P; never both.
-	 */
+	/* P while our Poll is active, F answering the peer's P; never both. */
 	bfd->vers_diag = (1 << 5) | (cfg->diag & 0x1f);
 	bfd->flags = ((cfg->state & 0x3) << 6) | send_final;
 	if (!send_final && cfg->poll && st->final_seq != cfg->poll_seq)
 		bfd->flags |= BFD_F_POLL;
-	/* D may accompany P or F; only P and F exclude each other
-	 * (s6.5). The engine has already checked both ends are Up.
-	 */
+	/* D may go with P or F (s6.5); the engine checked both ends are Up. */
 	if (cfg->demand)
 		bfd->flags |= BFD_F_DEMAND;
 	bfd->detect_mult = cfg->mult;
@@ -92,24 +79,17 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx, struct ethhdr *eth,
 	bfd->min_rx = bpf_htonl(cfg->min_rx_us);
 	bfd->min_echo_rx = bpf_htonl(cfg->min_echo_rx_us);
 
-	/* Sign before checksumming and trimming. If no digest can be
-	 * built, send nothing.
-	 */
+	/* Sign before checksumming and trimming; without a digest send nothing. */
 	if (cfg->auth_type && (!sc || !xdp_auth_build(ctx, iph ? BFD_OFF_V4 : BFD_OFF_V6, bfd, cfg,
 						      st, sc, &auth_sum)))
 		return XDP_DROP;
 
-	/* Trim the frame to our packet (24 bytes plus our own auth
-	 * section, if any) and recompute the IP checksum. On
-	 * adjust_tail failure drop, as the frame is half-rewritten.
-	 */
+	/* On adjust_tail failure drop: the frame is half-rewritten. */
 	int want = (int)(sizeof(*eth) + (iph ? sizeof(*iph) : sizeof(*ip6)) + sizeof(*udp) +
 			 bfd->len);
 	int excess = (int)((long)data_end - (long)data) - want;
 
-	/* Always rewrite the lengths: the received envelope may not
-	 * describe the frame.
-	 */
+	/* The received envelope may not describe the frame. */
 	udp->len = bpf_htons(sizeof(*udp) + bfd->len);
 	if (iph) {
 		iph->tot_len = bpf_htons(sizeof(*iph) + sizeof(*udp) + bfd->len);
@@ -126,11 +106,7 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx, struct ethhdr *eth,
 		ip6->payload_len = bpf_htons(sizeof(*udp) + bfd->len);
 	}
 
-	/* v6: mandatory UDP checksum over the pseudo-header, UDP
-	 * header and payload, recomputed in full. Runs before
-	 * adjust_tail, which invalidates the pointers; the fold reads
-	 * nothing the trim removes.
-	 */
+	/* v6: the UDP checksum is mandatory. The fold reads nothing the trim removes. */
 	if (ip6) {
 		__u32 csum = 0;
 		__u16 *w = (__u16 *)&ip6->saddr;
@@ -142,9 +118,7 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx, struct ethhdr *eth,
 		w = (__u16 *)udp; /* UDP hdr, check == 0 */
 		for (int i = 0; i < 4; i++)
 			csum += w[i];
-		/* With authentication the payload length varies, so
-		 * its sum comes from xdp_auth_build.
-		 */
+		/* With auth the payload length varies; xdp_auth_build returns its sum. */
 		if (cfg->auth_type) {
 			csum += auth_sum;
 		} else {

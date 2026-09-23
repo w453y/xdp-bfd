@@ -236,11 +236,23 @@ static inline int auth_fast_capable(const struct session *s)
 	       s->auth_type == BFD_AUTH_KEYED_SHA1 || s->auth_type == BFD_AUTH_METICULOUS_SHA1;
 }
 
+/* The program answers each packet, so at the peer's pace: max(its Desired Min
+ * TX, our Required Min RX). That must not be faster than we may send (RFC 5880
+ * s6.8.7); if it is, userspace keeps our own rate.
+ */
+static inline int ktx_pace_ok(const struct session *s)
+{
+	uint32_t peer = s->r_min_tx > s->min_rx_us ? s->r_min_tx : s->min_rx_us;
+	uint32_t ours = s->applied_tx_us > s->r_min_rx ? s->applied_tx_us : s->r_min_rx;
+
+	return peer >= ours;
+}
+
 /* Exactly what ktx_mirror pushes as tx_cfg.enable. */
 static inline int ktx_answers(const struct session *s)
 {
 	return s->state == ST_UP && auth_fast_capable(s) && !demand_tx_held(s) &&
-	       !zero_rx_tx_held(s);
+	       !zero_rx_tx_held(s) && ktx_pace_ok(s);
 }
 
 /* Compares the key too, since an address move leaves tx_cfg unchanged. */

@@ -171,6 +171,26 @@ int main(void)
 	ktx_cfg_for(s, NOW, &c, &k);
 	report("poll-not-carried-while-down", c.poll != 0, "a Poll belongs to an Up session");
 
+	/* --- rate (RFC 5880 s6.8.7): replies go at the peer's pace --- */
+	s = arm();
+	s->min_tx_us = 300000;
+	s->applied_tx_us = 300000;
+	s->min_rx_us = 100000;
+	s->r_min_tx = 100000;
+	s->r_min_rx = 100000;
+	ktx_cfg_for(s, NOW, &c, &k);
+	report("enable-off-when-peer-outpaces-us", c.enable != 0,
+	       "peer every 100ms, we may send every 300ms");
+
+	s = arm();
+	s->min_tx_us = 100000;
+	s->applied_tx_us = 100000;
+	s->min_rx_us = 300000;
+	s->r_min_tx = 100000;
+	s->r_min_rx = 100000;
+	ktx_cfg_for(s, NOW, &c, &k);
+	report("enable-on-when-peer-is-slower", c.enable != 1, "peer every 300ms, ours 100ms");
+
 	/* --- echo (RFC 5880 s6.8.9) --- */
 	s = arm();
 	s->echo_on = 1;

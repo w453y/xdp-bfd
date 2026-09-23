@@ -160,24 +160,6 @@ void ktx_mirror(struct session *s)
 	if (!ktx_push_needed(s, &c, &k))
 		return;
 
-	/* Seed the auth sequence before enabling the fast path, so it never
-	 * goes backwards. The read-modify-write can revert what the observer
-	 * advanced in between; each revert heals itself.
-	 */
-	if (c.enable && s->auth_type && !s->auth_seeded) {
-		struct session_key sk = {};
-		struct session_state ms;
-
-		sk.peer = s->peer;
-		sk.local = s->local;
-		if (!bpf_map_lookup_elem(sess_fd, &sk, &ms)) {
-			ms.auth_tx_seq = s->auth_tx_seq;
-			ms.auth_rx_seq = s->auth_rx_seq;
-			ms.auth_rx_seen = s->auth_rx_seen;
-			if (!bpf_map_update_elem(sess_fd, &sk, &ms, 0))
-				s->auth_seeded = 1;
-		}
-	}
 	/* Cache it only if the update landed. */
 	if (bpf_map_update_elem(ktx_cfg_fd, &k, &c, 0)) {
 		log_err("ktx: lid=%u tx_config push failed: %s\n", s->lid, strerror(errno));
@@ -300,16 +282,12 @@ void ktx_poll_map(struct session *s, uint64_t t)
 		s->r_state = ms.remote_state;
 	if (ms.detect_iv_us)
 		s->detect_iv_us = ms.detect_iv_us;
-	/* The TX sequence always comes back, so userspace never repeats one.
-	 * The RX window comes back only while the fast path answers.
+	/* The RX window comes back while the fast path answers, since
+	 * userspace then sees no packets.
 	 */
-	if (s->auth_type) {
-		if (ms.auth_tx_seq > s->auth_tx_seq)
-			s->auth_tx_seq = ms.auth_tx_seq;
-		if (ktx_answers(s) && ms.auth_rx_seen) {
-			s->auth_rx_seq = ms.auth_rx_seq;
-			s->auth_rx_seen = 1;
-		}
+	if (s->auth_present && ktx_answers(s) && ms.auth_rx_seen) {
+		s->auth_rx_seq = ms.auth_rx_seq;
+		s->auth_rx_seen = 1;
 	}
 	if (ms.mac_valid) {
 		memcpy(s->peer_mac, ms.peer_mac, 6);

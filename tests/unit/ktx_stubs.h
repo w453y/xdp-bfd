@@ -11,6 +11,7 @@
 #include "session.h"
 
 int use_ktx;
+uint64_t *ktx_seq_mem;
 
 /* dp_run wants failure for the uncovered path; dp_fuzz sets success. */
 int ktx_stub_attach_rc = -1;

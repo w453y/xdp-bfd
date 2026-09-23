@@ -94,6 +94,17 @@ struct {
 	__type(value, struct sweep);
 } sweep_map SEC(".maps");
 
+/* The auth TX sequence per session slot, mmapped by the engine so both planes
+ * draw from one counter and never reuse a number. 64-bit for the atomic add.
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, BFD_MAX_SESSIONS);
+	__uint(map_flags, BPF_F_MMAPABLE);
+	__type(key, __u32);
+	__type(value, __u64);
+} auth_seq SEC(".maps");
+
 /* Per-CPU, since the 512-byte stack budget covers the whole call chain and the
  * digest uses most of it.
  */

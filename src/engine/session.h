@@ -128,9 +128,7 @@ struct session {
 	uint8_t auth_key[BFDDP_AUTH_KEY_MAX];
 	/* the key zero-padded to one SHA1 block */
 	uint8_t auth_kpad[64];
-	/* the TX sequence has been handed to the kernel */
-	uint8_t auth_seeded;
-	uint32_t auth_tx_seq; /* ours, per transmission; random start (s6.7.3) */
+	uint32_t auth_tx_seq; /* without the program; else ktx_seq_mem (s6.7.3) */
 	uint32_t auth_rx_seq; /* highest accepted from the peer */
 	int auth_rx_seen;     /* auth_rx_seq is valid */
 	/* DP_SESSION_AUTH deadline after the ADD; 0 = not waiting */
@@ -265,6 +263,27 @@ static inline int ktx_push_needed(const struct session *s, const struct tx_cfg *
 }
 
 extern struct session sessions[MAX_SESSIONS];
+
+/* The program's per-slot auth TX counters, mmapped; NULL without it. */
+extern uint64_t *ktx_seq_mem;
+
+/* RFC 5880 s6.7.3: one counter per session for both planes, so neither reuses
+ * a number the other sent.
+ */
+static inline void auth_seq_seed(struct session *s, uint32_t v)
+{
+	s->auth_tx_seq = v;
+	if (ktx_seq_mem)
+		__atomic_store_n(&ktx_seq_mem[s - sessions], v, __ATOMIC_RELAXED);
+}
+
+static inline uint32_t auth_seq_next(struct session *s)
+{
+	if (ktx_seq_mem)
+		return (uint32_t)__atomic_add_fetch(&ktx_seq_mem[s - sessions], 1,
+						    __ATOMIC_RELAXED);
+	return ++s->auth_tx_seq;
+}
 
 struct session *sess_alloc(void);
 int session_auth_evaluate(struct session *s, int64_t now);

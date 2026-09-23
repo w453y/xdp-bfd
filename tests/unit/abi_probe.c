@@ -53,7 +53,6 @@ int main(void)
 	O(session_state, echo_last_nonce);
 	O(session_state, echo_alive);
 	O(session_state, remote_min_echo_us);
-	O(session_state, auth_tx_seq);
 	O(session_state, auth_rx_seq);
 	O(session_state, auth_rx_seen);
 	O(session_state, auth_fail_n);

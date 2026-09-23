@@ -80,8 +80,8 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx, struct ethhdr *eth,
 	bfd->min_echo_rx = bpf_htonl(cfg->min_echo_rx_us);
 
 	/* Sign before checksumming and trimming; without a digest send nothing. */
-	if (cfg->auth_type && (!sc || !xdp_auth_build(ctx, iph ? BFD_OFF_V4 : BFD_OFF_V6, bfd, cfg,
-						      st, sc, &auth_sum)))
+	if (cfg->auth_type &&
+	    (!sc || !xdp_auth_build(ctx, iph ? BFD_OFF_V4 : BFD_OFF_V6, bfd, cfg, sc, &auth_sum)))
 		return XDP_DROP;
 
 	/* On adjust_tail failure drop: the frame is half-rewritten. */

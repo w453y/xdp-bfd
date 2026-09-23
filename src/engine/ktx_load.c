@@ -28,6 +28,7 @@ __u64 ktx_sweep_ns;
 __u64 ktx_deadman_ns = BFD_DEADMAN_NS_DEFAULT;
 /* mmapped so a beat is a plain store. */
 static __u64 *ktx_hb;
+uint64_t *ktx_seq_mem;
 /* Closing a link fd detaches. link_fd -1 is a flags attach, which outlives us. */
 #define KTX_MAX_IFACES 8
 struct ktx_iface {
@@ -76,6 +77,7 @@ static int ktx_abi_check(struct bpf_object *o, const char *path)
 	} counts[] = {
 		{ "bfd_stats", BFD_STAT_MAX },
 		{ "tunables", BFD_TUNE_MAX },
+		{ "auth_seq", BFD_MAX_SESSIONS },
 	};
 	struct btf *btf = bpf_object__btf(o);
 	int bad = 0;
@@ -145,6 +147,26 @@ int ktx_load(void)
 		bpf_obj = NULL;
 		return -1;
 	}
+
+	/* Both planes draw the auth TX sequence from here; without it they
+	 * would reuse numbers.
+	 */
+	{
+		int sq_fd = bpf_object__find_map_fd_by_name(bpf_obj, "auth_seq");
+		void *m = MAP_FAILED;
+
+		if (sq_fd >= 0)
+			m = mmap(NULL, BFD_MAX_SESSIONS * sizeof(uint64_t), PROT_READ | PROT_WRITE,
+				 MAP_SHARED, sq_fd, 0);
+		if (m == MAP_FAILED) {
+			log_err("kernel-tx: auth_seq not mapped (%s)\n", strerror(errno));
+			bpf_object__close(bpf_obj);
+			bpf_obj = NULL;
+			return -1;
+		}
+		ktx_seq_mem = m;
+	}
+
 	/* Before attach, so the first packet cannot arm the sweeper on the
 	 * default.
 	 */

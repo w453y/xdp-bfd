@@ -234,3 +234,58 @@ static void case_auth_ratelimit(void)
 		       BFD_AUTH_FAIL_MAX);
 	map_reset();
 }
+
+/* The kernel draws its TX sequence from the counter it shares with the engine,
+ * so a number either plane used is never used again.
+ */
+static __u32 reply_seq(const unsigned char *out)
+{
+	const unsigned char *a = out + 14 + 20 + 8 + BFD_MIN_LEN + BFD_AUTH_SHA1_SEQ_OFF;
+
+	return (__u32)a[0] << 24 | (__u32)a[1] << 16 | (__u32)a[2] << 8 | a[3];
+}
+
+static void case_auth_seq_shared(void)
+{
+	unsigned char out[FRAME_MAX];
+	unsigned int out_len = 0;
+	struct frame f;
+	__u32 slot = 0;
+	__u64 v = 1000;
+	int bad = 0;
+
+	if (seq_fd < 0) {
+		printf("     no auth_seq map\n");
+		printf("FAIL %-40s\n", "auth-seq-shared-counter");
+		fails++;
+		return;
+	}
+	map_reset();
+	arm_session_auth(BFD_AUTH_METICULOUS_SHA1, 7, "topsecret");
+	bpf_map_update_elem(seq_fd, &slot, &v, BPF_ANY);
+
+	build_sha1_auth(&f, "topsecret", 7, 1, BFD_AUTH_METICULOUS_SHA1);
+	if (run_frame(&f, out, &out_len) != XDP_TX || reply_seq(out) != 1001) {
+		printf("     first reply carries %u, want 1001\n", reply_seq(out));
+		bad = 1;
+	}
+
+	/* The engine takes the next number, as userspace would to send. */
+	bpf_map_lookup_elem(seq_fd, &slot, &v);
+	v++;
+	bpf_map_update_elem(seq_fd, &slot, &v, BPF_ANY);
+
+	build_sha1_auth(&f, "topsecret", 7, 2, BFD_AUTH_METICULOUS_SHA1);
+	if (run_frame(&f, out, &out_len) != XDP_TX || reply_seq(out) != 1003) {
+		printf("     second reply carries %u, want 1003 after the engine took 1002\n",
+		       reply_seq(out));
+		bad = 1;
+	}
+	map_reset();
+	if (bad) {
+		printf("FAIL %-40s\n", "auth-seq-shared-counter");
+		fails++;
+	} else {
+		printf("ok   %-40s one counter, no reuse\n", "auth-seq-shared-counter");
+	}
+}

@@ -285,10 +285,9 @@ static void dp_add_auth(struct session *s, uint32_t flags)
 	}
 	if (authed != s->auth_present) {
 		s->auth_present = (uint8_t)authed;
-		s->auth_tx_seq = (uint32_t)random();
+		auth_seq_seed(s, (uint32_t)random());
 		s->auth_rx_seq = 0;
 		s->auth_rx_seen = 0;
-		s->auth_seeded = 0;
 	}
 	session_auth_evaluate(s, (int64_t)time(NULL));
 }

@@ -18,7 +18,8 @@
 
 
 struct session sessions[MAX_SESSIONS];
-int use_ktx; /* 0: the kernel-TX gate in fsm_tx stays shut */
+int use_ktx;	       /* 0: the kernel-TX gate in fsm_tx stays shut */
+uint64_t *ktx_seq_mem; /* no program: the session's own counter */
 
 /* No program, so no sweep ring unless a case pretends there is one. */
 static int stub_events_fd = -1;

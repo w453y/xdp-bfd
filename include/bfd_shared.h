@@ -212,8 +212,6 @@ struct session_state {
 	__u32 pad4;
 	/* for bfdd's echo negotiation (s6.8.9) */
 	__u32 remote_min_echo_us;
-	/* RFC 5880 s6.7.3; kernel-owned while the fast path answers */
-	__u32 auth_tx_seq;
 	__u32 auth_rx_seq;  /* highest sequence accepted from the peer */
 	__u32 auth_rx_seen; /* auth_rx_seq is valid */
 	__u32 auth_fail_n;  /* digest failures this interval; kernel-owned */

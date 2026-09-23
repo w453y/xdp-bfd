@@ -221,8 +221,7 @@ void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 void fsm_detect(struct session *s, uint64_t t)
 {
 	/* RFC 5880 s6.7: forget bfd.AuthSeqKnown after twice the detection
-	 * time, so a restarted peer can resync. Clearing auth_seeded pushes the
-	 * cleared window on the next Up.
+	 * time, so a restarted peer can resync.
 	 */
 	if (s->auth_present && s->auth_rx_seen && s->last_rx_us) {
 		uint64_t iv = s->detect_iv_us
@@ -233,7 +232,6 @@ void fsm_detect(struct session *s, uint64_t t)
 		if (iv && t - s->last_rx_us > 2ull * mult * iv) {
 			s->auth_rx_seen = 0;
 			s->auth_rx_seq = 0;
-			s->auth_seeded = 0;
 		}
 	}
 
@@ -327,7 +325,7 @@ static void tx_one(struct session *s)
 		o.len = bfd_auth_pkt_len(s->auth_type, s->auth_keylen);
 		memcpy(buf, &o, BFD_MIN_LEN);
 		olen = bfd_auth_build(buf, s->auth_type, s->auth_keyid, s->auth_key,
-				      s->auth_keylen, s->auth_kpad, ++s->auth_tx_seq);
+				      s->auth_keylen, s->auth_kpad, auth_seq_next(s));
 		if (!olen) {
 			log_err("lid=%u cannot build its authentication section; nothing sent\n",
 				s->lid);

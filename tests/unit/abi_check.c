@@ -74,13 +74,11 @@ _Static_assert(offsetof(struct session_state, echo_alive) == 96,
 	       "offsetof(struct session_state, echo_alive)");
 _Static_assert(offsetof(struct session_state, remote_min_echo_us) == 104,
 	       "offsetof(struct session_state, remote_min_echo_us)");
-_Static_assert(offsetof(struct session_state, auth_tx_seq) == 108,
-	       "offsetof(struct session_state, auth_tx_seq)");
-_Static_assert(offsetof(struct session_state, auth_rx_seq) == 112,
+_Static_assert(offsetof(struct session_state, auth_rx_seq) == 108,
 	       "offsetof(struct session_state, auth_rx_seq)");
-_Static_assert(offsetof(struct session_state, auth_rx_seen) == 116,
+_Static_assert(offsetof(struct session_state, auth_rx_seen) == 112,
 	       "offsetof(struct session_state, auth_rx_seen)");
-_Static_assert(offsetof(struct session_state, auth_fail_n) == 120,
+_Static_assert(offsetof(struct session_state, auth_fail_n) == 116,
 	       "offsetof(struct session_state, auth_fail_n)");
 _Static_assert(offsetof(struct session_state, auth_fail_ts) == 128,
 	       "offsetof(struct session_state, auth_fail_ts)");

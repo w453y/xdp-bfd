@@ -179,8 +179,7 @@ static __always_inline __u32 xdp_auth_sum(const __u8 *blk)
  */
 static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 					  const struct bfd_ctrl_pkt *bfd, const struct tx_cfg *cfg,
-					  struct session_state *st, struct auth_scratch *sc,
-					  __u32 *psum)
+					  struct auth_scratch *sc, __u32 *psum)
 {
 	__u8 *blk = sc->blk;
 	__u8 *dig = sc->dig;
@@ -212,8 +211,18 @@ static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 		return 1;
 	}
 
-	seq = st->auth_tx_seq + 1;
-	st->auth_tx_seq = seq;
+	/* RFC 5880 s6.7.3, from the counter shared with the engine. */
+	{
+		__u32 slot = cfg->src_port ? (__u32)cfg->src_port - BFD_SRC_PORT : 0;
+		__u64 *sq;
+
+		if (slot >= BFD_MAX_SESSIONS)
+			return 0;
+		sq = bpf_map_lookup_elem(&auth_seq, &slot);
+		if (!sq)
+			return 0;
+		seq = (__u32)(__sync_fetch_and_add(sq, 1) + 1);
+	}
 
 	blk[BFD_MIN_LEN + 3] = 0;
 	blk[BFD_MIN_LEN + BFD_AUTH_SHA1_SEQ_OFF] = (__u8)(seq >> 24);

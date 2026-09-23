@@ -40,6 +40,7 @@ static int cfg_fd = -1, sess_fd = -1, stats_fd = -1;
 static int tune_fd = -1, hb_fd = -1;
 static int flags_fd = -1;
 static int echo_peers_fd = -1, echo_disc_fd = -1;
+static int seq_fd = -1;
 static struct bpf_object *sweep_obj;
 static int sweep_prog_fd = -1, sweep_sess_fd = -1, sweep_cfg_fd = -1;
 static int hmac_prog_fd = -1, hmac_map_fd = -1;
@@ -85,6 +86,7 @@ int main(void)
 	flags_fd = bpf_object__find_map_fd_by_name(obj, "prog_flags");
 	echo_peers_fd = bpf_object__find_map_fd_by_name(obj, "echo_peers");
 	echo_disc_fd = bpf_object__find_map_fd_by_name(obj, "echo_disc");
+	seq_fd = bpf_object__find_map_fd_by_name(obj, "auth_seq");
 	if (cfg_fd < 0 || sess_fd < 0) {
 		fprintf(stderr, "maps not found in %s\n", path);
 		return 1;
@@ -118,6 +120,7 @@ int main(void)
 	case_unknown_session();
 	case_v6_exthdr();
 	case_auth_ratelimit();
+	case_auth_seq_shared();
 	case_bounce_v4();
 	case_bounce_v4_frame();
 	case_bounce_v6_frame();

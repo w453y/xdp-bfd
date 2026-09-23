@@ -67,6 +67,7 @@ static int static_auth_apply(struct session *s, const char *spec)
 
 	s->auth_present = 1;
 	s->auth_nkeys = 1;
+	auth_seq_seed(s, (uint32_t)random());
 	/* As the dplane path does when keys arrive. */
 	session_auth_evaluate(s, (int64_t)time(NULL));
 	if (!s->auth_type) {

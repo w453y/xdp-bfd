@@ -618,9 +618,6 @@ int main(int argc, char **argv)
 			stats_dump();
 		}
 
-		__u8 p_buf[BFD_MAX_LEN] = { 0 };
-		struct bfd_ctrl_pkt p;
-		struct sockaddr_in from;
 		/* Packets drained per socket per pass. The bound keeps a flood
 		 * from starving TX, detection and the dplane; one per session
 		 * clears a legitimate burst in one pass.
@@ -723,6 +720,10 @@ int main(int argc, char **argv)
 		 * rd4, but lets scan-build prove it.
 		 */
 		for (int d = 0; rd4 && rx_sock >= 0 && d < drain_budget; d++) {
+			/* Zeroed per packet, as rx_accept requires. */
+			__u8 p_buf[BFD_MAX_LEN] = { 0 };
+			struct bfd_ctrl_pkt p;
+			struct sockaddr_in from;
 			struct iovec iov4 = { .iov_base = p_buf, .iov_len = sizeof(p_buf) };
 			char cbuf4[CMSG_SPACE(sizeof(struct in_pktinfo)) + CMSG_SPACE(sizeof(int))];
 			struct msghdr mh4 = {

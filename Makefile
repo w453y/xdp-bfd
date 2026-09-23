@@ -32,7 +32,8 @@ XDP_CFLAGS += -DBFD_XDP_OBJDIR='"$(LIBDIR)"' -DBFD_XDP_VERSION='"$(VERSION)"'
 SHARED_HDRS := $(wildcard include/*.h)
 
 ENGINE_OBJS := src/engine/log.o src/engine/main.o src/engine/session.o src/engine/dplane.o src/engine/ktx.o src/engine/echo_tx.o src/engine/fsm.o src/engine/stats.o src/engine/rx.o src/engine/ktx_cfg.o \
-	       src/engine/opts.o src/engine/sock.o src/engine/static.o
+	       src/engine/opts.o src/engine/sock.o src/engine/static.o \
+	       src/engine/dplane_conn.o
 
 all: abi-check bfd_xdp.o bfd_loader bfd_tx
 
@@ -110,10 +111,11 @@ tests/unit/rx_run: tests/unit/rx_run.c src/engine/rx.o src/engine/session.o \
 	$(CC) $(CFLAGS) $(XDP_CFLAGS) tests/unit/rx_run.c src/engine/rx.o \
 		src/engine/session.o src/engine/log.o -o $@
 
-tests/unit/dp_run: tests/unit/dp_run.c src/engine/dplane.o src/engine/log.o \
+tests/unit/dp_run: tests/unit/dp_run.c src/engine/dplane.o src/engine/dplane_conn.o \
+		   src/engine/log.o \
 		   src/engine/session.o src/engine/fsm.o $(wildcard src/engine/*.h) \
 		   $(TEST_HDRS)
-	$(CC) $(CFLAGS) $(XDP_CFLAGS) tests/unit/dp_run.c src/engine/dplane.o \
+	$(CC) $(CFLAGS) $(XDP_CFLAGS) tests/unit/dp_run.c src/engine/dplane.o src/engine/dplane_conn.o \
 		src/engine/session.o src/engine/fsm.o src/engine/log.o -o $@
 
 # The bfddp parser under libFuzzer. Needs clang, not $(CC): gcc has no
@@ -128,7 +130,7 @@ FUZZ_FLAGS ?= -g -O1 -fsanitize=fuzzer,address,undefined
 tests/unit/dp_fuzz: tests/unit/dp_fuzz.c $(wildcard src/engine/*.c) \
 		    $(wildcard src/engine/*.h) $(TEST_HDRS)
 	$(FUZZ_CC) $(FUZZ_FLAGS) -Iinclude -Isrc/engine \
-		tests/unit/dp_fuzz.c src/engine/dplane.c src/engine/session.c \
+		tests/unit/dp_fuzz.c src/engine/dplane.c src/engine/dplane_conn.c src/engine/session.c \
 		src/engine/fsm.c src/engine/log.c -o $@
 
 # The XDP program under libFuzzer. Drives bfd_xdp.o with BPF_PROG_TEST_RUN,

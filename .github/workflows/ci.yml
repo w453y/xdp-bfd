@@ -251,7 +251,7 @@ jobs:
       - name: unit suites
         run: sudo make CC=${{ matrix.cc }} CLANG=clang-21 check
 
-  # A --coverage build of the host suites for fsm.c and dplane.c, written to
+  # A --coverage build of the host suites for fsm.c and the dplane, written to
   # the job summary. Reported, not gated.
   coverage:
     runs-on: ubuntu-latest
@@ -268,8 +268,8 @@ jobs:
       # the log.
       - name: report line and branch coverage
         run: |
-          gcovr -s --filter 'src/engine/(fsm|dplane)\.c'
-          gcovr --json-summary --filter 'src/engine/(fsm|dplane)\.c' \
+          gcovr -s --filter 'src/engine/(fsm|dplane|dplane_conn)\.c'
+          gcovr --json-summary --filter 'src/engine/(fsm|dplane|dplane_conn)\.c' \
             | python3 .github/coverage-summary.py >> "$GITHUB_STEP_SUMMARY"
 
   # Its own job, so a finding is reported as static analysis. --status-bugs

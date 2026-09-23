@@ -6,6 +6,7 @@
 #define BFD_ENGINE_SESSION_H
 
 #include <stdint.h>
+#include <string.h>
 #include <netinet/in.h>
 
 #include "bfd_shared.h"

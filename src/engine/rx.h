@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* rx.h - the per-packet receive decision shared by the four drains in main.c.
+/* rx.h - the per-packet receive decision made for every packet rx_drain reads.
  * Pure apart from the session table, so tests/unit/rx_run.c drives it
  * directly.
  */

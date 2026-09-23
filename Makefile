@@ -31,7 +31,8 @@ XDP_CFLAGS += -DBFD_XDP_OBJDIR='"$(LIBDIR)"' -DBFD_XDP_VERSION='"$(VERSION)"'
 # Every shared header, so a change to any rebuilds both planes.
 SHARED_HDRS := $(wildcard include/*.h)
 
-ENGINE_OBJS := src/engine/log.o src/engine/main.o src/engine/session.o src/engine/dplane.o src/engine/ktx.o src/engine/echo_tx.o src/engine/fsm.o src/engine/stats.o src/engine/rx.o src/engine/ktx_cfg.o
+ENGINE_OBJS := src/engine/log.o src/engine/main.o src/engine/session.o src/engine/dplane.o src/engine/ktx.o src/engine/echo_tx.o src/engine/fsm.o src/engine/stats.o src/engine/rx.o src/engine/ktx_cfg.o \
+	       src/engine/opts.o src/engine/sock.o src/engine/static.o
 
 all: abi-check bfd_xdp.o bfd_loader bfd_tx
 

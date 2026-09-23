@@ -445,32 +445,26 @@ static void case_update_keeps_disc(void)
 	report("add-update-keeps-wire-disc", bad, "1 session");
 }
 
-/* An ADD of BFDDP_SESSION_MSG_MIN bytes and no DP_SESSION_AUTH gives an
- * unauthenticated session.
+/* An ADD without SESSION_AUTH, and no DP_SESSION_AUTH, gives a session with
+ * no authentication state at all.
  */
 static void case_add_without_auth(void)
 {
 	unsigned char buf[256];
-	size_t full = build_add(buf, 0x5150, "10.0.0.1", "10.0.0.2");
-	size_t short_len = sizeof(struct bfddp_message_header) + BFDDP_SESSION_MSG_MIN;
-	struct bfddp_message_header *h = (void *)buf;
+	size_t n = build_add(buf, 0x5150, "10.0.0.1", "10.0.0.2");
 	struct session *s;
-
 	int bad = 0;
 
-	(void)full;
-	h->length = htons((uint16_t)short_len);
-
 	sessions_clear();
-	feed(buf, short_len);
+	feed(buf, n);
 	dp_read();
 
 	s = sess_by_lid(0x5150);
 	if (!s) {
-		printf("     no session from a pre-auth ADD\n");
+		printf("     no session from an unauthenticated ADD\n");
 		bad = 1;
-	} else if (s->auth_type || s->auth_keylen) {
-		printf("     auth read from bytes that were never sent\n");
+	} else if (s->auth_present || s->auth_type || s->auth_nkeys) {
+		printf("     authentication state set without SESSION_AUTH\n");
 		bad = 1;
 	}
 	report("add-without-auth", bad, "session up, unauthenticated");

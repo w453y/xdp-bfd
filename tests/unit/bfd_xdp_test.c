@@ -17,15 +17,14 @@
 #include <bpf/bpf_endian.h>
 
 #include "bfd_shared.h"
-#include "hmac_sha1.h"
 
 #include "tunables.h"
 #include "maps.h"
 #include "stats.h"
 #include "parse.h"
 #include "validate.h"
+#include "auth.h"
 #include "sweep.h"
-#include "csum.h"
 #include "echo.h"
 #include "tx.h"
 

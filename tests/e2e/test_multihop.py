@@ -10,6 +10,7 @@ attach new interfaces for multihop sessions, but ktx_mirror still pushes
 them, so packets arriving on the attached interface are bounced.
 """
 
+import json
 import os
 import re
 import time
@@ -48,6 +49,25 @@ CONF_B = (
 
 TTL = re.compile(r"ttl (\d+)")
 SRC = re.compile(r"(10\.79\.\d+\.\d+)\.(\d+) >")
+STATS = "/tmp/mh_rig.json"
+
+
+def _user_tx():
+    """Control packets the rig engine has sent from userspace so far."""
+    pids = [
+        p
+        for p in sh("pgrep -x bfd_tx", check=False).split()
+        if STATS in open("/proc/%s/cmdline" % p).read()
+    ]
+    assert len(pids) == 1, "rig engine not found: %r" % pids
+    sh("sudo rm -f %s" % STATS, check=False)
+    sh("sudo kill -USR1 %s" % pids[0])
+    end = time.time() + 5.0
+    while not os.path.exists(STATS):
+        assert time.time() < end, "no stats dump from the rig engine"
+        time.sleep(0.1)
+    with open(STATS) as f:
+        return json.load(f)["sessions"][0]["tx_pkts"]
 
 
 def _teardown():
@@ -90,7 +110,7 @@ def mhop(request):
         sh(
             "sudo nsenter -t %d -n nohup %s/bfd_tx --dplane 50700"
             " --kernel-tx eth-a --xdp-mode generic --bpf-obj %s/bfd_xdp.o"
-            " --stats-dump /tmp/mh_rig.json >/tmp/mh_rig.log 2>&1 &" % (pa, root, root),
+            " --stats-dump %s >/tmp/mh_rig.log 2>&1 &" % (pa, root, root, STATS),
             capture=False,
         )
 
@@ -115,12 +135,16 @@ def mhop(request):
 
 @pytest.fixture(scope="module")
 def capture(mhop):
-    """Both directions on the router's A-facing side."""
+    """Both directions on the router's A-facing side, and the userspace
+    sends over a window that contains the capture.
+    """
+    before = _user_tx()
     out = sh(
         "sudo ip netns exec %s timeout 5 tcpdump -n -v -i r1"
         " 'udp port 4784' 2>/dev/null" % RTR,
         check=False,
     )
+    user_tx = _user_tx() - before
     assert out.strip(), "captured nothing on r1"
     rows = []
     ttl = None
@@ -133,7 +157,7 @@ def capture(mhop):
             rows.append((m.group(1), int(m.group(2)), ttl))
             ttl = None
     assert rows, "no BFD packets parsed from the capture:\n%s" % out[:400]
-    return rows
+    return {"rows": rows, "user_tx": user_tx}
 
 
 def test_multihop_session_comes_up_over_a_router(mhop):
@@ -142,7 +166,7 @@ def test_multihop_session_comes_up_over_a_router(mhop):
 
 
 def test_inbound_arrives_decremented(capture):
-    inbound = [t for src, _, t in capture if src == B_IP]
+    inbound = [t for src, _, t in capture["rows"] if src == B_IP]
     assert inbound, "nothing inbound from %s" % B_IP
     assert all(
         t == 254 for t in inbound
@@ -155,7 +179,7 @@ def test_bounce_restores_the_ttl(capture):
     """Bounced replies leave at TTL 255, though multihop packets arrive
     decremented.
     """
-    out = [t for src, _, t in capture if src == A_IP]
+    out = [t for src, _, t in capture["rows"] if src == A_IP]
     assert out, "nothing outbound from %s" % A_IP
     assert all(
         t == 255 for t in out
@@ -163,13 +187,14 @@ def test_bounce_restores_the_ttl(capture):
 
 
 def test_the_bounce_did_it_not_userspace(capture):
-    """The replies come from the kernel bounce, identified by its source
-    port range; userspace also sends at 255, from the session's own
-    socket.
+    """Userspace also sends at 255, so the ttl check above proves nothing
+    unless some replies came from the kernel. Both use the same source
+    port; the userspace send count tells them apart.
     """
-    ports = {p for src, p, _ in capture if src == A_IP}
-    assert ports, "nothing outbound from %s" % A_IP
-    assert all(p >= 65472 for p in ports), (
-        "outbound source ports %r are not in the kernel-tx range; userspace"
-        " answered and the ttl assertion above is vacuous" % sorted(ports)
+    out = [p for src, p, _ in capture["rows"] if src == A_IP]
+    assert out, "nothing outbound from %s" % A_IP
+    assert len(out) > capture["user_tx"], (
+        "%d packets outbound, %d sent by userspace over a wider window: no"
+        " kernel bounce, and the ttl assertion above is vacuous"
+        % (len(out), capture["user_tx"])
     )

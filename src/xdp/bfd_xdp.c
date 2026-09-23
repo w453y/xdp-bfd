@@ -22,7 +22,6 @@
 #include "validate.h"
 #include "auth.h"
 #include "sweep.h"
-#include "csum.h"
 #include "echo.h"
 #include "tx.h"
 

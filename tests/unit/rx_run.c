@@ -15,27 +15,6 @@
 #include "session.h"
 #include "rx.h"
 
-/* ---------- stubs: what session.o refers to and this does not use ---- */
-int use_ktx;
-void ktx_clear(struct session *s)
-{
-	(void)s;
-}
-void ktx_clear_key(const struct bfd_addr *p, const struct bfd_addr *l, uint32_t d)
-{
-	(void)p;
-	(void)l;
-	(void)d;
-}
-void echo_peer_refresh(const struct bfd_addr *p, struct session *s)
-{
-	(void)p;
-	(void)s;
-}
-void ktx_update_mhop_flag(void)
-{
-}
-
 static int fails;
 
 static void report(const char *name, int bad, const char *detail)

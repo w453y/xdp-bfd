@@ -452,9 +452,6 @@ int main(int argc, char **argv)
 		}
 	}
 
-#ifndef IPV6_MINHOPCOUNT
-#define IPV6_MINHOPCOUNT 73
-#endif
 	rx6_sock = socket(AF_INET6, SOCK_DGRAM, 0);
 	if (rx6_sock < 0) {
 		perror("socket v6 control");

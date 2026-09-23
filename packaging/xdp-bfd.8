@@ -34,7 +34,8 @@ with no argument.
 Attach to FRR bfdd on the given data-plane port or Unix socket path.
 .TP
 .BI --dp-peer " user|uid"
-The account bfdd runs as, for socket ownership.
+The account bfdd runs as. With a Unix socket it owns the socket and, with
+root, is the only account allowed to connect. Ignored for a TCP port.
 .TP
 .BI --dp-hold " sec"
 Hold sessions this many seconds after bfdd disconnects (0-86400).

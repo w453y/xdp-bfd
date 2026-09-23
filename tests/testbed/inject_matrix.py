@@ -780,7 +780,9 @@ def orchestrate(args):
     if args.list:
         for name, desc, _, counter, delta in cases:
             checks = counter if isinstance(counter, list) else [(counter, delta)]
-            shown = " ".join("%s%+d" % (c, d) for c, d in checks)
+            shown = " ".join(
+                c + (str(d) if isinstance(d, AtLeast) else "%+d" % d) for c, d in checks
+            )
             print("%-22s %-24s %s" % (name, shown, desc))
         return 0
 

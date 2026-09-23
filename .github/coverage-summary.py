@@ -1,24 +1,19 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0
-"""Turn `gcovr --json-summary` into a Markdown table for the job summary.
-
-gcovr --json-summary --filter ... | python3 .github/coverage-summary.py
-"""
+"""gcovr --json-summary on stdin to a Markdown table for the job summary."""
 
 import json, sys
 
 WHAT = {
     "src/engine/fsm.c": "session state machine",
-    "src/engine/dplane.c": "bfddp control-plane parser",
+    "src/engine/dplane.c": "bfddp messages",
+    "src/engine/dplane_conn.c": "bfddp connection and framing",
 }
 
 d = json.load(sys.stdin)
 print("## Coverage of the host test suites\n")
-print("How much of the two engine sources the host suites reach, from a")
-print("`--coverage` build run by `fsm_run` and `dp_run`. The XDP program and")
-print("the kernel-facing paths are covered by other suites and are not")
-print("measured here. This is a report: there is no threshold and nothing in")
-print("it fails the build.\n")
+print("From a `--coverage` build run by `fsm_run` and `dp_run`. Reported,")
+print("not gated.\n")
 print("| source | what it is | lines | branches | functions |")
 print("|---|---|---:|---:|---:|")
 

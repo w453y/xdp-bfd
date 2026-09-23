@@ -31,8 +31,7 @@ runs:
           chmod +x /tmp/llvm.sh
           sudo /tmp/llvm.sh ${{ inputs.version }}
         fi
-        # After llvm.sh, which adds the apt.llvm.org repository these versioned
-        # packages come from.
+        # After llvm.sh: versioned packages come from apt.llvm.org.
         if [ -n "${{ inputs.packages }}" ]; then
           sudo apt-get install -y ${{ inputs.packages }}
         fi

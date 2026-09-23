@@ -1,7 +1,6 @@
 name: fuzz
 
-# The search for new findings, on a clock. The regression check over
-# tests/unit/fuzz-regress/ is cheap and runs in the push gate instead.
+# The nightly search. Known findings are replayed in ci.yml.
 on:
   schedule:
     - cron: '17 3 * * *'
@@ -29,14 +28,11 @@ jobs:
       - name: build
         run: make FUZZ_CC=clang-21 tests/unit/dp_fuzz
 
-      # Known findings first: a reproduction means a fix regressed, and that
-      # is worth failing on before spending the budget searching.
+      # Known findings first: a reproduction means a fix regressed.
       - name: regressions
         run: find tests/unit/fuzz-regress -type f ! -name '*.md' -exec ./tests/unit/dp_fuzz {} +
 
-      # Corpus cached, not committed. The key covers the target and the parser,
-      # so changing either starts fresh; the run id with restore-keys takes the
-      # most recent.
+      # Keyed on the sources, so changing them starts a fresh corpus.
       - name: restore corpus
         uses: actions/cache@v4
         with:
@@ -45,8 +41,6 @@ jobs:
           restore-keys: |
             dp_fuzz-corpus-${{ hashFiles('tests/unit/dp_fuzz.c', 'src/engine/*.c') }}-
 
-      # -max_total_time rather than -runs: the budget is wall clock, and
-      # runs/second varies with the runner.
       - name: search
         run: |
           mkdir -p corpus
@@ -54,8 +48,7 @@ jobs:
             -max_total_time=$(( ${{ github.event.inputs.minutes || 20 }} * 60 )) \
             -print_final_stats=1 corpus/
 
-      # Findings are written to the working directory and would vanish with
-      # the runner. Uploaded on success too, so the corpus survives.
+      # On success too, so the corpus survives.
       - name: keep any finding
         if: always()
         uses: actions/upload-artifact@v4
@@ -74,12 +67,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # CLANG too: bfd_xdp.o is built with $(CLANG), and the runner has only
-      # clang-21.
+      # The runner has only clang-21, for bfd_xdp.o too.
       - name: build
         run: make CLANG=clang-21 FUZZ_CC=clang-21 tests/unit/xdp_fuzz
 
-      # Known findings first: a reproduction means a fix regressed.
       - name: regressions
         run: sudo find tests/unit/fuzz-regress/xdp_fuzz -type f ! -name '*.md' -exec ./tests/unit/xdp_fuzz {} +
 

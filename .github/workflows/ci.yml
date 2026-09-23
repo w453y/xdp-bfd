@@ -1,38 +1,15 @@
 name: ci
 
-# The jobs, in the order they appear below:
-#
-#   full             self-hosted: build, unit suites, fuzz regressions, and
-#                    the namespace and FRR end-to-end suites. The FRR
-#                    scenarios read BPF maps through bpftool, which hosted
-#                    runners cannot do.
-#   toolchain        every supported clang compiles the BPF object.
-#   kernel           unit suites under a chosen kernel in a microVM.
-#   cross            the BPF object builds for a non-host architecture.
-#   compilers        hosted, stock machine: build and unit suites under
-#                    both compilers.
-#   coverage         what the host suites reach, reported not gated.
-#   static-analysis  scan-build over the engine, any finding fails.
-#   style            clang-format, checkpatch and black, as FRR runs them.
-#   package          the deb and the rpm, built and installed in a
-#                    container per distro.
-#
-# The nightly fuzz search is separate, in fuzz.yml.
 on:
   pull_request:
-  # Every branch, so a branch is built before it reaches a pull request. A
-  # branch with an open pull request is built twice; the self-hosted jobs skip
-  # push events.
   push:
     branches: ['**']
   workflow_dispatch:
 
-# Read-only. Nothing here comments, tags, or publishes.
 permissions:
   contents: read
 
-# `full` and `kernel` share one self-hosted VM, so concurrent runs on a ref
-# serialise. Cancel the older one rather than queue behind it.
+# full and kernel share one self-hosted VM.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -40,20 +17,17 @@ concurrency:
 jobs:
   full:
     runs-on: [self-hosted, Linux, X64]
-    # Shares one VM with `kernel`; pushes leave it to the pull request.
+    # Needs bpftool map access, which hosted runners lack. Not on push: one VM.
     if: github.event_name != 'push'
     timeout-minutes: 30
     env:
       BFD_CONTAINER_RUNTIME: podman
-      # Suites run under sudo, so keep Python from writing root-owned bytecode
-      # the next checkout cannot remove.
+      # No root-owned .pyc for the next checkout to trip on.
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v4
 
-      # The work directory persists between runs, so a job that died mid-test
-      # leaves engines, namespaces, veths and containers behind. A leaked
-      # engine still holds an XDP attach and fails the next run's setup.
+      # The VM persists; a leaked engine keeps its XDP attach.
       - name: clean up anything a previous run left
         run: |
           sudo pkill -f 'bfd_tx 10.77' || true
@@ -66,7 +40,6 @@ jobs:
           sudo find . -user root -exec rm -rf {} + 2>/dev/null || true
           true
 
-      # clang 21, bpftool, podman and pytest are preinstalled on this VM.
       - name: versions
         run: |
           clang-21 --version | head -1
@@ -96,11 +69,9 @@ jobs:
       - name: netns end-to-end
         run: sudo make CLANG=clang-21 check-netns
 
-      # Against stock FRR. Needs bpftool map access, so it only runs here.
       - name: frr scenarios
         run: sudo -E make CLANG=clang-21 check-frr
 
-      # Again at the end, so a failed run does not leave the VM dirty.
       - name: leave the machine clean
         if: always()
         run: |
@@ -114,9 +85,7 @@ jobs:
           sudo find . -user root -exec rm -rf {} + 2>/dev/null || true
           true
 
-  # Every clang the packaging supports compiles the BPF object; 17 is the floor
-  # Build-Depends and BuildRequires ask for. Compile only: the `kernel` job
-  # loads a clang-21 object under a real kernel.
+  # Every clang the packages allow; compile only.
   toolchain:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -155,7 +124,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # One kernel for now, the host's series; add rows to cover others.
         kernel:
           - "7.0.0-30-generic"
     steps:
@@ -164,7 +132,7 @@ jobs:
       - name: build on the host
         run: make CLANG=clang-21 && make CLANG=clang-21 tests/unit/bfd_xdp_test.o
 
-      # Kernel images install mode 600; virtme-ng reads one as the runner user.
+      # Installed mode 600; vng reads it as the runner user.
       - name: make the kernel image readable
         run: |
           test -f /boot/vmlinuz-${{ matrix.kernel }} || {
@@ -177,29 +145,23 @@ jobs:
         run: |
           vng -r ${{ matrix.kernel }} --rwdir=$PWD -- \
             sh -c "cd $PWD && make CLANG=clang-21 check" 2>&1 | tee /tmp/vng.log
-          # vng propagates the inner exit status, but the pipe through tee
-          # would mask it, so assert on the output too.
+          # tee masks the exit status.
           grep -q 'all suites passed' /tmp/vng.log
 
-  # The object is target-independent, but BPFFLAGS takes the UAPI include path
-  # from the target triple. Codegen only. A bogus triple must fail on
-  # <asm/types.h>, or the aarch64 arm proves nothing.
+  # BPFFLAGS takes the UAPI include path from the triple.
   cross:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
-      # bpf_helpers.h is architecture-independent, so the host libbpf-dev
-      # serves; only the UAPI headers are per-architecture.
       - uses: ./.github/actions/llvm
         with:
           version: 21
 
       - name: add arm64 headers
         run: |
-          # Ubuntu serves arm64 only from ports.ubuntu.com, so scope the
-          # existing sources to amd64 before adding it.
+          # arm64 comes from ports.ubuntu.com; pin the rest to amd64.
           sudo dpkg --add-architecture arm64
           for f in /etc/apt/sources.list.d/*.sources; do
             sudo sed -i '/^Architectures:/d' "$f"
@@ -213,6 +175,7 @@ jobs:
       - name: build the BPF object for aarch64
         run: make CLANG=clang-21 TRIPLE=aarch64-linux-gnu bfd_xdp.o
 
+      # Otherwise the aarch64 build proves nothing.
       - name: a bogus triple must fail on asm/types.h
         run: |
           touch src/xdp/bfd_xdp.c
@@ -224,8 +187,7 @@ jobs:
           grep -q 'asm/types.h' /tmp/x.log || {
             echo "failed, but not on the missing header:"; tail -5 /tmp/x.log; exit 1; }
 
-  # Userspace with both compilers; the BPF object is always clang. Checks the
-  # multiarch triple comes from the system, not from $(CC).
+  # The multiarch triple must come from the system, not from $(CC).
   compilers:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -236,7 +198,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # clang 21 from apt.llvm.org, as the kernel job uses.
       - uses: ./.github/actions/llvm
         with:
           version: 21
@@ -251,8 +212,7 @@ jobs:
       - name: unit suites
         run: sudo make CC=${{ matrix.cc }} CLANG=clang-21 check
 
-  # A --coverage build of the host suites for fsm.c and the dplane, written to
-  # the job summary. Reported, not gated.
+  # Reported, not gated.
   coverage:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -264,16 +224,12 @@ jobs:
           sudo apt-get install -y gcovr libbpf-dev
       - name: build and run fsm_run and dp_run instrumented
         run: make CFLAGS="--coverage -O0 -g" test-fsm test-dp
-      # Emit a Markdown table for the job summary; the plain report stays in
-      # the log.
       - name: report line and branch coverage
         run: |
           gcovr -s --filter 'src/engine/(fsm|dplane|dplane_conn)\.c'
           gcovr --json-summary --filter 'src/engine/(fsm|dplane|dplane_conn)\.c' \
             | python3 .github/coverage-summary.py >> "$GITHUB_STEP_SUMMARY"
 
-  # Its own job, so a finding is reported as static analysis. --status-bugs
-  # fails the job on any finding.
   static-analysis:
     runs-on: ubuntu-latest
     timeout-minutes: 15

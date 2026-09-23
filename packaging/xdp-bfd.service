@@ -24,8 +24,8 @@ CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_NET_ADMIN CAP_NET_RAW
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-PrivateTmp=yes
-ReadWritePaths=/run/xdp-bfd
+# The stats snapshot goes to the real /tmp, where operators look for it.
+ReadWritePaths=/run/xdp-bfd /tmp
 OOMScoreAdjust=-900
 LockPersonality=yes
 

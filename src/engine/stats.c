@@ -18,8 +18,7 @@
 #include "fsm.h"
 #include "stats.h"
 
-/* The packaged unit creates /run/xdp-bfd. */
-const char *stats_path = "/run/xdp-bfd/stats.json";
+const char *stats_path = "/tmp/bfd_tx_stats.json";
 volatile sig_atomic_t stats_wanted;
 
 void stats_on_signal(int sig)

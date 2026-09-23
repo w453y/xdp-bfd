@@ -262,9 +262,10 @@ void ktx_session_counters(const struct session *s, uint64_t *rx, uint64_t *tx)
 
 void ktx_poll_map(struct session *s, uint64_t t)
 {
-	if (!use_ktx || s->state != ST_UP)
-		return;
 	struct session_state ms;
+
+	if (!use_ktx)
+		return;
 
 	if (poll_batch_unsupported) {
 		struct session_key k = {};
@@ -280,6 +281,9 @@ void ktx_poll_map(struct session *s, uint64_t t)
 			return;
 		ms = *msp;
 	}
+	s->ktx_seen_us = ms.last_seen_ns / 1000;
+	if (s->state != ST_UP)
+		return;
 	if (ms.last_seen_ns / 1000 > s->last_rx_us)
 		s->last_rx_us = ms.last_seen_ns / 1000;
 	/* The program cannot store a TX time, but a reply leaves in the softirq

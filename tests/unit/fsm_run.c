@@ -20,10 +20,12 @@
 struct session sessions[MAX_SESSIONS];
 int use_ktx; /* 0: the kernel-TX gate in fsm_tx stays shut */
 
-/* No program, so no sweep ring: fsm_detect keeps the whole budget. */
+/* No program, so no sweep ring unless a case pretends there is one. */
+static int stub_events_fd = -1;
+
 int ktx_events_fd(void)
 {
-	return -1;
+	return stub_events_fd;
 }
 
 static int notify_calls;
@@ -69,6 +71,7 @@ int main(void)
 	case_detect("detect-iv-fallback-past", 0, 3, 3, 40000, ST_DOWN);
 	case_detect_negative();
 	case_detect_guards();
+	case_backstop_needs_kernel_sight();
 
 	case_jitter(3, 75, 100, "jitter-mult3-75-100pct");
 	case_jitter(1, 75, 90, "jitter-mult1-75-90pct");

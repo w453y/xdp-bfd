@@ -93,6 +93,7 @@ struct session {
 	struct session_key pushed_key;
 	uint64_t last_rx_us, next_tx_us;
 	uint64_t last_ktx_us;	     /* last fast-path reply; see fsm_tx */
+	uint64_t ktx_seen_us;	     /* last packet the kernel saw; 0 if never */
 	uint64_t ktx_tx_pkts;	     /* kernel reply count at the previous poll */
 	uint64_t tx_pkts;	     /* userspace-sent control packets */
 	uint32_t last_detect_lag_us; /* sweep verdict to the loop acting on it */

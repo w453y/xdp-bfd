@@ -253,10 +253,12 @@ void fsm_detect(struct session *s, uint64_t t)
 	uint8_t mult = s->r_mult ? s->r_mult : s->detect_mult;
 	uint64_t budget = (uint64_t)mult * iv;
 
-	/* The sweep detects fast-path sessions; this is a backstop at twice the
-	 * budget.
+	/* The sweep detects what the kernel sees; for those this is a backstop
+	 * at twice the budget. A session whose packets bypass the program, such
+	 * as multihop arriving elsewhere, keeps the plain budget.
 	 */
-	if (use_ktx && !s->ktx_uncovered && ktx_events_fd() >= 0)
+	if (use_ktx && ktx_events_fd() >= 0 && s->ktx_seen_us &&
+	    s->last_rx_us <= s->ktx_seen_us + iv)
 		budget *= 2;
 
 	if ((uint64_t)sd > budget) {

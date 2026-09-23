@@ -98,3 +98,39 @@ static void case_detect_guards(void)
 
 	report("detect-guards", bad, NULL);
 }
+
+/* The doubled budget assumes the sweep covers the session. A multihop session
+ * arriving on an interface without the program never reaches it, so it must
+ * keep the plain budget.
+ */
+static void case_backstop_needs_kernel_sight(void)
+{
+	struct session *s;
+	int bad = 0;
+
+	use_ktx = 1;
+	stub_events_fd = 3;
+
+	s = sess_init(ST_UP);
+	s->is_mhop = 1;
+	s->ktx_seen_us = 0;
+	fsm_detect(s, s->last_rx_us + 40000);
+	if (s->state != ST_DOWN) {
+		printf("     unseen by the kernel, still %s past the 30ms budget\n",
+		       st_name(s->state));
+		bad = 1;
+	}
+
+	s = sess_init(ST_UP);
+	s->is_mhop = 1;
+	s->ktx_seen_us = s->last_rx_us;
+	fsm_detect(s, s->last_rx_us + 40000);
+	if (s->state != ST_UP) {
+		printf("     seen by the kernel, but userspace did not leave it the sweep\n");
+		bad = 1;
+	}
+
+	use_ktx = 0;
+	stub_events_fd = -1;
+	report("backstop-needs-kernel-sight", bad, "plain budget when the kernel is blind");
+}

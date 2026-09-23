@@ -55,6 +55,9 @@ int main(void)
 	case_admin_down();
 	case_poll_bits();
 	case_notify();
+	case_slow_rate_honours_remote_min_rx();
+	case_no_final_in_admin_down();
+	case_auth_window_ages_without_send_key();
 
 	/* 10ms basis, mult 3: 30ms budget */
 	case_detect("detect-under-budget", 10000, 3, 3, 20000, ST_UP);

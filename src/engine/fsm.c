@@ -184,15 +184,16 @@ void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 	}
 
 	s->last_rx_us = t;
-	if (p->flags & F_P)
-		s->send_final = 1;
 	if ((p->flags & F_F) && s->polling) {
 		s->polling = 0;
 		s->applied_tx_us = s->min_tx_us;
 	}
 
+	/* RFC 5880 s6.8.6: discarded here, so a Poll goes unanswered. */
 	if (s->admin_down)
 		return;
+	if (p->flags & F_P)
+		s->send_final = 1;
 
 	if (ps == ST_ADMINDOWN) {
 		if (s->state != ST_DOWN)
@@ -223,7 +224,7 @@ void fsm_detect(struct session *s, uint64_t t)
 	 * time, so a restarted peer can resync. Clearing auth_seeded pushes the
 	 * cleared window on the next Up.
 	 */
-	if (s->auth_type && s->auth_rx_seen && s->last_rx_us) {
+	if (s->auth_present && s->auth_rx_seen && s->last_rx_us) {
 		uint64_t iv = s->detect_iv_us
 				      ? s->detect_iv_us
 				      : (s->r_min_tx > s->min_rx_us ? s->r_min_tx : s->min_rx_us);
@@ -388,17 +389,22 @@ void fsm_announce_down(struct session *s)
 		tx_one(s);
 }
 
+/* RFC 5880 s6.8.7: the larger of our rate and the peer's Required Min RX; 1s
+ * below Up.
+ */
+static uint64_t tx_interval(const struct session *s)
+{
+	uint64_t ours = s->state == ST_UP ? s->applied_tx_us : SLOW_TX_US;
+
+	return ours > s->r_min_rx ? ours : s->r_min_rx;
+}
+
 /* Advance next_tx_us by one jittered interval. The holds call it too, so the
  * schedule keeps rolling.
  */
 static void tx_reschedule(struct session *s, uint64_t t)
 {
-	uint64_t iv, span;
-
-	if (s->state == ST_UP)
-		iv = s->applied_tx_us > s->r_min_rx ? s->applied_tx_us : s->r_min_rx;
-	else
-		iv = SLOW_TX_US;
+	uint64_t iv = tx_interval(s), span;
 
 	/* RFC 5880 s6.8.7: 75-100% of the interval, 75-90% if detect_mult is 1.
 	 * The 1s slow rate is jittered too.
@@ -452,14 +458,8 @@ void fsm_tx(struct session *s, uint64_t t)
 		return;
 	}
 
-	if (s->last_rx_us) {
-		uint64_t cur = (s->state == ST_UP)
-				       ? (s->applied_tx_us > s->r_min_rx ? s->applied_tx_us
-									 : s->r_min_rx)
-				       : SLOW_TX_US;
-		if (s->next_tx_us > t + cur)
-			s->next_tx_us = t + cur;
-	}
+	if (s->last_rx_us && s->next_tx_us > t + tx_interval(s))
+		s->next_tx_us = t + tx_interval(s);
 
 	int due = (t >= s->next_tx_us) || s->send_final;
 

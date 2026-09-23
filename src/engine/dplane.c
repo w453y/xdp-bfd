@@ -13,6 +13,7 @@
 #include <time.h>
 
 #include "bfd_shared.h"
+#include "bfd_auth.h"
 #include "bfddp.h"
 #include "util.h"
 #include "log.h"
@@ -511,6 +512,12 @@ static void dp_session_auth(const struct bfddp_session_auth *sa, size_t plen)
 		if (kl == 0 || kl > sizeof(dst->kpad)) {
 			log_err("dplane: lid=%u key id %u has an unusable length %u, ignored\n",
 				lid, k->key_id, kl);
+			continue;
+		}
+		/* Keyed MD5 and anything newer: we can neither sign nor verify. */
+		if (!bfd_auth_pkt_len(k->type, kl)) {
+			log_err("dplane: lid=%u key id %u has unsupported type %u, ignored\n", lid,
+				k->key_id, k->type);
 			continue;
 		}
 

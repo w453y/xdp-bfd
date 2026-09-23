@@ -228,3 +228,27 @@ static void case_jitter(uint8_t mult, unsigned int lo_pct, unsigned int hi_pct, 
 		 (unsigned long long)seen_hi, iv);
 	report(name, bad, detail);
 }
+
+/* RFC 5880 s6.8.7: below Up the 1s slow rate, but never faster than the
+ * peer's Required Min RX.
+ */
+static void case_slow_rate_honours_remote_min_rx(void)
+{
+	uint64_t lo = ~0ull;
+	struct session *s;
+
+	for (int i = 0; i < 2000; i++) {
+		uint64_t t = 100000000ull + (uint64_t)i * 10000000ull;
+
+		s = sess_init(ST_DOWN);
+		s->r_min_rx = 2000000;
+		s->next_tx_us = t;
+		fsm_tx(s, t);
+		if (s->next_tx_us - t < lo)
+			lo = s->next_tx_us - t;
+	}
+	if (lo < 1500000)
+		printf("     next packet %lluus after the last; the peer asked for 2s\n",
+		       (unsigned long long)lo);
+	report("slow-rate-honours-remote-min-rx", lo < 1500000, "no faster than 2s less jitter");
+}

@@ -198,3 +198,18 @@ static void case_notify(void)
 
 	report("notify-on-change-only", bad, NULL);
 }
+
+/* RFC 5880 s6.8.6: in AdminDown the packet is discarded before the Poll is
+ * answered.
+ */
+static void case_no_final_in_admin_down(void)
+{
+	struct session *s = sess_init(ST_ADMINDOWN);
+	struct bfd_ctrl_pkt p = pkt(ST_UP, F_P);
+
+	s->admin_down = 1;
+	fsm_rx(s, &p, 2000000);
+	if (s->send_final)
+		printf("     a Final is pending while AdminDown\n");
+	report("no-final-in-admin-down", s->send_final, "Poll discarded");
+}

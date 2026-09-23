@@ -95,3 +95,21 @@ static void case_no_sendable_key_sends_nothing(void)
 	report("auth-no-sendable-key-sends-nothing", sent_calls != 0,
 	       "silence beats a packet the peer must reject");
 }
+
+/* RFC 5880 s6.7: bfd.AuthSeqKnown ages out after twice the detection time
+ * whether or not a key is sendable right now.
+ */
+static void case_auth_window_ages_without_send_key(void)
+{
+	struct session *s = sess_init(ST_DOWN);
+
+	s->auth_present = 1;
+	s->auth_type = 0;
+	s->auth_rx_seen = 1;
+	s->auth_rx_seq = 1234;
+	s->last_rx_us = 1000000;
+	fsm_detect(s, 1000000 + 10 * 30000);
+	if (s->auth_rx_seen)
+		printf("     the window is still known after ten detection times\n");
+	report("auth-window-ages-without-send-key", s->auth_rx_seen, "forgotten");
+}

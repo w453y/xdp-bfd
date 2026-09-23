@@ -39,6 +39,7 @@ int main(void)
 	case_whole();
 	case_auth_rollover();
 	case_auth_short();
+	case_auth_unsupported_type();
 	case_torn();
 	case_batched();
 

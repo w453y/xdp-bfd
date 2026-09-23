@@ -88,3 +88,40 @@ static void case_auth_short(void)
 	}
 	report("auth-short-message", bad, "refused");
 }
+
+/* A key of a type we cannot produce or verify (keyed MD5) is dropped, not
+ * chosen to send under.
+ */
+static void case_auth_unsupported_type(void)
+{
+	unsigned char buf[2048];
+	struct session *s;
+	size_t n;
+	int bad = 0;
+
+	sessions_clear();
+	n = build_add_auth(buf, 0x2003, "10.0.0.1", "10.0.0.2");
+	feed(buf, n);
+	dp_read();
+	n = build_session_auth(buf, 0x2003);
+	((struct bfddp_session_auth *)(buf + sizeof(struct bfddp_message_header)))->keys[0].type =
+		2;
+	feed(buf, n);
+	dp_read();
+
+	s = sess_by_lid(0x2003);
+	if (!s) {
+		report("auth-unsupported-type-dropped", 1, NULL);
+		return;
+	}
+	if (s->auth_nkeys != 1) {
+		printf("     kept %u keys, want 1\n", s->auth_nkeys);
+		bad = 1;
+	}
+	session_auth_evaluate(s, 1500);
+	if (s->auth_type == 2) {
+		printf("     chose keyed MD5 to send under\n");
+		bad = 1;
+	}
+	report("auth-unsupported-type-dropped", bad, "keyed MD5 ignored");
+}

@@ -1,43 +1,50 @@
 // SPDX-License-Identifier: GPL-2.0
-/* ktx.h - kernel-TX mirror: XDP attach and the BPF map fds. */
+/* ktx.h - kernel-TX: loading the program (ktx_load.c), mirroring sessions
+ * into its maps (ktx.c), and the tx_cfg a session maps to (ktx_cfg.c).
+ */
 #ifndef BFD_ENGINE_KTX_H
 #define BFD_ENGINE_KTX_H
 
 #include "session.h"
 
-extern int use_ktx;
+/* ktx_load.c */
 extern const char *ktx_obj_path;
 extern unsigned int ktx_xdp_flags;
 extern int ktx_ifindex;
 extern __u64 ktx_sweep_ns;
 extern __u64 ktx_deadman_ns;
-void ktx_heartbeat(uint64_t now);
+extern int ktx_cfg_fd;
+extern int ktx_flags_fd;
 extern int sess_fd;
 extern int echo_peers_fd;
 extern int echo_disc_fd;
 extern int stats_fd;
 
-void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip);
-void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local, uint32_t wire_disc);
-
 int ktx_load(void);
 int ktx_attach(const char *ifname);
 int ktx_attach_if(int ifindex, const char *ifname);
 int ktx_covers(int ifindex);
-void ktx_update_mhop_flag(void);
-/* The program's view of a session, derived from it and the clock alone.
- * Split from ktx_mirror so it can be driven without a loaded program;
- * \see ktx_cfg.c.
- */
-void ktx_cfg_for(const struct session *s, int64_t now, struct tx_cfg *c, struct session_key *k);
+void ktx_heartbeat(uint64_t now);
 
-void ktx_mirror(struct session *s);
-void ktx_clear(struct session *s);
-void ktx_poll_all(void);
+/* ktx.c */
+extern int use_ktx;
+
+void ktx_events_init(int map_fd);
 int ktx_events_fd(void);
 void ktx_drain_events(void);
+void ktx_mirror(struct session *s);
+void ktx_clear(struct session *s);
+void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local, uint32_t wire_disc);
+void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip);
+void ktx_update_mhop_flag(void);
+void ktx_poll_all(void);
 const char *ktx_poll_mode(void);
 void ktx_poll_map(struct session *s, uint64_t t);
 void ktx_session_counters(const struct session *s, uint64_t *rx, uint64_t *tx);
+
+/* ktx_cfg.c: the program's view of a session, derived from it and the clock
+ * alone, so it can be driven without a loaded program.
+ */
+void ktx_cfg_for(const struct session *s, int64_t now, struct tx_cfg *c, struct session_key *k);
 
 #endif /* BFD_ENGINE_KTX_H */

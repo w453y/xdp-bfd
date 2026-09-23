@@ -95,8 +95,8 @@ tests/unit/xdp_run: tests/unit/xdp_run.c $(wildcard tests/unit/xdp/*.c) $(SHARED
 	$(CC) $(CFLAGS) $(XDP_CFLAGS) -Itests/unit $< -o $@ -lbpf
 
 # Links against the real fsm.o with four stubs; no root, no BPF.
-tests/unit/fsm_run: tests/unit/fsm_run.c src/engine/fsm.o src/engine/log.o \
-		    $(wildcard src/engine/*.h) $(TEST_HDRS)
+tests/unit/fsm_run: tests/unit/fsm_run.c $(wildcard tests/unit/fsm/*.c) \
+		    src/engine/fsm.o src/engine/log.o $(wildcard src/engine/*.h) $(TEST_HDRS)
 	$(CC) $(CFLAGS) $(XDP_CFLAGS) tests/unit/fsm_run.c src/engine/fsm.o src/engine/log.o -o $@
 
 # ktx_cfg_for, without a loaded program.
@@ -111,12 +111,13 @@ tests/unit/rx_run: tests/unit/rx_run.c src/engine/rx.o src/engine/session.o \
 	$(CC) $(CFLAGS) $(XDP_CFLAGS) tests/unit/rx_run.c src/engine/rx.o \
 		src/engine/session.o src/engine/log.o -o $@
 
-tests/unit/dp_run: tests/unit/dp_run.c src/engine/dplane.o src/engine/dplane_conn.o \
-		   src/engine/log.o \
+tests/unit/dp_run: tests/unit/dp_run.c $(wildcard tests/unit/dp/*.c) \
+		   src/engine/dplane.o src/engine/dplane_conn.o src/engine/log.o \
 		   src/engine/session.o src/engine/fsm.o $(wildcard src/engine/*.h) \
 		   $(TEST_HDRS)
-	$(CC) $(CFLAGS) $(XDP_CFLAGS) tests/unit/dp_run.c src/engine/dplane.o src/engine/dplane_conn.o \
-		src/engine/session.o src/engine/fsm.o src/engine/log.o -o $@
+	$(CC) $(CFLAGS) $(XDP_CFLAGS) tests/unit/dp_run.c src/engine/dplane.o \
+		src/engine/dplane_conn.o src/engine/session.o src/engine/fsm.o \
+		src/engine/log.o -o $@
 
 # The bfddp parser under libFuzzer. Needs clang, not $(CC): gcc has no
 # -fsanitize=fuzzer. Not part of `check` - a fuzz run is open-ended, and

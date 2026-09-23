@@ -23,6 +23,5 @@ DPLANE = os.environ.get("BFD_DPLANE", "50700")
 FRR_PREFIX = os.environ.get("BFD_FRR_PREFIX", "/opt/frr-master")
 VTYSH = os.environ.get("BFD_VTYSH", FRR_PREFIX + "/bin/vtysh")
 FRRINIT = os.environ.get("BFD_FRRINIT", FRR_PREFIX + "/sbin/frrinit.sh")
-# frrinit.sh needs the stack's own libfrr; sudo drops the ambient
-# environment, so it is passed as an assignment instead.
+# sudo drops the environment, so frrinit.sh's libfrr path is an assignment.
 FRR_ENV = "LD_LIBRARY_PATH=" + FRR_PREFIX + "/lib"

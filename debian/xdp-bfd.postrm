@@ -1,8 +1,7 @@
 #!/bin/sh
 set -e
 
-# Remove the system user on purge only; remove and upgrade keep it, so a
-# reinstall reuses the uid.
+# On purge only, so a reinstall reuses the uid.
 case "$1" in
     purge)
         if getent passwd xdp-bfd >/dev/null; then

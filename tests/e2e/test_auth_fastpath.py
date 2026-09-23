@@ -1,7 +1,5 @@
-"""An authenticated session on the fast path, end to end. Stock bfdd will
-not offload authenticated sessions, so two static engines with --auth
-stand in: A on the fast path, B in userspace. Up requires A's
-kernel-built digests and B's userspace ones to agree.
+"""Authentication on the fast path. Stock bfdd will not offload it, so two static
+engines stand in: A in XDP, B in userspace; Up needs their digests to agree.
 """
 
 import time
@@ -39,8 +37,7 @@ def test_authenticated_session_up_over_the_fast_path(rig, binary, bpf_obj, auth)
         start_engine(binary, 4, ns=NS_B, stats=STATS_B, extra=spec)
         wait_both_up()
 
-        # Up alone could be userspace answering; last_ktx_us shows the program
-        # transmitted.
+        # last_ktx_us shows the program transmitted.
         end = time.time() + 5
         while time.time() < end:
             if only_session(NS_A, STATS).get("last_ktx_us", 0):
@@ -53,8 +50,7 @@ def test_authenticated_session_up_over_the_fast_path(rig, binary, bpf_obj, auth)
 
 
 def test_fast_path_rejects_a_mismatched_key(rig, binary, bpf_obj):
-    """The negative arm: the program must refuse a peer signing with a key
-    it does not hold, rather than answering anything that arrives."""
+    """A key it does not hold is refused, not answered."""
     if True:
         start_engine(
             binary,

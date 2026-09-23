@@ -29,8 +29,8 @@ runs a single static session on its own.
 %autosetup
 
 %build
-# Export Fedora hardening flags (PIE, RELRO, FORTIFY) into the environment
-# so they reach the userspace build; the Makefile honours CFLAGS/LDFLAGS.
+# Fedora's hardening flags reach the userspace build through CFLAGS and
+# LDFLAGS.
 %set_build_flags
 make CLANG="$(command -v clang-21 || command -v clang-20 || command -v clang-19 || command -v clang-18 || command -v clang-17 || command -v clang)" VERSION=%{version} LIBDIR=%{_libdir}/xdp-bfd %{?_smp_mflags}
 
@@ -44,7 +44,7 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix} SBINDIR=%{_sbindir} \
     VERSION=%{version}
 
 %pre
-# The unit runs as this unprivileged system user (see xdp-bfd.service).
+# The unit's user.
 getent passwd xdp-bfd >/dev/null || \
     useradd --system --no-create-home --home-dir /nonexistent \
         --shell /sbin/nologin --user-group \
@@ -53,7 +53,7 @@ exit 0
 
 %post
 %systemd_post xdp-bfd.service
-# Advisory load-and-ABI probe. Never fails the install.
+# Advisory: never fails the install.
 if xdp-bfd --check >/dev/null 2>&1; then
     echo "xdp-bfd: the XDP object loads and is ABI-matched on this kernel ($(uname -r))."
 else

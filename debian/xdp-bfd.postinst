@@ -3,15 +3,13 @@ set -e
 
 case "$1" in
     configure)
-        # The unit runs as this unprivileged system user (see
-        # xdp-bfd.service). Created before the unit can start.
+        # The unit's user, created before it can start.
         if ! getent passwd xdp-bfd >/dev/null; then
             useradd --system --no-create-home --home-dir /nonexistent \
                 --shell /usr/sbin/nologin --user-group \
                 --comment "XDP BFD engine" xdp-bfd
         fi
-        # Advisory load-and-ABI probe. Never fails the install, so a build host
-        # or an old kernel still installs.
+        # Advisory: never fails the install.
         if xdp-bfd --check >/dev/null 2>&1; then
             echo "xdp-bfd: the XDP object loads and is ABI-matched on this kernel ($(uname -r))."
         else

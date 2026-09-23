@@ -1,7 +1,6 @@
-"""A demanding session verifies its own path (RFC 5880 s6.6). Detection is
-held while demanding, so the periodic Poll is what takes the session down
-when the peer vanishes; with --demand-poll-us 0 the same silence produces
-nothing.
+"""RFC 5880 s6.6: detection is held while demanding, so the periodic Poll is what
+takes the session down when the peer vanishes; with --demand-poll-us 0 nothing
+does.
 """
 
 import time
@@ -22,7 +21,7 @@ from conftest import (
     only_session,
 )
 
-# Past one poll interval plus A's detect budget.
+# One poll interval plus A's detect budget.
 SILENCE_S = 8.0
 
 
@@ -32,8 +31,7 @@ def run_arm(rootpath, poll_us):
 
     setup()
     try:
-        # A demands and B does not, so A's detection is held and B goes quiet:
-        # A is the end that cannot see B disappear.
+        # A demands, so its detection is held: it cannot see B go.
         start_engine(
             binary,
             4,
@@ -46,8 +44,7 @@ def run_arm(rootpath, poll_us):
         start_engine(binary, 4, ns=NS_B, stats=STATS_B)
         wait_both_up()
 
-        # Wait for demand to engage: the D bit goes out only once both ends are
-        # Up, and the announcement quota must clear.
+        # D goes out only with both ends Up, and the quota must clear.
         held = False
         for _ in range(50):
             s = only_session(NS_A, STATS)
@@ -58,8 +55,7 @@ def run_arm(rootpath, poll_us):
         assert held, "demand never engaged on A: %r" % (s["demand"],)
 
         polls0 = s["demand_polls"]
-        # Kill B: it is not transmitting anyway, so what must disappear is its
-        # answer to A's poll.
+        # B is silent anyway; what disappears is its answer to A's poll.
         for pid in ns_pids(NS_B):
             sh("sudo kill -KILL %d" % pid, check=False)
 

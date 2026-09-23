@@ -29,20 +29,20 @@ import subprocess
 import sys
 import time
 
-# Lab defaults, all overridable from the command line.
+# Lab defaults; all overridable.
 INJECTOR_HOST = "w453y@10.66.0.3"
 IFACE = "ens19"
 COUNT = 20
 SETTLE = 0.6
 UNKNOWN_ECHO = "10.66.0.250"
 UNKNOWN_ECHO6 = "fd66::250"
-# Configured peers nothing answers on, used as positive controls. Pinned by
-# address, since a down multihop peer also has enable == 0.
+# Configured peers nothing answers on. By address: a down multihop peer also
+# has enable == 0.
 PHANTOM4 = "10.66.0.200"
 PHANTOM6 = "fd66::200"
 
 MAC = None
-# Fields an injected packet must not disturb on a live session.
+# Must not change on a live session.
 WATCH = (
     "remote_disc",
     "detect_iv_us",
@@ -51,8 +51,7 @@ WATCH = (
     "detect_mult",
     "peer_mac",
 )
-# An address pair with no session, for the deferred-GTSM drop. Must not collide
-# with any configured address.
+# No session for this pair; must not collide with a configured address.
 UNKNOWN_SRC = "10.66.0.240"
 UNKNOWN_DST = "10.66.0.241"
 
@@ -60,9 +59,8 @@ _STAT = {}
 
 
 class AtLeast:
-    """A lower bound on a delta rather than an exact one, for global
-    counters the live mesh also moves. not-self climbs on its own, since
-    FRR sources its v6 echoes at the peer.
+    """For global counters the mesh also moves; FRR sources its v6 echoes at the
+    peer, so not-self climbs.
     """
 
     __slots__ = ("n",)
@@ -78,14 +76,12 @@ class AtLeast:
 
 
 def stat_names():
-    """Slot numbering and names, read from the BFD_STAT_LIST X-macro in
-    include/bfd_shared.h. Resolved on first use, not at import: on the
-    injector this runs as `python3 -` with no repo checked out.
+    """From BFD_STAT_LIST in bfd_shared.h, on first use: the injector runs this as
+    `python3 -` with no checkout.
     """
     if _STAT:
         return _STAT
 
-    # tests/testbed/ -> repo root.
     hdr = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         "..",
@@ -93,7 +89,7 @@ def stat_names():
         "include",
         "bfd_shared.h",
     )
-    # Strip comments first: an entry's comment may span lines.
+    # An entry's comment may span lines.
     src = open(hdr).read()
     src = src[src.index("#define BFD_STAT_LIST") :]
     src = re.sub(r"/\*.*?\*/", " ", src, flags=re.S)
@@ -121,7 +117,6 @@ def local_mac(iface):
 
 
 def echo_peer_addrs():
-    """Peers of echo-active sessions, as the reflector sees them."""
     return [addr_of(e["key"]["b"]) for e in bpf_map("echo_peers")]
 
 
@@ -131,8 +126,8 @@ def bpf_map(name):
         data = json.loads(out)
     except ValueError:
         sys.exit("cannot read map %s; is the engine running?" % name)
-    # With two engines loaded, `dump name` returns map objects rather than
-    # entries; refuse rather than read the wrong engine.
+    # With two engines loaded this returns map objects; refuse rather than read
+    # the wrong one.
     if data and isinstance(data[0], dict) and "id" in data[0] and "type" in data[0]:
         sys.exit(
             "more than one map named %s is loaded; another engine is "
@@ -142,9 +137,7 @@ def bpf_map(name):
 
 
 def counters():
-    """Global stat slots by name, plus rx:<peer>:<local> per session. A key
-    absent before and present after reads as 0 -> n.
-    """
+    """Plus rx:<peer>:<local> per session; a key absent before reads as 0."""
     names = stat_names()
     out = {
         names[e["key"]]: sum(c["value"] for c in e["values"])
@@ -165,7 +158,7 @@ def stats():
 
 
 def session_value(peer, local):
-    """Full bfd_sessions value for one pair, or None if it has no state."""
+    """None if the pair has no state."""
     for e in bpf_map("bfd_sessions"):
         if (
             addr_of(e["key"]["peer"]["b"])[0] == peer
@@ -176,15 +169,13 @@ def session_value(peer, local):
 
 
 def rx_of(peer, local):
-    """rx_pkts for one session, or None if it has no state yet."""
+    """None if the pair has no state."""
     v = session_value(peer, local)
     return None if v is None else v["rx_pkts"]
 
 
 def session_states():
-    """(peer, local) -> (alive, remote_disc) for every configured session,
-    to catch collateral damage the counters cannot see.
-    """
+    """Collateral the counters cannot see."""
     out = {}
     for e in bpf_map("bfd_sessions"):
         k = (tuple(e["key"]["peer"]["b"]), tuple(e["key"]["local"]["b"]))
@@ -197,7 +188,7 @@ def session_states():
 
 
 def addr_of(b):
-    """Render a 16-byte key address, v4-mapped or v6."""
+    """v4-mapped or v6."""
     if b[10] == 0xFF and b[11] == 0xFF:
         return ".".join(str(x) for x in b[12:16]), 4
     import ipaddress
@@ -206,7 +197,6 @@ def addr_of(b):
 
 
 def sessions():
-    """Configured sessions, as (peer, local, family, my_disc, min_ttl)."""
     out = []
     for e in bpf_map("tx_config"):
         peer, fam = addr_of(e["key"]["peer"]["b"])
@@ -226,12 +216,9 @@ def sessions():
 
 
 def pick(sess):
-    """Choose the sessions the cases need, or explain what is missing. The
-    first match in map order wins each role.
-    """
-    # Only sessions the fast path answers for: not in demand hold (enable) and
-    # not authenticated, since every frame built here is unauthenticated. Map
-    # order is not stable, so either would make results depend on it.
+    """First match in map order wins each role."""
+    # Only sessions the fast path answers for, and unauthenticated, since these
+    # frames are.
     roles = (("v4", 4, True), ("v6", 6, True), ("mh4", 4, False), ("mh6", 6, False))
     got = {}
     for s in sess:
@@ -244,9 +231,8 @@ def pick(sess):
                 and not s["auth_type"]
             ):
                 got[role] = s
-        # A configured peer nothing answers on: its rx_pkts moves only when we
-        # inject. Matched on address, since enable == 0 also matches a multihop
-        # peer during bring-up.
+        # Its rx_pkts moves only when we inject. By address, since enable == 0
+        # also matches a multihop peer in bring-up.
         for role, fam, addr in (("phantom", 4, PHANTOM4), ("phantom6", 6, PHANTOM6)):
             if role not in got and s["family"] == fam and s["peer"] == addr:
                 got[role] = s
@@ -254,7 +240,7 @@ def pick(sess):
 
 
 def inject(spec):
-    """Run the sending half of this script on the injector host."""
+    """The sending half, on the injector."""
     cmd = [
         "ssh",
         "-o",
@@ -277,8 +263,7 @@ def inject(spec):
     return None, cap
 
 
-# Header rules checked before session lookup. Each entry breaks exactly one, so
-# each case isolates its rule though all share the malformed counter.
+# Checked before session lookup; each breaks exactly one.
 MALFORMED = (
     ("bad-version", "BFD version other than 1", dict(vers=0)),
     ("zero-my-disc", "my_discriminator of zero is illegal", dict(mydisc=0)),
@@ -293,9 +278,7 @@ MALFORMED = (
 )
 
 
-# Well-formed headers with a flag we cannot honour; dropped. The M bit counts
-# as unsupported-flags, the A bit as auth-mismatch, since it is refused because
-# this session has no key.
+# Dropped. The A bit is auth-mismatch: this session has no key.
 UNSUPPORTED = (
     ("auth-bit", "the A bit with no authentication configured", 0x04, "auth-mismatch"),
     ("mp-bit", "the M bit is reserved for multipoint", 0x01, "unsupported-flags"),
@@ -303,23 +286,16 @@ UNSUPPORTED = (
 
 
 def spec(fam, src, dst, **kw):
-    """A frame from src to dst. The defaults are a well-formed single-hop
-    control packet with your_disc 0 and the peer Down; a case sets only what
-    it changes.
-    """
+    """Defaults: a well-formed single-hop packet, your_disc 0, peer Down."""
     d = dict(family=fam, src=src, dst=dst, ttl=255, dport=3784, ydisc=0, state=1)
     d.update(kw)
     return d
 
 
 def unsupported_cases(sess, fam):
-    """The unsupported-flag set for one family; both families exercise each
-    parse path.
-    """
     out = []
     for cname, cdesc, fl, counter in UNSUPPORTED:
-        # ydisc naming no session with the peer Up, so a build without the flag
-        # check drops at demux instead of touching a live session.
+        # Naming no session, so a build without the flag check drops at demux.
         out.append(
             (
                 "%s-v%d" % (cname, fam),
@@ -339,9 +315,6 @@ def unsupported_cases(sess, fam):
 
 
 def malformed_cases(sess, fam):
-    """The malformed set for one family; both families exercise each parse
-    path.
-    """
     return [
         (
             "%s-v%d" % (cname, fam),
@@ -354,9 +327,7 @@ def malformed_cases(sess, fam):
 
 
 def phantom_cases(ph, fam):
-    """Positive controls against a session nothing answers: nothing but the
-    injector moves the phantom's rx_pkts.
-    """
+    """Positive controls: only the injector moves a phantom's rx_pkts."""
     rx = [("rx:%s:%s" % (ph["peer"], ph["local"]), COUNT)]
     base = spec(
         fam, ph["peer"], ph["local"], ttl=ph["min_ttl"], dport=4784, ydisc=ph["my_disc"]
@@ -378,9 +349,6 @@ def phantom_cases(ph, fam):
 
 
 def v4_cases(s, got):
-    """Single-hop v4: GTSM, demux, IP options, fragments, Poll/Final, the
-    header rules, and the echo reflector's refusals.
-    """
     peer, local = s["peer"], s["local"]
     c = [
         (
@@ -399,8 +367,7 @@ def v4_cases(s, got):
             "ip-options",
             "single-hop BFD never carries IP options",
             spec(4, peer, local, options=True),
-            # Its own slot, not rejected: options are refused for what the IP
-            # header is, not for anything in the BFD.
+            # Its own slot: refused for the IP header, not the BFD.
             [("ip-options", COUNT), ("rejected", 0)],
         ),
         (
@@ -411,8 +378,7 @@ def v4_cases(s, got):
             [("rejected", COUNT)],
         ),
     ]
-    # Only meaningful with a multihop session configured, which makes parse_l3
-    # defer the TTL verdict.
+    # Only with multihop configured does parse_l3 defer the TTL.
     if any(k in got for k in ("mh4", "mh6", "phantom", "phantom6")):
         c.append(
             (
@@ -425,9 +391,8 @@ def v4_cases(s, got):
         )
     pf = session_value(peer, local)
     if pf:
-        # Poll/Final (RFC 5880 s6.5). Everything but P is replayed from the
-        # session's own state, so the collateral check holds; only the reply
-        # proves the F bit.
+        # RFC 5880 s6.5. Replayed from the session's own state so the
+        # collateral check holds; only the reply proves F.
         c.append(
             (
                 "poll-final",
@@ -470,9 +435,7 @@ def v4_cases(s, got):
 
 
 def v6_cases(s):
-    """Single-hop v6. The v6 reflector is a separate helper, so its declined
-    and not-self branches need their own cases.
-    """
+    """The v6 reflector is a separate helper."""
     peer, local = s["peer"], s["local"]
     c = [
         (
@@ -508,9 +471,7 @@ def v6_cases(s):
 
 
 def mhop_cases(got):
-    """Multihop GTSM against the session's minimum, and that the relaxed TTL
-    check does not leak onto single-hop.
-    """
+    """And the relaxed TTL check must not leak onto single-hop."""
     c = []
     if "mh4" in got:
         s = got["mh4"]
@@ -546,10 +507,8 @@ def mhop_cases(got):
 
 
 def echo_reflect_cases():
-    """One pair per family, since the v4 and v6 reflectors are separate paths.
-    Judged by the capture alone: `reflected` is global and the mesh moves it
-    constantly. The capture counts only frames addressed to the injector's
-    MAC, and proves a correct frame left the NIC.
+    """Judged by capture alone: `reflected` is global and the mesh moves it. The
+    capture counts only frames to the injector's MAC.
     """
     c, seen = [], set()
     for addr, fam in echo_peer_addrs():
@@ -564,8 +523,7 @@ def echo_reflect_cases():
                 [("cap:replies", COUNT)],
             )
         )
-        # The same packet with the TTL wrong: echo-ttl must move, so the zero
-        # below is not vacuous.
+        # echo-ttl must move, so the zero is not vacuous.
         c.append(
             (
                 "echo-gtsm-v%d" % fam,
@@ -578,9 +536,7 @@ def echo_reflect_cases():
 
 
 def build_cases(got):
-    """Each case: its name, what it shows, the frame to send, and which
-    counters move by how much.
-    """
+    """(name, what it shows, frame, [(counter, delta)])"""
     c = []
     if "v4" in got:
         c += v4_cases(got["v4"], got)
@@ -626,8 +582,6 @@ def orchestrate(args):
         print("no session for %s, those cases are skipped" % ", ".join(sorted(missing)))
     for kind, addr in (("phantom", PHANTOM4), ("phantom6", PHANTOM6)):
         if kind not in got:
-            # Say when a phantom does not resolve rather than silently dropping
-            # its cases.
             print(
                 "no configured session for %s %s, its cases are skipped" % (kind, addr),
                 file=sys.stderr,
@@ -635,7 +589,6 @@ def orchestrate(args):
     print()
 
     if args.only and not any(c[0] == args.only for c in cases):
-        # A name matching nothing must not report success.
         sys.exit(
             "no case named %r. Available now: %s"
             % (args.only, ", ".join(c[0] for c in cases))
@@ -658,8 +611,7 @@ def orchestrate(args):
             continue
         time.sleep(SETTLE)
         after = counters()
-        # Capture results ride in as pseudo-counters with nothing in `before`,
-        # so the delta arithmetic is unchanged.
+        # Capture results are pseudo-counters absent from `before`.
         after.update({"cap:%s" % k: v for k, v in cap.items()})
 
         results, ok, recorded = [], True, []
@@ -695,8 +647,8 @@ def orchestrate(args):
         if not ok:
             failures += 1
 
-    # Collateral check: nothing the matrix sent may have taken a live
-    # session down or corrupted its learned remote discriminator.
+    # Nothing sent may have taken a live session down or changed what it
+    # learned.
     disturbed = 0
     sess_after = session_states()
     for k, (alive, disc) in sess_before.items():
@@ -749,7 +701,7 @@ def orchestrate(args):
 
 
 def send(spec):
-    """The injector half. Runs on the third host, needs root for scapy."""
+    """The injector half; root for scapy."""
     from scapy.all import Ether, IP, IPv6, UDP, Raw, sendp, get_if_hwaddr
     from scapy.all import IPOption_NOP
 
@@ -765,9 +717,7 @@ def send(spec):
         minecho=0,
         flags=0,
     ):
-        """Defaults build a well-formed header; each knob breaks one rule
-        the engine checks before session lookup.
-        """
+        """Each knob breaks one rule checked before session lookup."""
         md = mydisc
         return bytes(
             [
@@ -798,8 +748,7 @@ def send(spec):
             ]
         )
 
-    # Set the source MAC explicitly: scapy takes it from the route, which may
-    # name another interface, and the capture below matches on our own MAC.
+    # scapy takes it from the route, which may name another interface.
     eth = Ether(src=get_if_hwaddr(spec["iface"]))
     if spec.get("l2dst"):
         eth.dst = spec["l2dst"]
@@ -818,20 +767,17 @@ def send(spec):
     if spec.get("trunc"):
         payload = payload[: spec["trunc"]]
     if spec.get("pad"):
-        # Trailing bytes past the payload: udp_len grows, bfd->len stays 24,
-        # and the packet must be accepted.
+        # udp_len grows, bfd->len stays 24: must be accepted.
         payload = payload + bytes(spec["pad"])
     l4 = UDP(sport=49152, dport=spec["dport"]) / Raw(payload)
 
     if spec["family"] == 4:
         ip = IP(src=spec["src"], dst=spec["dst"], ttl=spec["ttl"])
         if spec.get("mf"):
-            # Offset 0 with MF set: the fragment that could pass every check
-            # and be bounced still marked MF.
+            # Offset 0 with MF: could pass every check and be bounced still MF.
             ip.flags = "MF"
         if spec.get("options"):
-            # Four NOPs, one option word: ihl 6 and the UDP header moves. BFD
-            # never carries options, so the engine drops these.
+            # Four NOPs: ihl 6. BFD never carries options.
             ip.options = [IPOption_NOP() for _ in range(4)]
     else:
         ip = IPv6(src=spec["src"], dst=spec["dst"], hlim=spec["ttl"])
@@ -846,8 +792,8 @@ def send(spec):
         )
         return 0
 
-    # Capture oracle: counters prove a count() call ran, not that a correct
-    # frame left the NIC. Replies swap MACs, so they come back to us.
+    # Counters prove count() ran, not that a correct frame left. Replies swap
+    # MACs, so they come back here.
     from scapy.all import AsyncSniffer, get_if_hwaddr
 
     mymac = get_if_hwaddr(spec["iface"]).lower()

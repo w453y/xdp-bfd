@@ -1,6 +1,5 @@
-"""The engine refuses a kernel object built against a different ABI, and
-accepts a matching one. The positive arm matters as much: BTF for two of
-the five structs depends on a witness in maps.h.
+"""The engine refuses a kernel object built against another ABI and accepts its
+own; two structs' BTF depends on the witness in maps.h.
 """
 
 import os
@@ -11,16 +10,13 @@ import pytest
 
 from conftest import NS_A, sh, setup, teardown
 
-# Skew tx_cfg: it is reached through a map pointer and costs no stack, so the
-# skewed object still loads and only the ABI check stands in the way. Growing
-# session_state instead would fail the verifier's stack limit regardless.
+# tx_cfg sits behind a map pointer, so a grown one still loads and only the ABI
+# check refuses it; growing session_state would fail the verifier.
 SKEW = ("	__u32 my_disc;", "	__u32 my_disc;\n	__u32 abi_skew_probe;")
 
 
 def run_engine(binary, obj, secs=8):
-    """Run the engine in the foreground and return its output; a refusal
-    happens at startup. The timeout bounds the success case.
-    """
+    """A refusal happens at startup; the timeout bounds success."""
     cmd = (
         "sudo timeout %d ip netns exec %s %s 10.0.0.1 10.0.0.2"
         " --kernel-tx lo --xdp-mode generic --bpf-obj %s" % (secs, NS_A, binary, obj)
@@ -41,8 +37,8 @@ def rig(request):
 
 @pytest.fixture(scope="module")
 def skewed_obj(rig, tmp_path_factory):
-    """A kernel object built from a copy of this tree with one struct grown,
-    so a failure cannot leave the fake field in the working tree.
+    """Built from a copy of the tree, so a failure cannot leave the fake field
+    behind.
     """
     src = tmp_path_factory.mktemp("abi-skew")
     for item in ("Makefile", "include", "src"):
@@ -66,13 +62,12 @@ def skewed_obj(rig, tmp_path_factory):
     obj = os.path.join(str(src), "bfd_xdp.o")
     if r.returncode or not os.path.exists(obj):
         pytest.skip("cannot build a skewed object here: %s" % (r.stderr or r.stdout))
-    # World-readable: the engine runs under sudo out of a pytest tmp dir.
+    # The engine runs under sudo from a pytest tmp dir.
     sh("chmod -R a+rX %s" % src)
     return obj
 
 
 def test_the_matching_object_is_accepted(rig, skewed_obj):
-    """The object this tree just built must load."""
     out = run_engine(str(rig / "bfd_tx"), str(rig / "bfd_xdp.o"))
     assert "refusing to load" not in out, (
         "the engine rejected its own freshly built object:\n%s" % out

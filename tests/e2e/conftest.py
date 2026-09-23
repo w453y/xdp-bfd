@@ -1,6 +1,4 @@
-"""Fixtures for the end-to-end scenarios. Run as root: `sudo python3 -m
-pytest tests/e2e`. Namespace plumbing is in tests/lib/netns.py.
-"""
+"""End-to-end fixtures. Root: sudo python3 -m pytest tests/e2e"""
 
 import json
 import os
@@ -94,10 +92,7 @@ def wait_both_up(timeout=UP_WAIT):
 
 
 def xdp_progs(ns, dev):
-    """Programs attached to dev, from `ip -d link show`, which prints an xdp
-    clause only when a program is attached. Not bpftool, which is missing
-    on some runners.
-    """
+    """From `ip -d link show`; bpftool is missing on some runners."""
     out = sh("sudo ip netns exec %s ip -d link show %s" % (ns, dev), check=False)
     if not out.strip():
         raise AssertionError("no link %s in %s" % (dev, ns))
@@ -106,23 +101,19 @@ def xdp_progs(ns, dev):
         if tok.startswith("prog/xdp"):
             progs.append(tok)
     if not progs and ("xdpgeneric" in out or " xdp " in out):
-        # Attached but the prog/xdp detail line is absent: still attached.
         progs.append("xdp")
     return progs
 
 
-# ---- FRR container peer -------------------------------------------------
-#
-# Containers start with --network none and a veth end is moved in by pid.
-# Not `ip netns exec <ns> podman run`: that remounts /sys without the
-# cgroup2 mount, and crun refuses to start. RUNTIME may be podman or docker.
+# FRR containers start with --network none and get a veth end by pid; `ip netns
+# exec` + podman run remounts /sys without cgroup2 and crun refuses.
 RUNTIME = os.environ.get("BFD_CONTAINER_RUNTIME", "podman")
 FRR_IMAGE = os.environ.get("BFD_FRR_IMAGE", "quay.io/frrouting/frr:10.4.2")
 NAME_A = "bfdrig-frr-a"  # engine's control plane, talks bfddp
 NAME_B = "bfdrig-frr-b"  # the wire peer, plain stock bfdd
 
-# The image ships /etc/frr/daemons with bfdd=no and nothing else in
-# /etc/frr, so a bind mount of a generated directory clobbers nothing.
+# The image's /etc/frr holds only daemons (bfdd=no), so mounting over it
+# clobbers nothing.
 DAEMONS = """zebra=yes
 mgmtd=yes
 bfdd=yes
@@ -134,8 +125,7 @@ bfdd_options="  -A 127.0.0.1%s"
 staticd_options="  -A 127.0.0.1"
 """
 
-# Side A's bfdd drives the engine over TCP in client mode (ipv4c). unixc: is
-# broken in every FRR release through 10.7.1.
+# unixc: is broken in every FRR release through 10.7.1.
 DPLANE_OPT = " --dplaneaddr ipv4c:127.0.0.1:50700"
 
 
@@ -144,8 +134,7 @@ def frr_rm(name):
 
 
 def frr_start(name, confdir):
-    """Start detached with no network of its own, and return its pid so a
-    veth end can be moved in."""
+    """Returns the pid, to move a veth end in."""
     frr_rm(name)
     sh(
         "sudo %s run -d --name %s --network none --privileged -v %s:/etc/frr %s"
@@ -166,16 +155,13 @@ def frr_start(name, confdir):
 
 
 def frr_ns(pid, cmd):
-    """Run in the container's NETWORK namespace only. nsenter -n leaves the
-    mount namespace alone, which is what lets the host's bfd_tx and
-    bfd_xdp.o run inside the container's netns."""
+    """Network namespace only, so the host's bfd_tx and bfd_xdp.o run inside."""
     return sh("sudo nsenter -t %d -n %s" % (pid, cmd), check=False)
 
 
 def frr_daemon_pid(container_pid, comm):
-    """Host-side pid of a daemon inside the container, matched by PID
-    namespace so the host's own bfdd is never hit. Signal from the host,
-    since `podman exec ... kill` does not work.
+    """Matched by PID namespace so the host's bfdd is never hit; `podman exec
+    kill` does not work.
     """
     ns = sh("sudo readlink /proc/%d/ns/pid" % container_pid, check=False).strip()
     assert ns, "no pid namespace for container pid %d" % container_pid

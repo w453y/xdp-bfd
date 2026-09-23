@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
-"""Userspace parity rig: the socket path, in namespaces. Covers what the
-engine does once a packet reaches userspace (acceptance predicate, GTSM,
-demux), which inject_matrix.py's BPF counters cannot see. Static mode,
-plain UDP sockets, assertions from the SIGUSR1 snapshot. Two namespaces
-on a veth pair in 10.77.0.0/24; needs root.
+"""The userspace receive path in two namespaces (10.77.0.0/24), which
+inject_matrix's BPF counters cannot see: acceptance, GTSM, demux. Root.
 """
 
 import argparse
@@ -23,7 +20,6 @@ F_AUTH = 0x04
 F_MP = 0x01
 
 
-# The namespace helpers live in tests/lib, shared with the e2e suite.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from lib.netns import (
     NS_A,
@@ -64,7 +60,6 @@ def bfd_bytes(
     min_echo=0,
     trunc=0,
 ):
-    """A control packet, one field wrong at a time."""
     b = struct.pack(
         "!BBBBIIIII",
         ((vers & 7) << 5) | (diag & 0x1F),
@@ -81,9 +76,7 @@ def bfd_bytes(
 
 
 def inject(payload, ttl, count, fam):
-    """Send from the peer namespace over a plain UDP socket; the hop count
-    is what exercises GTSM.
-    """
+    """The hop count is what exercises GTSM."""
     if fam == 6:
         prog = (
             "import socket,sys,base64\n"
@@ -105,7 +98,7 @@ def inject(payload, ttl, count, fam):
         ) % (ttl, IP_B, BFD_PORT, count, IP_A, BFD_PORT)
     import base64
 
-    # shlex.quote, not json.dumps, so the newlines survive the shell.
+    # So the newlines survive the shell.
     sh(
         "sudo ip netns exec %s python3 -c %s %s"
         % (NS_B, shlex.quote(prog), base64.b64encode(payload).decode())
@@ -113,7 +106,7 @@ def inject(payload, ttl, count, fam):
 
 
 CASES = (
-    # name, description, payload kwargs, ttl, expected rx delta
+    # name, description, payload kwargs, ttl, rx delta
     ("accepted", "a well-formed packet at TTL 255 reaches the session", {}, 255, COUNT),
     ("gtsm", "a hop count below 255 is refused on a single-hop session", {}, 64, 0),
     ("bad-version", "BFD version other than 1", {"vers": 2}, 255, 0),

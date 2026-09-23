@@ -1,13 +1,8 @@
-"""Multihop over a router namespace.
+"""Multihop through a router namespace: packets arrive decremented on 4784.
 
-    container A (bfdd + engine)     router ns      container B (bfdd)
-      eth-a 10.79.1.1/24  <-veth->  r1 10.79.1.2
-                                    r2 10.79.2.2  <-veth->  eth-b 10.79.2.1
-
-A and B are on different subnets, so the session is routed: packets cross
-the router, arrive decremented, and use port 4784. The engine does not
-attach new interfaces for multihop sessions, but ktx_mirror still pushes
-them, so packets arriving on the attached interface are bounced.
+container A (bfdd + engine)     router ns      container B (bfdd)
+  eth-a 10.79.1.1/24  <-veth->  r1 10.79.1.2
+                                r2 10.79.2.2  <-veth->  eth-b 10.79.2.1
 """
 
 import json
@@ -53,7 +48,6 @@ STATS = "/tmp/mh_rig.json"
 
 
 def _user_tx():
-    """Control packets the rig engine has sent from userspace so far."""
     pids = [
         p
         for p in sh("pgrep -x bfd_tx", check=False).split()
@@ -135,8 +129,8 @@ def mhop(request):
 
 @pytest.fixture(scope="module")
 def capture(mhop):
-    """Both directions on the router's A-facing side, and the userspace
-    sends over a window that contains the capture.
+    """Both directions on r1, and the userspace sends over a window containing the
+    capture.
     """
     before = _user_tx()
     out = sh(
@@ -161,7 +155,6 @@ def capture(mhop):
 
 
 def test_multihop_session_comes_up_over_a_router(mhop):
-    """The fixture asserts it; this names the claim."""
     assert "up" in frr_vtysh(NAME_B, "show bfd peers brief").lower().split()
 
 
@@ -176,9 +169,7 @@ def test_inbound_arrives_decremented(capture):
 
 
 def test_bounce_restores_the_ttl(capture):
-    """Bounced replies leave at TTL 255, though multihop packets arrive
-    decremented.
-    """
+    """Replies leave at 255 though requests arrive decremented."""
     out = [t for src, _, t in capture["rows"] if src == A_IP]
     assert out, "nothing outbound from %s" % A_IP
     assert all(
@@ -187,9 +178,8 @@ def test_bounce_restores_the_ttl(capture):
 
 
 def test_the_bounce_did_it_not_userspace(capture):
-    """Userspace also sends at 255, so the ttl check above proves nothing
-    unless some replies came from the kernel. Both use the same source
-    port; the userspace send count tells them apart.
+    """Userspace also sends at 255 from the same port, so compare with its send
+    count.
     """
     out = [p for src, p, _ in capture["rows"] if src == A_IP]
     assert out, "nothing outbound from %s" % A_IP

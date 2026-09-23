@@ -44,12 +44,12 @@ def sh(cmd, capture=True):
 
 
 def rsh(host, cmd, capture=True):
-    """Quote with shlex, not json.dumps, so the remote shell expands $!."""
+    """So the remote shell expands $!."""
     return sh("ssh -o BatchMode=yes %s %s" % (host, shlex.quote(cmd)), capture)
 
 
 def vtysh_config(lines):
-    """One heredoc, not repeated -c flags: each -c is its own transaction."""
+    """Each -c is its own transaction."""
     body = "configure terminal\nbfd\n" + "\n".join(lines) + "\n"
     subprocess.run(
         "sudo " + args.vtysh,
@@ -62,9 +62,7 @@ def vtysh_config(lines):
 
 
 def check_fresh():
-    """The running engine must be the binary that was built; a stale one
-    shows /proc/<pid>/exe as (deleted).
-    """
+    """A stale binary shows /proc/<pid>/exe as (deleted)."""
     pid = sh("pgrep -x bfd_tx")
     if not pid.isdigit():
         sys.exit("no bfd_tx running")
@@ -88,8 +86,7 @@ def check_fresh():
 
 
 def dump():
-    """SIGUSR1 by pid. Never pkill -f: it matches sudo and ssh wrappers,
-    and SIGUSR1's default disposition kills them."""
+    """Never pkill -f: it matches the sudo and ssh wrappers, which SIGUSR1 kills."""
     pid = sh("pgrep -x bfd_tx")
     if not pid.isdigit():
         sys.exit("no bfd_tx running")
@@ -116,9 +113,6 @@ def find_session(snap, peer):
 
 
 def parse_pcap(path):
-    """One record per tcpdump line naming IP6, with its hex continuation
-    folded in.
-    """
     out = subprocess.run(
         "tcpdump -nvr %s" % path,
         shell=True,
@@ -243,8 +237,8 @@ def main():
     if not m:
         sys.exit("could not read peer and local out of: %s" % line.strip())
     peer, local = m.group(1), m.group(2)
-    # Copied verbatim: a line matching no existing peer would create a new one,
-    # refused silently at the 64 cap.
+    # Verbatim: an unmatched line creates a peer, refused silently at the 64
+    # cap.
     print("peer line: %s" % line.strip())
 
     s = find_session(dump(), peer)

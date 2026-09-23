@@ -15,9 +15,8 @@ KillSignal=SIGTERM
 TimeoutStopSec=5
 RuntimeDirectory=xdp-bfd
 
-# Unprivileged, with only the capabilities the engine needs: CAP_BPF and
-# CAP_PERFMON to load the object, CAP_NET_ADMIN to attach it, CAP_NET_RAW for
-# the echo socket.
+# CAP_BPF and CAP_PERFMON to load, CAP_NET_ADMIN to attach, CAP_NET_RAW for
+# echo.
 User=xdp-bfd
 Group=xdp-bfd
 AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_NET_ADMIN CAP_NET_RAW
@@ -30,16 +29,15 @@ ReadWritePaths=/run/xdp-bfd
 OOMScoreAdjust=-900
 LockPersonality=yes
 
-# Keep the userspace loop schedulable when softirq is saturated; it runs
-# detection and the heartbeat.
+# The loop runs detection and the heartbeat; keep it schedulable under softirq
+# load.
 CPUSchedulingPolicy=fifo
 CPUSchedulingPriority=10
 IOSchedulingClass=realtime
 # Pin off the CPUs serving RX queues if there are spare cores. Not a default.
 #CPUAffinity=
 
-# RSS is about 2 MB and does not grow with packets or sessions; keeps the
-# process off the reclaim path.
+# RSS is about 2 MB and flat.
 MemoryMin=8M
 
 [Install]

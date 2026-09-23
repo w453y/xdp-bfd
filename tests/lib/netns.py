@@ -1,6 +1,4 @@
-"""Namespace fixture shared by the netns rig
-(tests/testbed/netns_userspace.py) and the e2e scenarios.
-"""
+"""Namespace fixture for netns_userspace.py and the e2e suite."""
 
 import json
 import os
@@ -19,8 +17,9 @@ STATS_B = "/tmp/bfd_rig_stats_b.json"
 
 
 def sh(cmd, check=True, capture=True):
-    """capture=False for anything that leaves a process behind: a captured
-    pipe is not closed until every inheritor exits."""
+    """capture=False for anything that leaves a process behind: the pipe stays
+    open until every inheritor exits.
+    """
     kw = dict(shell=True, text=True)
     if capture:
         kw["capture_output"] = True
@@ -34,9 +33,7 @@ def sh(cmd, check=True, capture=True):
 
 
 def teardown():
-    """TERM, wait, then KILL. `ip netns del` does not reap the namespace's
-    processes, and a surviving engine keeps its XDP attach.
-    """
+    """`ip netns del` does not reap, and a surviving engine keeps its XDP attach."""
     for ns in (NS_A, NS_B):
         sh("sudo ip netns pids %s 2>/dev/null | xargs -r sudo kill" % ns, check=False)
     for _ in range(20):
@@ -69,17 +66,14 @@ def setup():
         (NS_B, "rig-b", IP_B, IP_B6),
     ):
         sh("sudo ip netns exec %s ip addr add %s/24 dev %s" % (ns, ip, dev))
-        # nodad: a tentative v6 address cannot be bound, so the engine would
-        # fall back to an ephemeral socket.
+        # A tentative v6 address cannot be bound.
         sh("sudo ip netns exec %s ip addr add %s/64 dev %s nodad" % (ns, ip6, dev))
         sh("sudo ip netns exec %s ip link set %s up" % (ns, dev))
         sh("sudo ip netns exec %s ip link set lo up" % ns)
 
 
 def ns_pids(ns=NS_A):
-    """Processes inside the engine namespace, from `ip netns pids`. Not
-    pkill -f, which also matches the sudo and ip netns exec wrappers.
-    """
+    """Not pkill -f, which matches the sudo and ip netns exec wrappers."""
     out = sh("sudo ip netns pids %s" % ns, check=False)
     return [int(x) for x in out.split()]
 
@@ -99,16 +93,11 @@ def start_engine(
     xdp_mode=None,
     extra=(),
 ):
-    """Start bfd_tx in static mode inside `ns`.
-
-    local and peer default to this namespace's own address and the far
-    end's, so a second engine facing the first is just
-    start_engine(binary, ns=NS_B) with its own stats path.
-    """
+    """Static mode; local and peer default to this side and the far end."""
     if local is None or peer is None:
         a, b = (IP_A6, IP_B6) if fam == 6 else (IP_A, IP_B)
         local, peer = (a, b) if ns == NS_A else (b, a)
-    # The snapshot is root-owned; remove it and any stale .tmp with sudo.
+    # Root-owned.
     sh("sudo rm -f %s %s.tmp" % (stats, stats))
     opts = ["--stats-dump", stats]
     if kernel_tx:
@@ -130,9 +119,7 @@ def start_engine(
 
 
 def dump(ns=NS_A, stats=STATS):
-    """SIGUSR1 the engine in `ns` and read its snapshot, waiting for the
-    rename so a stale file is never read.
-    """
+    """Waits for the rename, so a stale file is never read."""
     pids = ns_pids(ns)
     if not pids:
         sys.exit("engine is gone in %s; see %s" % (ns, engine_log(ns)))
@@ -147,15 +134,13 @@ def dump(ns=NS_A, stats=STATS):
 
 
 def _one(out):
-    """bpftool -j returns a list for `show id`, a dict for some others."""
     d = json.loads(out)
     return d[0] if isinstance(d, list) else d
 
 
 def bpf_map_for_dev(dev, name, ns_pid=None):
-    """Dump map `name` of the XDP program on `dev`, resolved by program id,
-    since a map-name lookup matches every engine loaded. ns_pid runs the
-    net show inside that pid's namespace.
+    """Resolved through the program on dev, since map names match every engine
+    loaded.
     """
     pre = "sudo nsenter -t %d -n " % ns_pid if ns_pid else "sudo "
     xdp = _one(sh(pre + "bpftool net show dev %s -j" % dev))["xdp"]
@@ -164,6 +149,6 @@ def bpf_map_for_dev(dev, name, ns_pid=None):
     prog = _one(sh("sudo bpftool prog show id %d -j" % xdp[0]["id"]))
     for mid in prog.get("map_ids", []):
         if _one(sh("sudo bpftool map show id %d -j" % mid)).get("name") == name:
-            # No -j: with BTF, the plain dump is JSON with named fields.
+            # With BTF the plain dump is JSON with named fields.
             return json.loads(sh("sudo bpftool map dump id %d" % mid))
     raise AssertionError("prog %d has no map named %s" % (xdp[0]["id"], name))

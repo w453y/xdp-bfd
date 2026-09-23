@@ -1,8 +1,7 @@
 #!/usr/bin/make -f
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
-# Build the BPF object with the newest versioned clang present; the floor is
-# 17.
+# The newest versioned clang present; the floor is 17.
 CLANG := $(shell command -v clang-21 || command -v clang-20 || command -v clang-19 || command -v clang-18 || command -v clang-17 || command -v clang)
 
 # Version for --version: the changelog version without the Debian revision.

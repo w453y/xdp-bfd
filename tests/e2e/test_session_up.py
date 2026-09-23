@@ -1,6 +1,4 @@
-"""Fixture self-test: two static userspace engines reach Up over the veth
-pair.
-"""
+"""Fixture self-test: two static engines reach Up over the veth pair."""
 
 import time
 
@@ -29,8 +27,7 @@ def test_two_static_engines_reach_up(rig, binary, family):
 
 @pytest.mark.parametrize("family", [4, 6])
 def test_session_goes_down_when_peer_dies(rig, binary, family):
-    """Negative arm. Without it the Up assertion could pass on a snapshot
-    that is never actually refreshed."""
+    """Otherwise Up could pass on a snapshot that never refreshes."""
     start_engine(binary, family, ns=NS_A, stats=STATS)
     start_engine(binary, family, ns=NS_B, stats=STATS_B)
     wait_both_up()
@@ -46,8 +43,8 @@ def test_session_goes_down_when_peer_dies(rig, binary, family):
     pytest.fail("A still reports 1 up %.0fs after killing B" % DOWN_WAIT)
 
 
-# Authentication end to end between two static engines. Stock bfdd will not
-# offload an authenticated session, so check-frr cannot cover it.
+# Stock bfdd will not offload an authenticated session, so check-frr cannot
+# cover this.
 AUTH_KEY = "sup3rs3cr3tk3y"
 
 
@@ -62,8 +59,7 @@ def test_two_static_engines_reach_up_authenticated(rig, binary, family, auth):
 
 @pytest.mark.parametrize("auth", ["keyed-sha1", "meticulous-sha1"])
 def test_mismatched_key_never_comes_up(rig, binary, auth):
-    """The negative arm, without which the rows above would pass even if
-    the digest were never checked."""
+    """Otherwise the rows above pass with the digest unchecked."""
     start_engine(
         binary, 4, ns=NS_A, stats=STATS, extra=["--auth", "%s:5:%s" % (auth, AUTH_KEY)]
     )
@@ -83,8 +79,7 @@ def test_mismatched_key_never_comes_up(rig, binary, auth):
 
 
 def test_one_side_unauthenticated_never_comes_up(rig, binary):
-    """A peer must not be able to strip authentication by not offering
-    it: the A bit and the session have to agree in both directions."""
+    """The A bit and the session must agree both ways."""
     start_engine(
         binary, 4, ns=NS_A, stats=STATS, extra=["--auth", "keyed-sha1:5:%s" % AUTH_KEY]
     )

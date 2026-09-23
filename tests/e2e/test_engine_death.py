@@ -1,11 +1,5 @@
-"""What happens to a session when the engine dies.
-
-  link-detaches-on-death      SIGKILL closes the bpf_link and the program
-                              leaves the interface
-  peer-detects-on-own-budget  the surviving peer times out on its own
-                              detect budget, since the wire goes silent
-
-A wedged but living engine is the dead-man gate's case, in test_deadman.py.
+"""SIGKILL detaches the program, and the peer times out on its own budget. A
+wedged engine is test_deadman.py's case.
 """
 
 import time
@@ -34,9 +28,7 @@ OVERSHOOT_SANITY_US = 50_000
 
 @pytest.fixture(scope="module")
 def death(request):
-    """Bring both engines up, kill the kernel-tx side, and record what the
-    tests below assert, in one run.
-    """
+    """One run, recorded for the tests below."""
     root = request.config.rootpath
     binary = str(root / "bfd_tx")
     obj = str(root / "bfd_xdp.o")
@@ -60,13 +52,12 @@ def death(request):
         for pid in ns_pids(NS_A):
             sh("sudo kill -KILL %d" % pid, check=False)
         killed = time.time()
-        # Check detach after the detection loop: detection takes ~30ms here,
-        # and waiting first would always find the session already Down.
+        # Detection takes ~30ms, so checking detach first would always find
+        # Down.
         res["down"] = False
         end = time.time() + DOWN_WAIT
         while time.time() < end:
             s = only_session(NS_B, STATS_B)
-            # state is a STRING here ("Up", "Down"), not an int.
             if s["state"] != "Up":
                 res["down"] = True
                 res["elapsed_s"] = time.time() - killed
@@ -106,8 +97,8 @@ def test_peer_detects_on_own_budget(death):
     )
     overshoot = s["last_overshoot_us"]
     assert 0 < overshoot < OVERSHOOT_SANITY_US, "implausible overshoot %sus" % overshoot
-    # elapsed_s is a harness upper bound (SIGUSR1 round trips and sleeps);
-    # last_overshoot_us is the engine's own measurement.
+    # elapsed_s is a harness upper bound; last_overshoot_us is the engine's
+    # own.
     print(
         "peer Down within %.0fms (harness-bound), overshoot %.2fms"
         % (death["elapsed_s"] * 1000, overshoot / 1000.0)

@@ -1,8 +1,6 @@
 #!/bin/bash
-# Build the package inside the current distro container, for the ci.yml package
-# job. tools/build-packages.sh is the workstation form, which starts its own
-# containers.
-#
+# Build the package in the current distro container, for ci.yml;
+# tools/build-packages.sh starts its own.
 # Usage: tools/ci-package.sh deb|rpm
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -11,8 +9,7 @@ DIST="$PWD/dist"; mkdir -p "$DIST"
 
 RAW="$(git describe --tags --always --dirty 2>/dev/null || echo 0.0.0)"
 PKGVER="$(echo "${RAW#v}" | sed 's/-/~/')"
-# Debian upstream versions must start with a digit; a tagless describe
-# gives a bare commit hash, so turn that into a dev version.
+# Debian versions must start with a digit; a tagless describe is a bare hash.
 case "$PKGVER" in [0-9]*) ;; *) PKGVER="0.0.0~git${PKGVER}" ;; esac
 echo "building xdp-bfd $PKGVER ($KIND) from $RAW"
 
@@ -23,8 +20,7 @@ if [ "$KIND" = deb ]; then
 		build-essential libbpf-dev debhelper dpkg-dev devscripts \
 		ca-certificates wget gnupg lsb-release linux-libc-dev \
 		make gcc pkgconf llvm lintian >/dev/null
-	# clang-21 from apt.llvm.org, since some targets' stock clang is below
-	# the floor of 17. Repo set up by hand; llvm.sh needs
+	# apt.llvm.org: some targets' clang is below 17, and llvm.sh needs
 	# software-properties-common.
 	. /etc/os-release
 	wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
@@ -34,8 +30,7 @@ if [ "$KIND" = deb ]; then
 	apt-get update -qq
 	apt-get install -y -qq --no-install-recommends clang-21 >/dev/null
 
-	# Sign as the maintainer: in a container DEBEMAIL defaults to
-	# root@<container id>, which lintian rejects.
+	# In a container DEBEMAIL is root@<id>, which lintian rejects.
 	export DEBFULLNAME="Abdul Wasey"
 	export DEBEMAIL="w453y.me@gmail.com"
 	dch --create --package xdp-bfd -v "${PKGVER}-1" --distribution unstable \

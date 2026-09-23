@@ -1,16 +1,11 @@
-"""Full handshake to Up against stock bfdd.
+"""Against stock bfdd. Needs a container runtime and an FRR image.
 
-bfdd in container A is the engine's control plane over bfddp; bfdd in
-container B is the stock far end.
+    container A                         container B
+      bfdd --bfddp--> engine              bfdd, stock
+      eth-a  <--------- veth --------->  eth-b
 
-    container A (netns)          container B (netns)
-      bfdd  --bfddp-->  engine     bfdd, stock, no dataplane
-      running via nsenter -n
-              eth-a  <---veth--->  eth-b
-
-The engine runs via `nsenter -t <pid> -n`, sharing only the network
-namespace, so it uses the host's bfd_tx and bfd_xdp.o and reaches bfdd on
-127.0.0.1. Marked `frr`: needs a container runtime and an FRR image.
+The engine runs under `nsenter -n`, so it is the host's build and reaches
+A's bfdd on 127.0.0.1.
 """
 
 import json
@@ -56,7 +51,7 @@ def _brief_up(name):
     return "up" in frr_vtysh(name, "show bfd peers brief").lower().split()
 
 
-# Function-scoped: the hold tests reuse the same container names and veth.
+# The hold tests reuse the container names and veth.
 @pytest.fixture
 def frr_pair(request):
     if not sh("command -v %s" % RUNTIME, check=False).strip():
@@ -93,9 +88,7 @@ def frr_pair(request):
 
 
 def test_engine_accepts_the_bfddp_connection(frr_pair):
-    """The control channel first, so a failure here is not mistaken for a
-    BFD one.
-    """
+    """The control channel first, so its failure is not taken for a BFD one."""
     end = time.time() + UP_WAIT
     while time.time() < end:
         if "bfdd connected" in sh("cat /tmp/frr_rig_engine.log", check=False):
@@ -123,15 +116,12 @@ def test_both_sides_reach_up(frr_pair):
     )
 
 
-# ---- --dp-hold lifecycle ------------------------------------------------
-
 HOLD_S = 60
 
 
 @pytest.fixture
 def frr_hold(request):
-    """Separate from frr_pair: this one kills bfdd, and nothing else should
-    depend on a fixture that does that."""
+    """Its own fixture: it kills bfdd."""
     if not sh("command -v %s" % RUNTIME, check=False).strip():
         pytest.skip("no container runtime %r" % RUNTIME)
 
@@ -171,9 +161,7 @@ def frr_hold(request):
 
 
 def test_without_dp_hold_the_peer_goes_down(request):
-    """Negative arm for the hold test: without --dp-hold the peer must
-    notice the crash, or that test proves nothing.
-    """
+    """Without --dp-hold the peer must notice, or the hold test proves nothing."""
     if not sh("command -v %s" % RUNTIME, check=False).strip():
         pytest.skip("no container runtime %r" % RUNTIME)
     root = str(request.config.rootpath)
@@ -227,10 +215,7 @@ def _peer_downs(name):
 
 
 def test_dp_hold_survives_a_bfdd_crash(frr_hold):
-    """SIGKILL, not SIGTERM: a clean shutdown deletes every session first,
-    leaving nothing to orphan. The far side judges, and must never see
-    our control plane die.
-    """
+    """SIGKILL: SIGTERM deletes every session first, leaving nothing to orphan."""
     before = _peer_downs(NAME_B)
     pa, _ = frr_hold
     bfdd = frr_daemon_pid(pa, "bfdd")
@@ -261,15 +246,11 @@ def test_dp_hold_survives_a_bfdd_crash(frr_hold):
     )
 
 
-# ---- renegotiation, Poll/Final ------------------------------------------
-
 RAISED_MS = 50
 
 
 def _cfg(pa):
-    """The rig engine's tx_config entry, resolved through the program on
-    eth-a rather than by map name, which also matches the host's engine.
-    """
+    """Through the program on eth-a, since map names also match the host's engine."""
     entries = bpf_map_for_dev("eth-a", "tx_config", ns_pid=pa)
     assert len(entries) == 1, "expected one session, got %d" % len(entries)
     return entries[0]["value"]
@@ -282,16 +263,13 @@ def _state(pa):
 
 
 def test_renegotiation_completes_a_poll_sequence(frr_pair):
-    """Raise transmit-interval and watch the Poll sequence terminate, which
-    the injection matrix cannot attribute. vtysh takes milliseconds, the
-    map microseconds. Checks that min_tx_us moves; inter-packet gaps are
-    not captured.
+    """The Poll terminates and min_tx_us moves; the injection matrix cannot
+    attribute this.
     """
     pa, _ = frr_pair
     if "not found" in sh("bpftool version 2>&1", check=False):
         pytest.skip("bpftool is not installed for this kernel")
-    # Wait for Up before reading maps: the fixture yields before XDP is
-    # attached.
+    # The fixture yields before XDP attaches.
     end = time.time() + UP_WAIT
     while time.time() < end:
         if _brief_up(NAME_A) and _brief_up(NAME_B):

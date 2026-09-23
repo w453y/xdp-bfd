@@ -1,7 +1,5 @@
-"""An orderly shutdown is announced. On SIGTERM the peer goes down with diag
-3 (neighbour signalled down, RFC 5880 s6.8.6), which only a received
-AdminDown produces; SIGKILL yields diag 1 (test_engine_death.py).
-Asserted by diagnostic, since the harness cannot resolve the timing.
+"""SIGTERM sends AdminDown: the peer goes down with diag 3, which only a received
+AdminDown produces. SIGKILL gives diag 1 (test_engine_death.py).
 """
 
 import time
@@ -33,8 +31,8 @@ def term(request):
 
     setup()
     try:
-        # Signal the kernel-tx side: XDP would keep replying after the loop
-        # stops, so AdminDown must go out before the link closes.
+        # XDP would keep replying after the loop stops, so AdminDown must go
+        # out before the link closes.
         start_engine(
             binary,
             4,

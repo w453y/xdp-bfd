@@ -1,13 +1,11 @@
 #!/bin/bash
-# Run the injection matrix before pushing; it needs the testbed, so it is not
-# in CI. Skips rather than blocks when the testbed is absent.
+# The injection matrix, which needs the testbed; skipped when it is absent.
 set -u
 cd "$(git rev-parse --show-toplevel)" || exit 0
 
 pgrep -x bfd_tx >/dev/null || { echo "pre-push: no engine, skipping matrix"; exit 0; }
 stats=/tmp/bfd_tx_stats.json
-# Ask for a fresh snapshot. An engine without --stats-dump leaves a stale file,
-# so check the file actually moved.
+# An engine without --stats-dump leaves a stale file, so check it moved.
 sudo pkill -USR1 -x bfd_tx 2>/dev/null
 sleep 1
 if [ ! -f "$stats" ]; then
@@ -30,8 +28,7 @@ PY
 [ "${up:-0}" -ge 2 ] || { echo "pre-push: mesh is down ($up up), skipping"; exit 0; }
 
 matrix=tests/testbed/inject_matrix.py
-# No matrix script: fine on a branch without the engine, such as docs, but a
-# broken gate if the engine is here.
+# Fine on a docs branch; a broken gate if the engine is here.
 if [ ! -f "$matrix" ]; then
     if [ ! -d src/engine ]; then
         echo "pre-push: no engine sources here, skipping matrix"
@@ -43,12 +40,10 @@ if [ ! -f "$matrix" ]; then
 fi
 
 echo "pre-push: running the injection matrix against $up sessions"
-# stdout only; progress goes to stderr. The exit status is ignored: valid JSON
-# means the run happened, and `failures` is the answer.
+# Valid JSON means the run happened; failures is the answer.
 out=$(python3 "$matrix" --json)
 fails=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["failures"])')
 if [ -z "$fails" ]; then
-    # A hook problem, not a test failure. Say so and get out of the way.
     echo "pre-push: could not parse --json output, skipping"
     exit 0
 fi

@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * xdp_run.c - the XDP program under BPF_PROG_TEST_RUN, as a function of
- * (frame, map state) to (verdict, frame, map state). No NIC or testbed.
- *
- * Needs root. Run from the repo root so the default object path resolves.
- *
- *     make test-xdp
+/* xdp_run.c - the XDP program under BPF_PROG_TEST_RUN: (frame, maps) to
+ * (verdict, frame, maps). Root, from the repo root.
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -31,11 +26,8 @@ static struct bpf_object *obj;
 static int prog_fd = -1;
 static int fails;
 
-/* ---------- frame building ---------- */
 
-/* Enough for an Ethernet + IPv4 + UDP + BFD control packet with room for
- * the trailing bytes some cases append.
- */
+/* Room for the trailing bytes some cases append. */
 #define FRAME_MAX 256
 
 struct frame {
@@ -53,9 +45,7 @@ static int sweep_prog_fd = -1, sweep_sess_fd = -1, sweep_cfg_fd = -1;
 static int hmac_prog_fd = -1, hmac_map_fd = -1;
 #define FLAG_PROMISC 1u
 #define FLAG_MHOP    2u
-/* Local detect multiplier for the next armed session; cases vary it to
- * show the replay window uses the packet's Detect Mult.
- */
+/* Varied to show the replay window uses the packet's Detect Mult. */
 static __u8 arm_local_mult = 3;
 /* Second key in the accept set, as a rollover leaves; 0 means none. */
 static __u8 arm_extra_keyid;

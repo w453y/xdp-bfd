@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of fsm_run, split by subject; compiled as one unit via
- * tests/unit/fsm_run.c.
- */
+/* Part of fsm_run.c. */
 
 /* Transmit: what holds it, what survives a failed send, and jitter. */
 
-/* RFC 5880 s6.8.7: a peer advertising Required Min RX zero stops our periodic
- * TX. A Poll, a pending Final and an unsent D still go out. A session that has
- * heard nothing is never held (s6.8.1).
+/* RFC 5880 s6.8.7: a zero Required Min RX stops periodic TX; Poll, Final and an
+ * unsent D still go. Not before anything is heard (s6.8.1).
  */
 static void case_zero_remote_min_rx_halts_tx(void)
 {
@@ -83,9 +80,7 @@ static void case_zero_remote_min_rx_halts_tx(void)
 	report("zero-remote-min-rx-halts-tx", bad, "halted, Poll and Final exempt");
 }
 
-/* A failed send consumes nothing: a pending Final and the demand
- * announcement quota survive it.
- */
+/* A pending Final and the demand quota survive a failed send. */
 static void case_failed_send_keeps_pending(void)
 {
 	struct session *s;
@@ -139,9 +134,7 @@ static void case_failed_send_keeps_pending(void)
 	report("failed-send-keeps-pending", bad, "pending held, then sent");
 }
 
-/* Passive (RFC 5880 s6.8.7) gates transmission while bfd.RemoteDiscr is
- * zero, not the state machine.
- */
+/* RFC 5880 s6.8.7: passive gates TX, not the state machine. */
 static void case_passive(void)
 {
 	struct bfd_ctrl_pkt p = pkt(ST_DOWN, 0);
@@ -180,9 +173,7 @@ static void case_passive(void)
 	report("passive-silent-then-init", bad, "silent, then Init");
 }
 
-/* RFC 5880 s6.8.7 jitter: 75-100% of the interval, 75-90% when detect_mult is
- * 1. Checked as a property over many draws.
- */
+/* RFC 5880 s6.8.7, as a property over many draws. */
 static void case_jitter(uint8_t mult, unsigned int lo_pct, unsigned int hi_pct, const char *name)
 {
 	const uint32_t iv = 10000;
@@ -226,9 +217,7 @@ static void case_jitter(uint8_t mult, unsigned int lo_pct, unsigned int hi_pct, 
 		       (unsigned long long)hi_pct, iv);
 		bad = 1;
 	}
-	/* If the jitter were removed the spread would collapse; require it
-	 * to cover at least half the permitted band.
-	 */
+	/* Without jitter the spread collapses. */
 	if (seen_hi - seen_lo < (hi - lo) / 2) {
 		printf("     spread %llu-%lluus is too narrow to be jittered\n",
 		       (unsigned long long)seen_lo, (unsigned long long)seen_hi);

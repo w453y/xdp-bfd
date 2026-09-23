@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of fsm_run, split by subject; compiled as one unit via
- * tests/unit/fsm_run.c.
- */
+/* Part of fsm_run.c. */
 
-/* Sessions must live in the global array: fsm.c derives a slot index from the
- * pointer. Every case uses slot 0.
- */
+/* fsm.c derives the slot from the pointer, so sessions live in the array. */
 #define TEST_SLOT 0
 
 /* A session in a chosen state with the peer known; 10ms timers. */

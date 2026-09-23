@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of fsm_run, split by subject; compiled as one unit via
- * tests/unit/fsm_run.c.
- */
+/* Part of fsm_run.c. */
 
 /* Receive: the RFC 5880 s6.8.6 table, P and F, and notification. */
 
-/* One table row: from `ours` with the peer at `theirs`, expect `want` and
- * `want_diag`. Passive and admin_down are separate cases.
- */
+/* From ours with the peer at theirs, expect want and want_diag. */
 static void row(uint8_t ours, uint8_t theirs, uint8_t want, uint8_t want_diag, const char *name)
 {
 	struct session *s;
@@ -33,10 +29,7 @@ static void row(uint8_t ours, uint8_t theirs, uint8_t want, uint8_t want_diag, c
 
 static void run_table(void)
 {
-	/* RFC 5880 s6.8.6. Down + peer Down starts the handshake; Down +
-	 * peer Init completes it in one step. Init + peer Down is NOT a
-	 * transition: the peer has not seen us yet.
-	 */
+	/* RFC 5880 s6.8.6. Init + peer Down is not a transition: the peer has not seen us yet. */
 	row(ST_DOWN, ST_DOWN, ST_INIT, 0, "down+down=init");
 	row(ST_DOWN, ST_INIT, ST_UP, 0, "down+init=up");
 	row(ST_DOWN, ST_UP, ST_DOWN, 0, "down+up=down");
@@ -49,10 +42,7 @@ static void run_table(void)
 	row(ST_UP, ST_INIT, ST_UP, 0, "up+init=up");
 	row(ST_UP, ST_UP, ST_UP, 0, "up+up=up");
 
-	/* AdminDown from the peer tears down from any state, diag 3
-	 * (neighbour signalled session down), and is checked before the
-	 * per-state switch.
-	 */
+	/* Peer AdminDown takes any state down with diag 3. */
 	row(ST_DOWN, ST_ADMINDOWN, ST_DOWN, 3, "down+admindown=down");
 	row(ST_INIT, ST_ADMINDOWN, ST_DOWN, 3, "init+admindown=down");
 	row(ST_UP, ST_ADMINDOWN, ST_DOWN, 3, "up+admindown=down");
@@ -152,9 +142,7 @@ static void case_poll_bits(void)
 	report("poll-final-bits", bad, NULL);
 }
 
-/* dp_notify_state runs only while Up, only when something it reports changed,
- * and after the session is updated.
- */
+/* Only while Up, only on a change, after the update. */
 static void case_notify(void)
 {
 	struct session *s;
@@ -186,9 +174,7 @@ static void case_notify(void)
 		bad = 1;
 	}
 
-	/* Mult-only change: bfdd displays it and it alters the peer's
-	 * budget for us, so it counts.
-	 */
+	/* It changes the peer's budget for us. */
 	s = sess_init(ST_UP);
 	notify_calls = 0;
 	p = pkt(ST_UP, 0);

@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of dp_run, split by subject; compiled as one unit via
- * tests/unit/dp_run.c.
- */
+/* Part of dp_run.c. */
 
-/* Session lifecycle: bfdd re-sends an ADD on every config change, so an ADD
- * may create, update or adopt.
- */
+/* bfdd re-sends an ADD on every config change: create, update or adopt. */
 
 /* A fresh ADD builds a session whose wire discriminator is its lid. */
 static void case_fresh(void)
@@ -68,10 +64,7 @@ static void case_fresh_v6(void)
 	report("add-fresh-v6", bad, "16 bytes preserved");
 }
 
-/* A second ADD for the same lid updates in place and keeps wire_disc:
- * RFC 5880 requires the discriminator to stay constant while Up, so an
- * adopted session must not get a new one.
- */
+/* RFC 5880: constant while Up. */
 static void case_update_keeps_disc(void)
 {
 	unsigned char buf[256];
@@ -115,9 +108,6 @@ static void case_update_keeps_disc(void)
 	report("add-update-keeps-wire-disc", bad, "1 session");
 }
 
-/* An ADD without SESSION_AUTH, and no DP_SESSION_AUTH, gives a session with
- * no authentication state at all.
- */
 static void case_add_without_auth(void)
 {
 	unsigned char buf[256];
@@ -140,9 +130,8 @@ static void case_add_without_auth(void)
 	report("add-without-auth", bad, "session up, unauthenticated");
 }
 
-/* ktx_push_needed compares the key as well as the value, since an address move
- * changes no tx_cfg field. The predicate is tested directly because ktx_mirror
- * is stubbed here.
+/* An address move changes no tx_cfg field. ktx_mirror is stubbed, so the
+ * predicate is tested directly.
  */
 static void case_mirror_cache_tracks_key(void)
 {
@@ -188,9 +177,7 @@ static void case_mirror_cache_tracks_key(void)
 	report("mirror-cache-tracks-key", bad, "key and value both count");
 }
 
-/* A repeated ADD must not slow transmission mid-Poll: s6.8.3 keeps the old
- * interval until the peer's Final.
- */
+/* s6.8.3 keeps the old interval until the peer's Final. */
 static void case_repeated_add_during_poll(void)
 {
 	unsigned char buf[256];
@@ -259,9 +246,6 @@ static void case_repeated_add_during_poll(void)
 	report("repeated-add-holds-applied-tx", bad, "held 10000 until the final");
 }
 
-/* An ADD for an existing lid may move the address pair; the old pair's
- * map entries must be cleared.
- */
 static void case_address_move(void)
 {
 	unsigned char buf[256];
@@ -299,9 +283,7 @@ static void case_address_move(void)
 	report("add-moves-address-pair", bad, "1 session, new pair");
 }
 
-/* Flags map straight through: passive, shutdown and multihop each land in
- * their own field rather than being conflated.
- */
+/* Each flag lands in its own field. */
 static void case_flags(void)
 {
 	unsigned char buf[256];

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Layout pins for every struct the XDP program and engine share, compiled by
- * both the host compiler and clang for BPF; if it compiles, it passes. After a
- * deliberate change, regenerate the layout section with tests/unit/abi_probe.c.
+/* Layout pins for the structs both planes share, compiled for the host and for
+ * BPF. Regenerate with abi_probe.c after a deliberate change.
  */
 #include <bfd_shared.h>
 #include <hmac_sha1.h>
@@ -130,9 +129,7 @@ _Static_assert(offsetof(struct tx_cfg, auth_accept) == 120, "offsetof(struct tx_
 _Static_assert(sizeof(((struct tx_cfg *)0)->auth_kpad) == SHA1_BLOCK_LEN,
 	       "the mirrored key must be exactly one HMAC block");
 
-/* The auth section's shape. A keyed-SHA1 packet is hashed whole, digest
- * field zeroed, so it must fit what hmac_sha1.h hashes in one block.
- */
+/* A keyed SHA1 packet is hashed whole, so it must fit one HMAC block. */
 _Static_assert(BFD_AUTH_SHA1_LEN == 28, "BFD_AUTH_SHA1_LEN");
 _Static_assert(BFD_MAX_LEN == 52, "BFD_MAX_LEN");
 _Static_assert(BFD_MAX_LEN <= HMAC_SHA1_MAX_MSG, "a keyed-SHA1 packet must fit the shared digest");

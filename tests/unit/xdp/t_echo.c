@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of xdp_run, split by subject; compiled as one unit via
- * tests/unit/xdp_run.c.
- */
+/* Part of xdp_run.c. */
 
-/* The v4 echo reflector: five dispositions, five counters. The own-echo
- * exception at TTL 254 must also require self-addressing, or it is a TTL
- * bypass; the not-self-at-254 arm checks that.
- */
+/* The TTL 254 exception must also require self-addressing, or it is a TTL bypass. */
 static void build_echo(struct frame *f, uint8_t ttl, const char *src, const char *dst,
 		       uint32_t my_disc, uint32_t nonce)
 {
@@ -82,14 +77,10 @@ static void run_echo_matrix(void)
 	/* our own echo returning: 254 and self-addressed, consumed */
 	case_echo("echo-returns", 254, "10.0.0.1", "10.0.0.1", 0, 1, XDP_DROP,
 		  BFD_STAT_ECHO_RETURNS);
-	/* 254 but not self-addressed: rejected by the parser's GTSM, so the
-	 * exception is no general bypass.
-	 */
+	/* The parser's GTSM rejects it. */
 	case_echo("echo-254-not-self-rejected", 254, "10.0.0.2", "10.0.0.1", 1, 0, XDP_DROP,
 		  BFD_STAT_REJECTED);
-	/* Off-link echo: same parser GTSM; echo.h's own ECHO_TTL check is
-	 * never reached.
-	 */
+	/* The parser's GTSM; echo.h's ECHO_TTL check is never reached. */
 	case_echo("echo-off-link-rejected", 200, "10.0.0.2", "10.0.0.2", 1, 0, XDP_DROP,
 		  BFD_STAT_REJECTED);
 	/* not self-addressed at 255 */
@@ -100,9 +91,7 @@ static void run_echo_matrix(void)
 	case_echo("echo-reflect", 255, "10.0.0.2", "10.0.0.2", 1, 0, XDP_TX, BFD_STAT_REFLECTED);
 }
 
-/* The v6 reflector and return path, mirroring the v4 matrix, including the
- * not-self-at-254 arm.
- */
+/* As the v4 matrix. */
 static void build_echo_v6(struct frame *f, uint8_t hlim, const char *src, const char *dst,
 			  uint32_t my_disc, uint32_t nonce)
 {
@@ -162,10 +151,7 @@ static void case_echo_v6(const char *name, uint8_t hlim, const char *src, const 
 	map_reset_v6();
 }
 
-/* Our own v6 echo returning: with the discriminator in echo_disc the frame is
- * consumed and the echo fields move; with an unknown one it passes and they
- * stay.
- */
+/* Consumed with a known discriminator, passed with an unknown one. */
 static void case_echo_v6_return(int arm_disc, int want_v, const char *name)
 {
 	struct session_key k = key_v6("fd00::2", "fd00::1");
@@ -234,9 +220,7 @@ static void run_echo_v6_matrix(void)
 	case_echo_v6_return(1, XDP_DROP, "echo-v6-returns");
 	/* same frame, a discriminator we never sent: not ours, hands off */
 	case_echo_v6_return(0, XDP_PASS, "echo-v6-return-unknown-disc");
-	/* 254 but not self-addressed: the exception requires both, so the
-	 * parser's GTSM rejects it before the echo path runs
-	 */
+	/* The exception requires both. */
 	case_echo_v6("echo-v6-254-not-self-rejected", 254, "fd00::2", "fd00::1", 1, XDP_DROP,
 		     BFD_STAT_REJECTED);
 	/* off-link echo: same parser GTSM, same disposition */
@@ -246,8 +230,6 @@ static void run_echo_v6_matrix(void)
 	case_echo_v6("echo-v6-not-self", 255, "fd00::2", "fd00::1", 1, XDP_PASS, BFD_STAT_NOT_SELF);
 	/* self-addressed but the peer is not echo-active: no amplifier */
 	case_echo_v6("echo-v6-declined", 255, "fd00::2", "fd00::2", 0, XDP_PASS, BFD_STAT_DECLINED);
-	/* self-addressed and echo-active: reflected. Guards the reflect path
-	 * against being swallowed by the return branch above it.
-	 */
+	/* Not swallowed by the return branch above it. */
 	case_echo_v6("echo-v6-reflect", 255, "fd00::2", "fd00::2", 1, XDP_TX, BFD_STAT_REFLECTED);
 }

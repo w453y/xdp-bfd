@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-/* ktx_stubs.h - the kernel-TX side, stubbed for dp_run and dp_fuzz, which link
- * only dplane.c, session.c and fsm.c. Defined, not declared: each harness is a
- * single translation unit.
+/* ktx_stubs.h - kernel TX stubbed for dp_run and dp_fuzz. Defined, not
+ * declared: each is one translation unit.
  */
 #ifndef BFD_TEST_KTX_STUBS_H
 #define BFD_TEST_KTX_STUBS_H
@@ -13,9 +12,7 @@
 
 int use_ktx;
 
-/* What ktx_attach_if returns: dp_run wants failure, to exercise the uncovered
- * path; dp_fuzz sets success.
- */
+/* dp_run wants failure for the uncovered path; dp_fuzz sets success. */
 int ktx_stub_attach_rc = -1;
 
 int ktx_covers(int ifindex)
@@ -56,9 +53,7 @@ int ktx_events_fd(void)
 {
 	return -1;
 }
-/* No map to read, so a session reports only what userspace sent and
- * received, which is all of it when the fast path is not running.
- */
+/* No map: userspace's counts are all of them. */
 void ktx_session_counters(const struct session *s, uint64_t *rx, uint64_t *tx)
 {
 	(void)s;

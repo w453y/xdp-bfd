@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of dp_run, split by subject; compiled as one unit via
- * tests/unit/dp_run.c.
- */
+/* Part of dp_run.c. */
 
 static int cli = -1; /* our end, standing in for bfdd */
 static char sockpath[64];
@@ -42,9 +40,7 @@ static void rig_down(void)
 	unlink(sockpath);
 }
 
-/* Is the connection still up? dp_fds hands back the current pair, so a
- * dropped connection is visible without reaching into dplane.c.
- */
+/* Without reaching into dplane.c. */
 static int conn_alive(void)
 {
 	int l = -1, c = -1;
@@ -68,9 +64,7 @@ static void sessions_clear(void)
 	memset(sessions, 0, sizeof(sessions));
 }
 
-/* A DP_ADD_SESSION for one v4 peer. bfddp carries both families as in6_addr;
- * SESSION_IPV6 clear means v4 in the first four bytes.
- */
+/* bfddp carries both families as in6_addr; v4 in the first four bytes. */
 static size_t build_add(unsigned char *buf, uint32_t lid, const char *local, const char *peer)
 {
 	struct bfddp_message_header *h = (void *)buf;
@@ -85,9 +79,6 @@ static size_t build_add(unsigned char *buf, uint32_t lid, const char *local, con
 	s->lid = htonl(lid);
 	s->flags = htonl(0); /* v4: SESSION_IPV6 clear */
 	{
-		/* sm_addrs builds the v4-mapped form; here the address goes in
-		 * the first four bytes.
-		 */
 		uint32_t a = inet_addr(local), b = inet_addr(peer);
 
 		memcpy(&s->src.s6_addr[0], &a, 4);
@@ -100,9 +91,7 @@ static size_t build_add(unsigned char *buf, uint32_t lid, const char *local, con
 	return len;
 }
 
-/* Same message, IPv6, which reaches the session table through a separate
- * branch of sm_addrs.
- */
+/* A separate branch of sm_addrs. */
 static size_t build_add6(unsigned char *buf, uint32_t lid, const char *local, const char *peer)
 {
 	struct bfddp_message_header *h = (void *)buf;
@@ -143,9 +132,7 @@ static size_t build_add_auth(unsigned char *buf, uint32_t lid, const char *local
 	return len;
 }
 
-/* A two-key chain handing over at t=2000. Key 2 is acceptable from 1500 and
- * key 1 until 3000; that overlap is the rollover.
- */
+/* Key 1 sends to 2000 and is accepted to 3000; key 2 is accepted from 1500. */
 static size_t build_session_auth(unsigned char *buf, uint32_t lid)
 {
 	struct bfddp_message_header *h = (void *)buf;

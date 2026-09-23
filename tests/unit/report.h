@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-/* report.h - one result line per case, and the failure count main() returns.
- * Explain a failure on "     " lines before reporting it; the detail is
- * printed only when the case passes.
+/* report.h - one line per case. Explain a failure on indented lines first; the
+ * detail prints only on success.
  */
 #ifndef BFD_TEST_REPORT_H
 #define BFD_TEST_REPORT_H

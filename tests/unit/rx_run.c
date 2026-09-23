@@ -1,10 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* rx_run.c - rx_accept, the receive decision shared by the four drains,
- * driven as a table. Links the real rx.o and session.o; no sockets, BPF
- * or root.
- *
- *     make test-rx
- */
+/* rx_run.c - rx_accept as a table, over the real rx.o and session.o; no sockets, BPF or root. */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
@@ -44,7 +39,6 @@ static const char *vname(enum rx_verdict v)
 	return "?";
 }
 
-/* ---------- fixtures ---------- */
 #define PEER4	  "10.0.0.2"
 #define LOCAL4	  "10.0.0.1"
 #define MY_DISC	  0x11111111u
@@ -54,10 +48,7 @@ static const char KEY[] = "correcthorse";
 
 static struct bfd_addr A_PEER, A_LOCAL, A_OTHER;
 
-/* One session in the table: ours, Up, single-hop unless min_ttl says
- * otherwise. `auth` arms the accept key the peer is expected to sign
- * with.
- */
+/* Ours, Up, single-hop unless min_ttl says otherwise; auth arms the peer's key. */
 static struct session *arm(int auth, uint8_t min_ttl)
 {
 	struct session *s = &sessions[0];
@@ -89,10 +80,7 @@ static struct session *arm(int auth, uint8_t min_ttl)
 	return s;
 }
 
-/* A control packet in the receive buffer's shape: BFD_MAX_LEN, zeroed,
- * so a short datagram still leaves every header field defined. Returns
- * the datagram length a socket would have reported.
- */
+/* Zeroed to BFD_MAX_LEN, as rx_drain gives it. Returns the datagram length. */
 static size_t build(__u8 *buf, uint8_t state, uint32_t your_disc)
 {
 	struct bfd_ctrl_pkt *h = (void *)buf;
@@ -109,9 +97,7 @@ static size_t build(__u8 *buf, uint8_t state, uint32_t your_disc)
 	return BFD_MIN_LEN;
 }
 
-/* The same packet signed the way the peer would sign it. `seq` and the
- * key id are the two things a forger has to get right and cannot.
- */
+/* Signed as the peer would. */
 static size_t build_auth(__u8 *buf, uint8_t state, uint32_t your_disc, uint8_t key_id,
 			 const char *key, uint32_t seq)
 {
@@ -122,16 +108,13 @@ static size_t build_auth(__u8 *buf, uint8_t state, uint32_t your_disc, uint8_t k
 	build(buf, state, your_disc);
 	memcpy(kpad, key, strlen(key));
 
-	/* Set the A bit and length before signing: the digest covers the
-	 * header.
-	 */
+	/* The digest covers the header. */
 	h->flags |= BFD_F_AUTH;
 	h->len = bfd_auth_pkt_len(BFD_AUTH_KEYED_SHA1, (__u8)strlen(key));
 	len = bfd_auth_build(buf, BFD_AUTH_KEYED_SHA1, key_id, kpad, (__u8)strlen(key), kpad, seq);
 	return len;
 }
 
-/* ---------- the table ---------- */
 static void check(const char *name, const __u8 *pkt, size_t n, int ttl, const struct bfd_addr *from,
 		  const struct bfd_addr *to, int mhop, enum rx_verdict want, const char *detail)
 {
@@ -167,8 +150,8 @@ int main(void)
 	check("demux-wrong-your-disc", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_NO_SESSION,
 	      "a discriminator we never issued");
 
-	/* your_disc 0 with the peer Down may match on the address pair; Up
-	 * with 0 may not, or a forger knowing the pair could feed any session.
+	/* Down with 0 may match on the pair; Up with 0 may not, or a forger
+	 * knowing the pair could feed any session.
 	 */
 	n = build(buf, ST_DOWN, 0);
 	check("demux-zero-disc-down-falls-back", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_ACCEPT,
@@ -204,9 +187,7 @@ int main(void)
 	check("gtsm-multihop-above-minimum", buf, n, 240, &A_PEER, &A_LOCAL, 1, RX_ACCEPT, "");
 	check("gtsm-multihop-below-minimum", buf, n, 199, &A_PEER, &A_LOCAL, 1, RX_TTL, "");
 	check("gtsm-multihop-no-cmsg", buf, n, -1, &A_PEER, &A_LOCAL, 1, RX_TTL, "");
-	/* The multihop minimum is the session's, so demux runs first: a
-	 * low-TTL packet naming nothing is RX_NO_SESSION.
-	 */
+	/* The multihop minimum is the session's, so demux runs first. */
 	n = build(buf, ST_UP, 0xdeadbeef);
 	check("gtsm-multihop-unknown-session-first", buf, n, 1, &A_PEER, &A_LOCAL, 1,
 	      RX_NO_SESSION, "demux before the minimum");
@@ -238,19 +219,14 @@ int main(void)
 	check("auth-unknown-key-id", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_AUTH,
 	      "names a key id we never configured");
 
-	/* A key outside its accept period is not an answer, which is the
-	 * other half of the rollover rule.
-	 */
+	/* The other half of the rollover rule. */
 	arm(1, 255);
 	sessions[0].auth_keys[0].accept_start = (int64_t)time(NULL) + 3600;
 	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, KEY, 1);
 	check("auth-key-not-yet-acceptable", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_AUTH,
 	      "accept period has not opened");
 
-	/* An A bit on a session that does not authenticate is refused in
-	 * the other direction: a peer must not be able to strip or add
-	 * authentication by choosing what it sends.
-	 */
+	/* A peer must not add or strip authentication. */
 	arm(0, 255);
 	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, KEY, 1);
 	check("auth-signed-on-bare-session", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_AUTH,

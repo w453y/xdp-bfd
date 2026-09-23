@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of fsm_run, split by subject; compiled as one unit via
- * tests/unit/fsm_run.c.
- */
+/* Part of fsm_run.c. */
 
-/* Demand mode (RFC 5880 s6.6).
- *
- * Drives the predicates through fsm_tx and fsm_detect, so the wiring is
- * covered. tx_pkts witnesses transmission, demand_announced the D bit.
+/* Demand mode (RFC 5880 s6.6), through fsm_tx and fsm_detect. tx_pkts witnesses
+ * transmission, demand_announced the D bit.
  */
 
 /* A session Up with the peer Up, optionally demanding on either side. */
@@ -17,9 +13,7 @@ static struct session *demand_sess(int we_demand, int peer_demands)
 	s->r_state = ST_UP;
 	s->demand = we_demand;
 	s->r_flags = peer_demands ? BFD_F_DEMAND : 0;
-	/* Past the announcement quota by default: these cases are about
-	 * the steady state, and the one that is not says so.
-	 */
+	/* Past the quota: the steady state. */
 	s->demand_announced = DEMAND_ANNOUNCE_N;
 	return s;
 }
@@ -51,9 +45,7 @@ static void case_demand_bit(void)
 	report("demand-bit-absent-when-unconfigured", s->demand_announced != 0, "no D");
 }
 
-/* s6.8.7: transmission stops because the PEER demanded, not because we
- * did.
- */
+/* s6.8.7: TX stops because the peer demanded, not because we did. */
 static void case_demand_tx_hold(void)
 {
 	struct session *s;
@@ -92,10 +84,7 @@ static void case_demand_tx_hold(void)
 	report("demand-tx-needs-peer-up", s->tx_pkts != 1, "transmitting");
 }
 
-/* A demanding session verifies its own path (RFC 5880 s6.6). The negatives
- * matter too: no poll right after hearing the peer, and none faster than the
- * detect budget.
- */
+/* RFC 5880 s6.6: not right after hearing the peer, nor faster than the detect budget. */
 static void case_demand_poll(void)
 {
 	struct session *s;
@@ -119,25 +108,19 @@ static void case_demand_poll(void)
 	/* The poll re-arms detection from now. */
 	report("demand-poll-rearms-detection", s->last_rx_us != t, "clock reset");
 
-	/* Only we demand: detection is held, so the poll is what catches a
-	 * dead peer.
-	 */
+	/* Detection is held, so only the poll catches a dead peer. */
 	s = demand_sess(1, 0);
 	s->last_rx_us = t - 1000000;
 	fsm_tx(s, t);
 	report("demand-poll-when-only-we-demand", s->demand_polls != 1, "poll started");
 
-	/* The peer demands and we do not: our detection is running, so
-	 * silence is already a fault and there is nothing to verify.
-	 */
+	/* Our detection runs, so there is nothing to verify. */
 	s = demand_sess(0, 1);
 	s->last_rx_us = t - 1000000;
 	fsm_tx(s, t);
 	report("demand-poll-not-when-only-peer-demands", s->demand_polls, "no poll");
 
-	/* Never faster than the detect budget. The knob asks for 10ms; the
-	 * session's budget is 3 x 10ms, so 20ms of silence is not yet due.
-	 */
+	/* The knob says 10ms, the budget is 30ms: 20ms is not yet due. */
 	demand_poll_us = 10000;
 	s = demand_sess(1, 1);
 	s->last_rx_us = t - 20000;
@@ -158,9 +141,7 @@ static void case_demand_poll(void)
 	demand_poll_us = saved;
 }
 
-/* Both ends demanding: we must get our own D out before going quiet, or
- * the peer never learns to stop and keeps transmitting forever.
- */
+/* Or the peer never learns to stop. */
 static void case_demand_announce(void)
 {
 	struct session *s = demand_sess(1, 1);
@@ -168,9 +149,7 @@ static void case_demand_announce(void)
 	int sent = 0;
 
 	s->demand_announced = 0;
-	/* Just heard from the peer, as on arriving here. A stale clock would
-	 * trigger a verification poll, which lifts the hold under test.
-	 */
+	/* A stale clock would start a poll, which lifts the hold. */
 	s->last_rx_us = t;
 	for (int i = 0; i < 20; i++) {
 		s->next_tx_us = 0; /* due every pass */
@@ -183,22 +162,16 @@ static void case_demand_announce(void)
 	report("demand-announce-counts-only-marked", s->demand_announced != DEMAND_ANNOUNCE_N,
 	       "quota reached");
 
-	/* Coming back round to Up is a fresh negotiation: the peer on the
-	 * other side has not heard our D bit this time.
-	 */
+	/* Back to Up renegotiates. */
 	state_transition(s, ST_DOWN, 1, t, "test");
 	report("demand-announce-resets-on-transition", s->demand_announced != 0, "counter cleared");
 }
 
-/* s6.8.4: the detection timer does not run while WE are demanding - the
- * peer's silence is what we asked for.
- */
+/* s6.8.4: no detection while we demand. */
 static void case_demand_detect_hold(void)
 {
 	struct session *s;
-	/* last_rx_us is 1000000 and the budget is 3 x 10ms, so this is far
-	 * past it: without a hold every one of these goes Down.
-	 */
+	/* Far past the 30ms budget. */
 	uint64_t t = 1000000 + 500000;
 
 	s = demand_sess(1, 0);
@@ -210,9 +183,7 @@ static void case_demand_detect_hold(void)
 	fsm_detect(s, t);
 	report("demand-detect-runs-when-peer-demands", s->state != ST_DOWN, "timed out");
 
-	/* Our own Poll re-arms detection: that is what bounds the poll, so
-	 * a lost Final brings the session down instead of hanging.
-	 */
+	/* Our Poll re-arms detection, so a lost Final still ends it. */
 	s = demand_sess(1, 0);
 	s->polling = 1;
 	fsm_detect(s, t);

@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of fsm_run, split by subject; compiled as one unit via
- * tests/unit/fsm_run.c.
- */
+/* Part of fsm_run.c. */
 
 /* Detection: the budget, and the poll-aware detect basis. */
 
-/* Drive detect_vectors.h through fsm.c's copy of the rule; xdp_run drives
- * bfd_xdp.c's copy with the same vectors. last_rx_us and detect_iv_us are
- * cleared so step 0 takes the no-prior-interval branch.
+/* fsm.c's copy of the rule; xdp_run drives bfd_xdp.c's. Cleared so step 0 has
+ * no prior interval.
  */
 static void dv_row(const struct dv_case *c)
 {
@@ -45,9 +42,7 @@ static void run_detect_vectors(void)
 		dv_row(&dv_cases[i]);
 }
 
-/* fsm_detect: the budget is mult * interval, preferring r_mult over our
- * detect_mult, and max(r_min_tx, min_rx_us) when detect_iv_us is unset.
- */
+/* mult * interval, r_mult before detect_mult, max(r_min_tx, min_rx_us) without detect_iv_us. */
 static void case_detect(const char *name, uint32_t iv_us, uint8_t r_mult, uint8_t detect_mult,
 			uint64_t silent_us, uint8_t want)
 {

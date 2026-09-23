@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* bfd_xdp_test.c - test-only entry points: one sweep pass, and the shared
- * HMAC.
- *
- * check_session only runs from a bpf_timer, which does not fire under
- * BPF_PROG_TEST_RUN. Never part of bfd_xdp.o. The include list must match
- * src/xdp/bfd_xdp.c exactly, in order.
+/* bfd_xdp_test.c - test-only entry points: one sweep pass, since bpf_timer does
+ * not fire under test_run, and the shared HMAC. Its include list must match
+ * bfd_xdp.c's.
  */
 
 #include <linux/bpf.h>
@@ -28,17 +25,13 @@
 #include "echo.h"
 #include "tx.h"
 
-/* One sweep pass at the time carried in the frame, a __u64 after a dummy
- * Ethernet header, through bpf_for_each_map_elem like the real sweep.
- */
+/* Through bpf_for_each_map_elem, like the real sweep. */
 SEC("xdp")
 int sweep_once(struct xdp_md *ctx)
 {
 	void *data = (void *)(long)ctx->data;
 	void *data_end = (void *)(long)ctx->data_end;
-	/* test_run wants a plausible frame, so the timestamp sits after a
-	 * dummy Ethernet header rather than at offset 0.
-	 */
+	/* test_run wants a plausible frame, so the time follows a dummy Ethernet header. */
 	struct ethhdr *eth = data;
 
 	if ((void *)(eth + 1) > data_end)
@@ -55,9 +48,7 @@ int sweep_once(struct xdp_md *ctx)
 	return XDP_PASS;
 }
 
-/* The shared HMAC-SHA1 compiled for BPF, checked on the host vectors. Input
- * and output go through a map, since keys are not packet data.
- */
+/* Through a map, since keys are not packet data. */
 struct hmac_scratch {
 	__u8 kpad[SHA1_BLOCK_LEN];
 	__u8 mblk[SHA1_BLOCK_LEN];

@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* abi_probe.c - print the layout pins for abi_check.c, as _Static_asserts:
- * every shared struct's size and the offset of each named field. Run it after
- * a deliberate layout change and paste the output into abi_check.c. Not built
- * by default; compile it from the top of the tree with -Iinclude.
- */
+/* abi_probe.c - print abi_check.c's layout pins. Not built by default: cc -Iinclude. */
 #include <stdio.h>
 #include <stddef.h>
 

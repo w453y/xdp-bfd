@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of dp_run, split by subject; compiled as one unit via
- * tests/unit/dp_run.c.
- */
+/* Part of dp_run.c. */
 
-/* Framing: dp_read() over any split of the byte stream, and lengths it
- * cannot honour.
- */
 
-/* One whole message in one read: the baseline everything else is measured
- * against.
- */
+/* The baseline. */
 static void case_whole(void)
 {
 	unsigned char buf[256];
@@ -31,9 +24,7 @@ static void case_whole(void)
 	report("whole-message", bad, "1 session");
 }
 
-/* The same message split at every byte boundary. A parser that assumes a
- * message arrives in one piece fails somewhere in here.
- */
+/* Split at every byte. */
 static void case_torn(void)
 {
 	unsigned char buf[256];
@@ -84,9 +75,7 @@ static void case_batched(void)
 	report("three-in-one-read", bad, "3 sessions");
 }
 
-/* A length field that cannot be honoured drops the connection, so bfdd
- * reconnects on a clean boundary. The rig is rebuilt afterwards.
- */
+/* Dropped, so bfdd reconnects on a clean boundary. */
 static void case_bad_length(uint16_t mlen, const char *name)
 {
 	unsigned char buf[256];

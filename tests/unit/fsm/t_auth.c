@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of fsm_run, split by subject; compiled as one unit via
- * tests/unit/fsm_run.c.
- */
+/* Part of fsm_run.c. */
 
-/* End to end on the host: the packet tx_one signs, captured through
- * fsm_send_hook, must pass bfd_auth_check.
- */
+/* What tx_one signs must pass bfd_auth_check. */
 static void case_authenticated_output_verifies(void)
 {
 	static const char key[] = "correcthorsebattery";
@@ -24,9 +20,7 @@ static void case_authenticated_output_verifies(void)
 	s->auth_keyid = 5;
 	s->auth_keylen = (uint8_t)strlen(key);
 	memcpy(s->auth_key, key, strlen(key));
-	/* kpad is the key in one SHA1 block, zero past it, which is how
-	 * dplane.c hands it over.
-	 */
+	/* As dplane.c hands it over. */
 	memset(s->auth_kpad, 0, sizeof(s->auth_kpad));
 	memcpy(s->auth_kpad, key, strlen(key));
 
@@ -57,9 +51,8 @@ static void case_authenticated_output_verifies(void)
 		       s->auth_keyid);
 		bad = 1;
 	}
-	/* The receiver's own predicate, over the bytes that would have
-	 * gone out. rx_seen is zero, so this is the first-packet case that
-	 * sets the replay window rather than being judged against it.
+	/* The receiver's own predicate; rx_seen is 0, so this is the first
+	 * packet, which sets the window.
 	 */
 	if (bfd_auth_check(sent_buf, sent_buf[3], s->auth_type, s->auth_keyid, s->auth_kpad,
 			   s->auth_keylen, s->auth_kpad, &rx_seq, &rx_seen,
@@ -69,9 +62,7 @@ static void case_authenticated_output_verifies(void)
 	}
 	report("auth-output-verifies", bad, "tx_one signs what rx accepts");
 
-	/* And the same bytes with one digest byte moved must not verify,
-	 * or the check above proves nothing.
-	 */
+	/* Otherwise the check above proves nothing. */
 	sent_buf[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF] ^= 0xff;
 	rx_seq = 0;
 	rx_seen = 0;
@@ -82,9 +73,8 @@ static void case_authenticated_output_verifies(void)
 	       "one flipped digest byte");
 }
 
-/* A session that must authenticate and has no key it may send under
- * sends nothing at all: a bare packet there is the one thing the peer
- * must reject. The counterpart of the tx_cfg rule in ktx_cfg_run.
+/* No send key: send nothing, since the peer must reject a bare packet. As
+ * tx_cfg in ktx_cfg_run.
  */
 static void case_no_sendable_key_sends_nothing(void)
 {

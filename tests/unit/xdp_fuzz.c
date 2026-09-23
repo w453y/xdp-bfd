@@ -1,18 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * xdp_fuzz.c - libFuzzer target for the XDP program.
- *
- * Arbitrary control payloads over a valid envelope for a configured
- * session. Invariants checked after every run:
- *
- *   - a DROP leaves no trace: rx_pkts and alive do not move.
- *   - an XDP_TX reply is a well-formed control packet carrying our own
- *     discriminator, at TTL 255.
- *
- * Needs root: it loads bfd_xdp.o and drives it with BPF_PROG_TEST_RUN.
- *
- *     make FUZZ_CC=clang-21 tests/unit/xdp_fuzz
- *     sudo ./tests/unit/xdp_fuzz -runs=200000 corpus/
+/* xdp_fuzz.c - libFuzzer target for the XDP program: arbitrary payloads for a
+ * configured session. A DROP must leave no trace, and an XDP_TX reply must be a
+ * valid control packet with our discriminator at TTL 255. Root.
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -32,9 +21,7 @@
 #define ST_UP 3
 #endif
 
-/* The BPF object is loaded once and kept for the whole run, so
- * LeakSanitizer would flag libbpf's allocations at exit. By design.
- */
+/* The object stays loaded for the run, so libbpf's allocations remain at exit. */
 const char *__lsan_default_options(void)
 {
 	return "detect_leaks=0";
@@ -108,9 +95,7 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
 	return 0;
 }
 
-/* A valid v4 envelope to the single-hop BFD port for the configured pair,
- * at TTL 255. The fuzzer's bytes become the BFD payload.
- */
+/* A valid v4 envelope around the fuzzer's bytes. */
 #define ETH    14
 #define IPH    20
 #define UDPH   8
@@ -155,9 +140,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	if (prog_fd < 0)
 		return 0;
 
-	/* A known baseline every run: a live Up session with no packet yet
-	 * counted, so rx_pkts and alive read zero and a trace is visible.
-	 */
+	/* A live Up session with nothing counted, so any trace shows. */
 	st.remote_state = ST_UP;
 	st.remote_disc = PEER_DISC;
 	st.local_disc = MY_DISC;
@@ -184,10 +167,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 			abort();
 		}
 	} else if (topts.retval == 3 /* XDP_TX */) {
-		/* The reply must be a control packet carrying our own
-		 * discriminator, at TTL 255, that our own receive path would
-		 * accept.
-		 */
+		/* One our own receive path would accept. */
 		if (topts.data_size_out < HDRS + BFD_MIN_LEN) {
 			fprintf(stderr, "INVARIANT: XDP_TX reply too short (%u)\n",
 				topts.data_size_out);

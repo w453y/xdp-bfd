@@ -1,13 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of xdp_run, split by subject; compiled as one unit via
- * tests/unit/xdp_run.c.
- */
+/* Part of xdp_run.c. */
 
-/* The detection sweep, called directly since a bpf_timer never fires under
- * test_run. A session goes down only when the silence exceeds detect_mult *
- * detect_iv_us and alive was still 1; the CAS stops two sweeps both emitting a
- * Down.
- */
+/* Down only past detect_mult * detect_iv_us with alive still 1; the CAS stops a second Down. */
 static void case_sweep(const char *name, unsigned int iv_us, unsigned int mult,
 		       unsigned long long silent_ns, unsigned int alive_in, unsigned int want_alive)
 {
@@ -48,9 +42,7 @@ static void case_sweep(const char *name, unsigned int iv_us, unsigned int mult,
 	bpf_map_delete_elem(sweep_cfg_fd, &k);
 }
 
-/* Demand mode (RFC 5880 s6.6): the sweep holds, and alive stays 1 since
- * bfd_loader reports it directly.
- */
+/* RFC 5880 s6.6: held, and alive stays 1. */
 static void case_sweep_demand(void)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
@@ -87,9 +79,7 @@ static void case_sweep_demand(void)
 	bpf_map_delete_elem(sweep_cfg_fd, &k);
 }
 
-/* The receive window ages out after twice the detection time (RFC 5880 s6.7),
- * so a restarted peer can resync. Both edges are checked.
- */
+/* RFC 5880 s6.7: the window ages out after twice the detection time; both edges. */
 static void case_sweep_auth_resync(const char *name, unsigned long long silent_ns,
 				   unsigned int want_seen, int demand_hold)
 {
@@ -135,9 +125,7 @@ static void case_sweep_auth_resync(const char *name, unsigned long long silent_n
 	bpf_map_delete_elem(sweep_cfg_fd, &k);
 }
 
-/* now earlier than last_seen_ns. Without the signed guard the subtraction
- * wraps and every session looks silent for ~584 years.
- */
+/* Unsigned, the subtraction would wrap and every session look silent. */
 static void case_sweep_negative(void)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
@@ -172,9 +160,7 @@ static void case_sweep_negative(void)
 	bpf_map_delete_elem(sweep_cfg_fd, &k);
 }
 
-/* Echo advisory verdict: computed from echo_iv_us * detect_mult and never
- * allowed to take a session down, so every arm also checks alive.
- */
+/* Advisory: every arm checks alive too. */
 static void case_echo_advisory(const char *name, unsigned int echo_iv_us,
 			       unsigned long long echo_silent_ns, int set_last_seen,
 			       unsigned int want_echo_alive)
@@ -185,9 +171,7 @@ static void case_echo_advisory(const char *name, unsigned int echo_iv_us,
 	unsigned long long now = 1000ull * 1000 * 1000 * 60;
 	int bad = 0;
 
-	/* Control traffic is fresh throughout: the session is healthy by the
-	 * only measure that is allowed to matter.
-	 */
+	/* Control traffic stays fresh throughout. */
 	st.last_seen_ns = now - 1000000ull;
 	st.detect_iv_us = 10000;
 	st.detect_mult = 3;
@@ -239,14 +223,9 @@ static void run_sweep_matrix(void)
 	case_sweep("sweep-silent-under-budget", 10000, 3, 20000000ull, 1, 1);
 	/* already down: the CAS must not fire a second time */
 	case_sweep("sweep-already-down-stays", 10000, 3, 40000000ull, 0, 0);
-	/* detect_iv_us unset: falls back to max(min_tx_us, min_rx_us), here
-	 * the same 30ms budget.
-	 */
+	/* falls back to max(min_tx_us, min_rx_us) */
 	case_sweep("sweep-iv-fallback-past", 0, 3, 40000000ull, 1, 0);
 	case_sweep("sweep-iv-fallback-under", 0, 3, 20000000ull, 1, 1);
-	/* now before last_seen_ns: the guard returns early instead of
-	 * wrapping.
-	 */
 	case_sweep_negative();
 	case_auth_required(0);
 	case_auth_required(1);
@@ -262,28 +241,19 @@ static void run_sweep_matrix(void)
 	/* Replay: the window already sits above this sequence. */
 	case_auth_reject("auth-replayed-seq", KS, "topsecret", 7, 100, 0, 500, 0);
 
-	/* A sequence equal to the window is a repeat: plain keyed SHA1 accepts
-	 * it, meticulous must refuse it (s6.7.4).
-	 */
+	/* Equal is a repeat: plain keyed SHA1 accepts it, meticulous refuses (s6.7.4). */
 	case_auth_reject("auth-equal-seq-plain", KS, "topsecret", 7, 100, 0, 100, 1);
 	case_auth_reject("auth-equal-seq-meticulous", MS, "topsecret", 7, 100, 0, 100, 0);
-	/* Upper edge (s6.7.4): with Detect Mult 3, 9 ahead is the last
-	 * acceptable sequence.
-	 */
+	/* Detect Mult 3: 9 ahead is the last acceptable. */
 	case_auth_reject("auth-window-upper-edge", KS, "topsecret", 7, 109, 0, 100, 1);
 	case_auth_reject("auth-window-past-upper", KS, "topsecret", 7, 110, 0, 100, 0);
 
-	/* The window is sized by the packet's Detect Mult (s6.7.4), not the
-	 * local one: with a local multiplier of 1, 9 ahead passes only this
-	 * way.
-	 */
+	/* Sized by the packet's Detect Mult, not ours (s6.7.4). */
 	arm_local_mult = 1;
 	case_auth_reject("auth-window-mult-from-packet", KS, "topsecret", 7, 109, 0, 100, 1);
 	arm_local_mult = 3;
 
-	/* Circular: far below the watermark is far ahead, and outside the
-	 * window.
-	 */
+	/* Circular: far below is far ahead. */
 	case_auth_reject("auth-window-wrapped-far", KS, "topsecret", 7, 0x10000000, 0, 0xF0000000,
 			 0);
 	/* Across the wrap, a sequence just past the watermark is inside it. */
@@ -293,9 +263,7 @@ static void run_sweep_matrix(void)
 	arm_extra_keyid = 9;
 	arm_extra_key = "otherkey1";
 	case_auth_reject("auth-rollover-old-key", KS, "otherkey1", 9, 100, 0, 0, 1);
-	/* A key that is not in the set at all is still refused, so the
-	 * lookup has not simply become permissive.
-	 */
+	/* The lookup has not become permissive. */
 	case_auth_reject("auth-rollover-unknown-key", KS, "otherkey1", 11, 100, 0, 0, 0);
 	arm_extra_keyid = 0;
 	arm_extra_key = "";
@@ -304,14 +272,10 @@ static void run_sweep_matrix(void)
 #undef MS
 
 	case_sweep_demand();
-	/* Detection is 30ms here, so the window survives 40ms of silence
-	 * and is forgotten after 80ms.
-	 */
+	/* 30ms detection: held at 40ms, forgotten at 80ms. */
 	case_sweep_auth_resync("sweep-auth-window-held", 40000000ull, 1, 0);
 	case_sweep_auth_resync("sweep-auth-window-aged", 80000000ull, 0, 0);
-	/* Under demand hold the window still ages; a peer can restart inside a
-	 * demanded silence.
-	 */
+	/* Also under demand hold. */
 	case_sweep_auth_resync("sweep-auth-window-aged-demand", 80000000ull, 0, 1);
 	case_sweep_auth_resync("sweep-auth-window-held-demand", 40000000ull, 1, 1);
 
@@ -324,13 +288,9 @@ static void run_sweep_matrix(void)
 	case_deadman("deadman-fresh", DM_BOUND, mono_ns(), 1);
 	/* Armed and the engine went quiet two bounds ago: withhold. */
 	case_deadman("deadman-stale", DM_BOUND, mono_ns() - 2 * DM_BOUND, 0);
-	/* Just inside the bound is not stale. Half a bound is 500ms of
-	 * margin either side of a test that runs in microseconds.
-	 */
+	/* Half a bound of margin either side. */
 	case_deadman("deadman-within-bound", DM_BOUND, mono_ns() - DM_BOUND / 2, 1);
-	/* Bound zero is the off switch, and a heartbeat old enough to trip
-	 * any armed gate must not trip this one.
-	 */
+	/* Zero is off. */
 	case_deadman("deadman-disarmed", 0, mono_ns() - 60ull * DM_BOUND, 1);
 	/* Heartbeat zero, before the engine's first pass, reads as healthy. */
 	case_deadman("deadman-never-beaten", DM_BOUND, 0, 1);
@@ -342,9 +302,7 @@ static void run_sweep_matrix(void)
 	/* 50ms echo interval, mult 3: budget 150ms */
 	case_echo_advisory("echo-advisory-fresh", 50000, 100000000ull, 1, 1);
 	case_echo_advisory("echo-advisory-stale", 50000, 200000000ull, 1, 0);
-	/* echo never seen: the branch needs echo_last_seen_ns set, so the
-	 * verdict is left untouched rather than reported as dead
-	 */
+	/* never seen: left untouched, not reported dead */
 	case_echo_advisory("echo-advisory-never-seen", 50000, 0, 0, 0);
 	/* echo not configured: same, no verdict to make */
 	case_echo_advisory("echo-advisory-off", 0, 100000000ull, 1, 0);

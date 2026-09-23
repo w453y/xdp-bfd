@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* fsm_run.c - the engine's state machine (RFC 5880 s6.8.6), case by case.
- *
- * Links the real fsm.o with its four engine dependencies stubbed below.
- * Sends fail on an unopened socket, so this checks state, diag and
+/* fsm_run.c - the engine's state machine, case by case, with its engine
+ * dependencies stubbed. Sends fail, so this checks state, diag and
  * notification, not the wire.
- *
- *     make test-fsm
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -20,7 +16,6 @@
 
 #include "report.h"
 
-/* ---------- stubs ---------- */
 
 struct session sessions[MAX_SESSIONS];
 int use_ktx; /* 0: the kernel-TX gate in fsm_tx stays shut */

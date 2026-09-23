@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of xdp_run, split by subject; compiled as one unit via
- * tests/unit/xdp_run.c.
- */
+/* Part of xdp_run.c. */
 
-/* An Up packet from an armed peer must be bounced, not passed. This is
- * the gate in bfd_xdp.c: cfg->enable and the peer at Init or better.
- */
+/* Bounced: cfg->enable and the peer at Init or better. */
 static void case_bounce_v4(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -18,10 +14,7 @@ static void case_bounce_v4(void)
 	map_reset();
 }
 
-/* The verdict says the program chose to bounce. This says the frame it
- * produced is the one tx.h describes. Checked field by field rather than
- * memcmp against a whole expected frame, so a failure names what moved.
- */
+/* The frame tx.h describes, field by field so a failure names what moved. */
 static void case_bounce_v4_frame(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -86,10 +79,7 @@ static void case_bounce_v4_frame(void)
 	map_reset();
 }
 
-/* The D bit on an RX-clocked reply: the engine decides it, the program carries
- * it, and it accompanies a Final (s6.5). in_flags sets what the arriving frame
- * carries.
- */
+/* The engine decides D, the program carries it, with a Final too (s6.5). */
 static void case_demand_bit_out(uint8_t cfg_demand, uint8_t in_flags, uint8_t want_set,
 				uint8_t want_final, const char *name)
 {
@@ -147,10 +137,8 @@ static void case_demand_bit_out(uint8_t cfg_demand, uint8_t in_flags, uint8_t wa
 	map_reset();
 }
 
-/* Dead-man gate: the fast path answers only while the engine's heartbeat is
- * fresh. `hb_ns` is the heartbeat written against the program's own clock;
- * margins are whole seconds. A zero bound and a zero heartbeat must both
- * answer.
+/* hb_ns is against the program's clock; margins are whole seconds. A zero bound
+ * and a zero heartbeat both answer.
  */
 static void case_deadman(const char *name, __u64 bound_ns, __u64 hb_ns, int want_tx)
 {
@@ -178,9 +166,7 @@ static void case_deadman(const char *name, __u64 bound_ns, __u64 hb_ns, int want
 	v = run_frame(&f, out, &out_len);
 	held1 = stat_get(BFD_STAT_DEADMAN_HOLD);
 
-	/* Withholding the reply is XDP_PASS, as for an unconfigured session,
-	 * so the counter is the witness.
-	 */
+	/* Withheld is XDP_PASS, so the counter is the witness. */
 	want = want_tx ? XDP_TX : XDP_PASS;
 	if (v != want || (held1 - held0) != (unsigned long long)!want_tx) {
 		printf("FAIL %-40s want %s hold+%d, got %s hold+%llu\n", name, verdict_str(want),
@@ -254,9 +240,7 @@ static void case_bounce_v6_frame(void)
 	map_reset_v6();
 }
 
-/* A peer frame with more than 24 bytes of BFD must go back out trimmed. The v6
- * arm checks the checksum fold, which runs before the trim.
- */
+/* Trimmed to our packet; the v6 arm checks the fold, which runs before the trim. */
 static void case_trim(int v6, unsigned int extra)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -337,9 +321,7 @@ out:
 		map_reset();
 }
 
-/* RFC 5880 s6.8.4 poll termination: the peer's F is acked in final_seq. The
- * guard is cfg->poll && F, so all three arms are reachable.
- */
+/* RFC 5880 s6.8.4: F is acked in final_seq only under cfg->poll. */
 static void case_poll_final(uint8_t in_flags, uint32_t cfg_poll, uint32_t poll_seq,
 			    uint32_t want_seq, const char *name)
 {

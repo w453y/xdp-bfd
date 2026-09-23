@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * hmac_vectors.h - known answers for the shared HMAC-SHA1, checked by
- * hmac_run on the host and xdp_run in the kernel.
- *
- * The first four are RFC 2202 test cases; its others need keys or
- * messages longer than a block, which this refuses. The rest are
- * BFD-shaped: 52-byte keyed-SHA1 packets under 1, 16 and 64-byte keys, and
- * messages of 0, 24 and 55 bytes, where the padding changes.
+/* hmac_vectors.h - known answers for hmac_run and xdp_run: four RFC 2202 cases
+ * (the others exceed a block), then BFD-shaped ones at 1, 16 and 64-byte keys
+ * and 0, 24 and 55-byte messages.
  */
 #ifndef BFD_HMAC_VECTORS_H
 #define BFD_HMAC_VECTORS_H

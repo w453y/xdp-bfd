@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of dp_run, split by subject; compiled as one unit via
- * tests/unit/dp_run.c.
- */
+/* Part of dp_run.c. */
 
-/* The chain arrives once and key choice follows the clock; checked at three
- * instants.
- */
+/* Key choice follows the clock; three instants. */
 static void case_auth_rollover(void)
 {
 	unsigned char buf[2048];
@@ -31,9 +27,7 @@ static void case_auth_rollover(void)
 		bad = 1;
 	}
 
-	/* Before the handover the first key signs, and the second is
-	 * already acceptable so the peer may move first.
-	 */
+	/* Key 2 is already accepted, so the peer may move first. */
 	session_auth_evaluate(s, 1500);
 	if (s->auth_keyid != 1) {
 		printf("     at 1500 signing with key %u, want 1\n", s->auth_keyid);
@@ -44,9 +38,7 @@ static void case_auth_rollover(void)
 		bad = 1;
 	}
 
-	/* After it the second signs, and the first is still accepted so a
-	 * packet already in flight is not refused.
-	 */
+	/* Key 1 is still accepted, for packets in flight. */
 	session_auth_evaluate(s, 2500);
 	if (s->auth_keyid != 2) {
 		printf("     at 2500 signing with key %u, want 2\n", s->auth_keyid);
@@ -66,9 +58,7 @@ static void case_auth_rollover(void)
 	report("auth-rollover", bad, "key 1 then key 2, overlapping");
 }
 
-/* A message claiming more keys than it carries must be refused rather
- * than read past its end.
- */
+/* Refused rather than read past its end. */
 static void case_auth_short(void)
 {
 	unsigned char buf[2048];

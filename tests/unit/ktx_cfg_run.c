@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-/* ktx_cfg_run.c - ktx_cfg_for, the tx_cfg and key ktx_mirror would push,
- * driven directly: no program, no map, no root. The clock is a parameter,
- * so key-lifetime rows sit either side of a boundary.
- *
- *     make test-ktxcfg
+/* ktx_cfg_run.c - ktx_cfg_for driven directly; the clock is a parameter, so
+ * lifetime rows sit either side of a boundary.
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -82,9 +79,7 @@ int main(void)
 	ktx_cfg_for(s, NOW, &c, &k);
 	report("enable-off-when-down", c.enable != 0, "");
 
-	/* A peer that asked us to go quiet: answering every accepted packet
-	 * would transmit at exactly the rate demand mode exists to stop.
-	 */
+	/* Answering every packet would transmit at the rate demand mode exists to stop. */
 	s = arm();
 	s->r_flags = BFD_F_DEMAND;
 	s->demand_announced = DEMAND_ANNOUNCE_N;
@@ -145,9 +140,7 @@ int main(void)
 	report("accept-list-after-the-boundary", c.auth_nkeys != 1 || c.auth_accept[0].key_id != 2,
 	       "the rollover key, once its period opens");
 
-	/* A session that does not authenticate hands over no keys at all,
-	 * whatever a stale key chain left behind.
-	 */
+	/* Whatever a stale chain left behind. */
 	s->auth_present = 0;
 	ktx_cfg_for(s, NOW - 10, &c, &k);
 	report("accept-list-empty-without-auth", c.auth_nkeys != 0, "");

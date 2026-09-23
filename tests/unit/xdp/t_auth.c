@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of xdp_run, split by subject; compiled as one unit via
- * tests/unit/xdp_run.c.
- */
+/* Part of xdp_run.c. */
 
-/* A session that must authenticate but has no key it may send under, as with a
- * gap in send lifetimes or keys not yet arrived. Packets the accept set can
- * verify must still be accepted.
- */
+/* Must authenticate with no send key, as in a lifetime gap: the accept set still verifies. */
 static void case_auth_present_without_send_key(void)
 {
 	const char *name = "auth-accepted-with-no-send-key";
@@ -19,9 +14,6 @@ static void case_auth_present_without_send_key(void)
 	map_reset();
 	arm_session_auth(BFD_AUTH_KEYED_SHA1, 7, "topsecret");
 
-	/* Exactly the state above: the accept set is untouched, the send key
-	 * is gone, and the session still has to authenticate.
-	 */
 	if (bpf_map_lookup_elem(cfg_fd, &k, &cfg)) {
 		printf("FAIL %-40s no cfg\n", name);
 		fails++;
@@ -37,10 +29,7 @@ static void case_auth_present_without_send_key(void)
 	build_sha1_auth(&f, "topsecret", 7, 100, BFD_AUTH_KEYED_SHA1);
 	v = run_frame(&f, NULL, NULL);
 
-	/* PASS, not TX: with no send key the fast path must not answer
-	 * either, or it bounces a bare packet the peer must reject. The
-	 * packet still has to reach userspace.
-	 */
+	/* Not TX: a bare reply is one the peer must reject. */
 	if (v != XDP_PASS || stat_get(BFD_STAT_AUTH_MISMATCH) != mism) {
 		printf("FAIL %-40s want PASS no-mismatch, got %s mismatch+%llu\n", name,
 		       v < 0 ? "syscall-error" : verdict_str(v),
@@ -50,9 +39,7 @@ static void case_auth_present_without_send_key(void)
 		printf("ok   %-40s accepted, not an A-bit mismatch\n", name);
 	}
 
-	/* The digest is still checked: PASS alone is equally consistent with
-	 * skipping verification.
-	 */
+	/* PASS alone is also consistent with skipping verification. */
 	name = "auth-verified-with-no-send-key";
 	{
 		unsigned long long bad = stat_get(BFD_STAT_AUTH_BAD);
@@ -72,10 +59,7 @@ static void case_auth_present_without_send_key(void)
 	map_reset();
 }
 
-/* Rejection paths: a keyed-SHA1 packet damaged in exactly one way
- * (digest, sequence, key id) must be refused without touching the
- * session.
- */
+/* Damaged one way each: refused without touching the session. */
 static void case_auth_reject(const char *name, __u8 type, const char *key, __u8 keyid, __u32 seq,
 			     int corrupt_digest, __u32 pre_seq, int want_accept)
 {
@@ -139,9 +123,7 @@ static void case_auth_reject(const char *name, __u8 type, const char *key, __u8 
 	map_reset();
 }
 
-/* The shared HMAC-SHA1 in the kernel, on the vectors hmac_run checks on the
- * host.
- */
+/* The vectors hmac_run checks on the host. */
 struct hmac_scratch_u {
 	__u8 kpad[SHA1_BLOCK_LEN];
 	__u8 mblk[SHA1_BLOCK_LEN];
@@ -199,10 +181,7 @@ static void case_hmac(const struct hmac_vec *v)
 	printf("ok   %-40s key %2u msg %2u\n", v->name, v->keylen, v->msglen);
 }
 
-/* Bound the forced HMAC: of more than BFD_AUTH_FAIL_MAX bad digests in one
- * interval, the first BFD_AUTH_FAIL_MAX fail (auth-bad) and the rest are
- * dropped before the digest (auth-ratelimited).
- */
+/* Past BFD_AUTH_FAIL_MAX bad digests in an interval, the rest drop before hashing. */
 static void case_auth_ratelimit(void)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
@@ -214,9 +193,7 @@ static void case_auth_ratelimit(void)
 	map_reset();
 	arm_session_auth(BFD_AUTH_KEYED_SHA1, 7, "topsecret");
 
-	/* Pin the window to a second so a dozen test-run syscalls stay
-	 * inside one interval.
-	 */
+	/* One interval covers every syscall here. */
 	if (bpf_map_lookup_elem(sess_fd, &k, &st)) {
 		printf("FAIL auth-ratelimit (no state)\n");
 		fails++;

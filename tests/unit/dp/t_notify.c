@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of dp_run, split by subject; compiled as one unit via
- * tests/unit/dp_run.c.
- */
+/* Part of dp_run.c. */
 
-/* A notification storm overflows the output queue. The connection survives
- * and, once bfdd reads again, the session's final state is delivered. bfdd's
- * end is not drained during the flood.
+/* Overflow the queue with bfdd not reading: the connection survives and the
+ * final state arrives.
  */
 static void case_notify_coalesce(void)
 {
@@ -43,9 +40,6 @@ static void case_notify_coalesce(void)
 
 	alive = conn_alive();
 
-	/* Drain bfdd's end and flush the deferred notification, tracking the
-	 * last fully-received state_change.
-	 */
 	for (int round = 0; round < 400; round++) {
 		n = recv(cli, buf + carry, sizeof(buf) - carry, MSG_DONTWAIT);
 		if (n > 0) {

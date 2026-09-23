@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of dp_run, split by subject; compiled as one unit via
- * tests/unit/dp_run.c.
- */
+/* Part of dp_run.c. */
 
-/* A wildcard local address (no local-address in bfdd) resolves to the source
- * the kernel would use. A loopback peer makes the result deterministic.
- */
+/* The source the kernel would use; a loopback peer makes it deterministic. */
 static void case_local_resolve(void)
 {
 	unsigned char buf[256];

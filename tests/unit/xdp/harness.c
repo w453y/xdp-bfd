@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of xdp_run, split by subject; compiled as one unit via
- * tests/unit/xdp_run.c.
- */
+/* Part of xdp_run.c. */
 
 static uint16_t csum16(const void *p, int len, uint32_t seed)
 {
@@ -17,9 +15,7 @@ static uint16_t csum16(const void *p, int len, uint32_t seed)
 	return (uint16_t)~sum;
 }
 
-/* An IPv4 BFD control packet with a chosen TTL, so GTSM can be varied.
- * frag_off is set by the caller after building; see case_frag.
- */
+/* frag_off is set by the caller; see case_frag. */
 static void build_v4(struct frame *f, uint8_t ttl, uint16_t dport, const struct bfd_ctrl_pkt *bfd,
 		     unsigned int extra)
 {
@@ -75,9 +71,8 @@ static struct bfd_ctrl_pkt ctrl_up(void)
 	return p;
 }
 
-/* A v6 frame with exactly one extension header (8 bytes, hdrlen 0) between
- * the IPv6 header and UDP. `ext` is the ip6 next-header (e.g. HOPOPTS),
- * `inner` is the extension header's own next-header.
+/* One 8-byte extension header between IPv6 and UDP. ext is the IPv6 next
+ * header, inner the extension's.
  */
 static void build_v6_exthdr(struct frame *f, uint8_t ext, uint8_t inner, uint16_t dport,
 			    const struct bfd_ctrl_pkt *bfd)
@@ -156,9 +151,7 @@ static void build_v6(struct frame *f, uint8_t hlim, uint16_t dport, const struct
 	f->len = sizeof(*eth) + sizeof(*ip6) + sizeof(*udp) + payload;
 }
 
-/* Verify rather than recompute: the pseudo-header, the UDP header with its
- * checksum, and the payload must fold to 0xffff.
- */
+/* The pseudo-header, UDP header and payload must fold to 0xffff. */
 static int v6_udp_csum_ok(const unsigned char *frm, unsigned int len)
 {
 	const struct ethhdr *eth = (const void *)frm;
@@ -188,7 +181,6 @@ static int v6_udp_csum_ok(const unsigned char *frm, unsigned int len)
 	return sum == 0xffff;
 }
 
-/* ---------- running ---------- */
 
 static const char *verdict_str(int v)
 {
@@ -208,9 +200,7 @@ static const char *verdict_str(int v)
 	}
 }
 
-/* Returns the verdict, or -1 if the syscall itself failed. out/out_len
- * receive the returned frame when out is non-NULL.
- */
+/* -1 if the syscall failed. out receives the returned frame if non-NULL. */
 static int run_frame(const struct frame *f, unsigned char *out, unsigned int *out_len)
 {
 	unsigned char buf[FRAME_MAX * 2] = { 0 };
@@ -244,11 +234,8 @@ static void expect(const char *name, int got, int want)
 	fails++;
 }
 
-/* ---------- map state ---------- */
 
-/* Keys are from the arriving frame's view: peer is the source, local the
- * destination. Backwards gives a silent XDP_PASS.
- */
+/* Peer is the frame's source. Backwards gives a silent XDP_PASS. */
 static struct session_key key_v4(const char *peer, const char *local)
 {
 	struct session_key k = { 0 };
@@ -263,9 +250,7 @@ static struct session_key key_v4(const char *peer, const char *local)
 	return k;
 }
 
-/* prog_flags: FLAG_PROMISC (1) is the promiscuous PASS, FLAG_MHOP (2) the
- * multihop deferral in parse.h. map_reset clears it.
- */
+/* FLAG_PROMISC, FLAG_MHOP; map_reset clears them. */
 
 static void set_flags(__u32 v)
 {
@@ -316,9 +301,7 @@ static void arm_session(void)
 	}
 }
 
-/* arm_session with a chosen min_rx_us and alive set. With alive 0 every packet
- * takes the candidate and the decrease rule never runs.
- */
+/* With alive 0 every packet takes the candidate and the decrease rule never runs. */
 static void arm_session_rx(__u32 min_rx_us)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
@@ -344,9 +327,7 @@ static void arm_session_rx(__u32 min_rx_us)
 	}
 }
 
-/* arm_session with a chosen min_ttl. ktx_mirror pushes min_ttl for every
- * session, so the deferred GTSM branch is live.
- */
+/* ktx_mirror pushes min_ttl for every session, so the deferred GTSM branch is live. */
 static void arm_session_ttl(__u32 min_ttl)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
@@ -371,9 +352,7 @@ static void arm_session_ttl(__u32 min_ttl)
 	}
 }
 
-/* v6 keys carry the address as-is; only v4 goes through the mapped
- * encoder. Same orientation: peer is the frame source.
- */
+/* v6 keys are the address as is. */
 static struct session_key key_v6(const char *peer, const char *local)
 {
 	struct session_key k = { 0 };
@@ -451,9 +430,7 @@ static int read_state(const struct session_key *k, struct session_state *out)
 	return 1;
 }
 
-/* Sum a bfd_stats slot across CPUs. The counter is the witness where the
- * verdict alone cannot tell a rejection apart.
- */
+/* Across CPUs; the witness where the verdict cannot tell rejections apart. */
 static unsigned long long stat_get(int slot)
 {
 	static int ncpu;
@@ -476,9 +453,7 @@ static unsigned long long stat_get(int slot)
 	return total;
 }
 
-/* Run one sweep pass at a chosen time. bpf_timer does not fire under test_run,
- * so bfd_xdp_test.o, a separate test-only object, drives the same callback.
- */
+/* bpf_timer does not fire under test_run, so bfd_xdp_test.o drives the callback. */
 static int sweep_at(unsigned long long now_ns)
 {
 	unsigned char in[sizeof(struct ethhdr) + sizeof(__u64)] = { 0 };
@@ -497,9 +472,7 @@ static int sweep_at(unsigned long long now_ns)
 	return 1;
 }
 
-/* The sweep object has its own maps, so state for these cases goes there
- * rather than into the ones the packet cases use.
- */
+/* The sweep object has its own maps. */
 static int sweep_put(const struct session_key *k, const struct session_state *st,
 		     const struct tx_cfg *cfg)
 {
@@ -514,7 +487,6 @@ static int sweep_put(const struct session_key *k, const struct session_state *st
 	return 1;
 }
 
-/* ---------- poll-aware detect basis ---------- */
 
 /* CLOCK_MONOTONIC, the clock bpf_ktime_get_ns reads. */
 static __u64 mono_ns(void)
@@ -586,9 +558,7 @@ static void build_sha1_auth(struct frame *f, const char *key, __u8 keyid, __u32 
 	memcpy(kpad, key, strlen(key));
 	bfd_auth_build(pkt, type, keyid, (const __u8 *)key, (__u8)strlen(key), kpad, seq);
 
-	/* build_v4 lays down the 24-byte header and reserves the rest of
-	 * the payload; the signed section goes in behind it.
-	 */
+	/* The signed section goes in behind the 24-byte header. */
 	build_v4(f, 255, BFD_PORT_1HOP, (const struct bfd_ctrl_pkt *)pkt, BFD_AUTH_SHA1_LEN);
 	memcpy(f->b + sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct udphdr) +
 		       BFD_MIN_LEN,

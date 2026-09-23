@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-/* dp_run.c - the bfddp framing parser, fed by hand.
- *
- * dp_read() must survive any split of the byte stream: a header one byte
- * at a time, a message across two reads, several in one read, a lying
- * length. Uses a real Unix socket through the engine's own accept path;
- * only the ktx group is stubbed.
- *
- *     make test-dp
+/* dp_run.c - the bfddp parser over a real Unix socket, through the engine's
+ * accept path; only ktx is stubbed.
  */
 #define _GNU_SOURCE
 #include <stdio.h>

@@ -134,6 +134,17 @@ struct session *sess_alloc(void)
 	return NULL;
 }
 
+/* A given slot, which keys the session's auth sequence and source port. */
+struct session *sess_alloc_at(int slot)
+{
+	if (slot < 0 || slot >= MAX_SESSIONS || sessions[slot].used)
+		return NULL;
+	memset(&sessions[slot], 0, sizeof(sessions[slot]));
+	sessions[slot].used = 1;
+	sess_wake_at[slot] = 0;
+	return &sessions[slot];
+}
+
 struct session *sess_by_lid(uint32_t lid)
 {
 	return lid ? ix_get(IX_LID, lid, NULL, NULL) : NULL;

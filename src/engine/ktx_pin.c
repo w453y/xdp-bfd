@@ -9,11 +9,13 @@
 #include <unistd.h>
 #include <errno.h>
 #include <dirent.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 
 #include "bfd_shared.h"
+#include "util.h"
 #include "log.h"
 #include "ktx.h"
 
@@ -161,6 +163,83 @@ void ktx_pin_link(int ifindex, int link_fd)
 			strerror(errno));
 }
 
+/* bpffs holds no plain files, so the engine that holds the pins says so in
+ * /run, by the pin directory's name.
+ */
+static const char *pidfile(void)
+{
+	static char p[300];
+	const char *b = strrchr(ktx_pin_dir, '/');
+
+	snprintf(p, sizeof(p), "/run/xdp-bfd/%s.pid", b && b[1] ? b + 1 : ktx_pin_dir);
+	return p;
+}
+
+/* The engine holding the pins now, or 0. */
+int ktx_pin_holder(void)
+{
+	FILE *f;
+	char comm[32] = "";
+	int pid = 0;
+
+	if (!ktx_pin_dir)
+		return 0;
+	f = fopen(pidfile(), "r");
+	if (!f)
+		return 0;
+	if (fscanf(f, "%d", &pid) != 1)
+		pid = 0;
+	fclose(f);
+	if (pid <= 0 || pid == getpid() || kill(pid, 0))
+		return 0;
+	snprintf(comm, sizeof(comm), "/proc/%d/comm", pid);
+	f = fopen(comm, "r");
+	if (!f || !fgets(comm, sizeof(comm), f) || strncmp(comm, "bfd_tx", 6))
+		pid = 0;
+	if (f)
+		fclose(f);
+	return pid;
+}
+
+/* Tell the running engine to hand over and wait for it, the object already
+ * loaded, so what is left of the gap is sockets and adoption.
+ */
+int ktx_pin_take_over(int pid)
+{
+	uint64_t t0 = now_us();
+
+	if (kill(pid, SIGUSR2)) {
+		log_err("--pin: cannot signal engine %d: %s\n", pid, strerror(errno));
+		return -1;
+	}
+	while (!kill(pid, 0)) {
+		if (now_us() - t0 > 3000000) {
+			log_err("--pin: engine %d did not hand over within 3s\n", pid);
+			return -1;
+		}
+		usleep(1000);
+	}
+	log_info("--pin: engine %d handed over in %llums\n", pid,
+		 (unsigned long long)((now_us() - t0) / 1000));
+	return 0;
+}
+
+void ktx_pin_claim(void)
+{
+	FILE *f;
+
+	if (!ktx_pin_dir)
+		return;
+	mkdir("/run/xdp-bfd", 0755);
+	f = fopen(pidfile(), "w");
+	if (!f) {
+		log_err("--pin: cannot write %s: %s\n", pidfile(), strerror(errno));
+		return;
+	}
+	fprintf(f, "%d\n", getpid());
+	fclose(f);
+}
+
 /* An orderly stop: nothing outlives us. */
 void ktx_unpin(void)
 {
@@ -168,4 +247,5 @@ void ktx_unpin(void)
 		return;
 	if (pin_sub[0])
 		rm_dir(pin_sub);
+	unlink(pidfile());
 }

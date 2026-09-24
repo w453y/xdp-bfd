@@ -38,10 +38,21 @@ uint64_t loop_gap_us[24];
 
 /* An orderly exit sends AdminDown instead of leaving peers to time out. */
 static volatile sig_atomic_t shutdown_wanted;
+/* SIGUSR2 with --pin: exit leaving the program answering, for the next
+ * engine to take over. A new engine started with the same --pin sends it
+ * itself; a supervisor sending it restarts us on HANDOVER_EXIT.
+ */
+static volatile sig_atomic_t handover_wanted;
+#define HANDOVER_EXIT 75
+/* The dead-man bound is pushed this far out, so the program answers while no
+ * engine runs, and no longer.
+ */
+#define HANDOVER_GRACE_US (10ull * 1000000)
 
 static void shutdown_on_signal(int sig)
 {
-	(void)sig;
+	if (sig == SIGUSR2)
+		handover_wanted = 1;
 	shutdown_wanted = 1;
 }
 
@@ -126,6 +137,15 @@ static void nofile_raise(void)
 	if (r.rlim_cur < MAX_SESSIONS + 64)
 		log_err("open files limited to %llu; sessions past that send from the fallback socket\n",
 			(unsigned long long)r.rlim_cur);
+}
+
+static int sessions_used(void)
+{
+	int n = 0;
+
+	for (int i = 0; i < MAX_SESSIONS; i++)
+		n += sessions[i].used;
+	return n;
 }
 
 /* dp-hold orphans stay silent. */
@@ -303,12 +323,23 @@ int main(int argc, char **argv)
 	rc = opts_parse(argc, argv, &o);
 	if (rc)
 		return rc < 0 ? 1 : 0;
-	if (o.check)
+	if (o.check) {
+		ktx_pin_dir = NULL; /* loads only; takes nothing over */
 		return check_load();
+	}
 	if (!opts_complete(&o, argv[0]))
 		return 1;
 
 	nofile_raise();
+	/* A running engine hands over only once the slow part, loading and
+	 * verifying the object, is done here: then it is gone for milliseconds.
+	 */
+	if (ktx_pin_dir) {
+		int old = ktx_pin_holder();
+
+		if (old && (ktx_load() || ktx_pin_take_over(old)))
+			return 1;
+	}
 	if (rx_open_all() || tick_open(o.tick_us))
 		return 1;
 	tx_open_fallback();
@@ -321,12 +352,18 @@ int main(int argc, char **argv)
 	}
 	if (o.dplane && dp_listen_init(o.dplane))
 		return 1;
+	/* Before the first pass, so nothing overwrites what the program holds. */
+	if (ktx_reused)
+		ktx_adopt(dp_hold_us);
+	ktx_pin_claim();
 
 	srandom(getpid() ^ time(NULL));
 	/* The handlers only set flags. */
 	signal(SIGUSR1, stats_on_signal);
 	signal(SIGTERM, shutdown_on_signal);
 	signal(SIGINT, shutdown_on_signal);
+	if (ktx_pin_dir)
+		signal(SIGUSR2, shutdown_on_signal);
 
 	if (o.local && static_session_add(&o))
 		return 1;
@@ -342,8 +379,15 @@ int main(int argc, char **argv)
 		/* Deferred state changes go out in the room the flush freed. */
 		dp_notify_flush_pending();
 
+		if (shutdown_wanted && handover_wanted) {
+			ktx_heartbeat(now_us() + HANDOVER_GRACE_US);
+			log_info("handover: leaving %d session(s) to the next engine\n",
+				 sessions_used());
+			return HANDOVER_EXIT;
+		}
 		if (shutdown_wanted) {
 			shutdown_announce();
+			ktx_unpin();
 			break;
 		}
 		if (stats_wanted) {

@@ -27,7 +27,8 @@ SHARED_HDRS := $(wildcard include/*.h)
 
 ENGINE_OBJS := src/engine/log.o src/engine/main.o src/engine/session.o src/engine/dplane.o src/engine/ktx.o src/engine/echo_tx.o src/engine/fsm.o src/engine/stats.o src/engine/rx.o src/engine/ktx_cfg.o \
 	       src/engine/opts.o src/engine/sock.o src/engine/static.o \
-	       src/engine/dplane_conn.o src/engine/ktx_load.o src/engine/ktx_pin.o
+	       src/engine/dplane_conn.o src/engine/ktx_load.o src/engine/ktx_pin.o \
+	       src/engine/ktx_adopt.o
 
 all: abi-check bfd_xdp.o bfd_loader bfd_tx
 

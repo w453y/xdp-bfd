@@ -1,0 +1,12 @@
+[Unit]
+Description=bpffs for xdp-bfd --pin
+Documentation=man:xdp-bfd(8)
+# Before the engine's sandbox is built, so the mount is inside it.
+Before=xdp-bfd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# /sys/fs/bpf is root's alone; this one belongs to the engine's user and
+# outlives its restarts.
+ExecStart=/bin/sh -c 'mountpoint -q /run/xdp-bfd-pin || { mkdir -p /run/xdp-bfd-pin && mount -t bpf -o mode=0700 bpf /run/xdp-bfd-pin; } && chown xdp-bfd:xdp-bfd /run/xdp-bfd-pin'

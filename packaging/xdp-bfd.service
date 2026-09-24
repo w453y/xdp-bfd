@@ -4,11 +4,21 @@ Documentation=man:xdp-bfd(8)
 After=network-online.target
 Wants=network-online.target
 Before=frr.service
+# The bpffs for --pin.
+Requires=xdp-bfd-pin.service
+After=xdp-bfd-pin.service
 
 [Service]
-Type=simple
+Type=notify
+# A reload's new engine takes over as the main process.
+NotifyAccess=all
 EnvironmentFile=/etc/xdp-bfd/engine.conf
 ExecStart=/usr/sbin/xdp-bfd $XDP_BFD_ARGS
+# With --pin, a new engine loads, the running one hands it the sessions, and
+# the peers see nothing; done once the old one is gone. restart still stops.
+ExecReload=/bin/sh -c 'case " $$XDP_BFD_ARGS " in *" --pin "*) ;; *) echo "xdp-bfd: reload needs --pin in XDP_BFD_ARGS" >&2; exit 1;; esac; /usr/sbin/xdp-bfd $$XDP_BFD_ARGS & new=$$!; while kill -0 $$MAINPID 2>/dev/null; do kill -0 $$new 2>/dev/null || exit 1; sleep 0.05; done'
+# The engine that handed over.
+SuccessExitStatus=75
 Restart=on-failure
 RestartSec=2
 KillSignal=SIGTERM
@@ -25,7 +35,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 # The stats snapshot goes to the real /tmp, where operators look for it.
-ReadWritePaths=/run/xdp-bfd /tmp
+ReadWritePaths=/run/xdp-bfd -/run/xdp-bfd-pin /tmp
 OOMScoreAdjust=-900
 LockPersonality=yes
 

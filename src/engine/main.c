@@ -25,6 +25,7 @@
 #include "opts.h"
 #include "sock.h"
 #include "static.h"
+#include "notify.h"
 
 /* A timerfd, since SO_RCVTIMEO rounds under 1ms up. */
 static int tick_fd = -1;
@@ -360,6 +361,7 @@ int main(int argc, char **argv)
 	if (ktx_reused)
 		ktx_adopt(dp_hold_us);
 	ktx_pin_claim();
+	sd_note("READY=1");
 
 	srandom(getpid() ^ time(NULL));
 	/* The handlers only set flags. */

@@ -48,6 +48,13 @@ Needs
 .BR --dp-hold ,
 which holds the sessions until bfdd reconnects.
 .TP
+.BI --max-sessions " 64-8192"
+The session table's size, 1024 by default. The program's per-session maps
+are sized to it at load, and the engine's source ports are the top this
+many of the range: 64512-65535 by default. Measured at 8192 against a
+software peer; past a few thousand sessions a bfdd peer running them in
+software is the first to fall behind.
+.TP
 .BI --kernel-tx " if"
 Transmit from the kernel on this interface.
 .TP

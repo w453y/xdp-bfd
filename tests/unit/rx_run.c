@@ -53,7 +53,7 @@ static struct session *arm(int auth, uint8_t min_ttl)
 {
 	struct session *s = &sessions[0];
 
-	memset(sessions, 0, sizeof(sessions));
+	memset(sessions, 0, (size_t)sess_max * sizeof(*sessions));
 	s->used = 1;
 	s->lid = 42;
 	s->wire_disc = MY_DISC;
@@ -136,6 +136,9 @@ int main(void)
 {
 	__u8 buf[BFD_MAX_LEN];
 	size_t n;
+
+	if (sess_table_init(BFD_MAX_SESSIONS))
+		return 1;
 
 	key_set_v4(&A_PEER, inet_addr(PEER4));
 	key_set_v4(&A_LOCAL, inet_addr(LOCAL4));

@@ -154,7 +154,7 @@ void stats_dump(void)
 		return;
 	}
 
-	for (int i = 0; i < MAX_SESSIONS; i++) {
+	for (int i = 0; i < sess_max; i++) {
 		if (!sessions[i].used)
 			continue;
 		configured++;
@@ -184,7 +184,7 @@ void stats_dump(void)
 	fprintf(f, "},\n");
 
 	fprintf(f, "  \"sessions\": [");
-	for (int i = 0; i < MAX_SESSIONS; i++) {
+	for (int i = 0; i < sess_max; i++) {
 		if (!sessions[i].used)
 			continue;
 		one_session(f, &sessions[i], first);

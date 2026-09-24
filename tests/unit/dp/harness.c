@@ -53,7 +53,7 @@ static int used_sessions(void)
 {
 	int n = 0;
 
-	for (int i = 0; i < MAX_SESSIONS; i++)
+	for (int i = 0; i < sess_max; i++)
 		if (sessions[i].used)
 			n++;
 	return n;
@@ -61,7 +61,7 @@ static int used_sessions(void)
 
 static void sessions_clear(void)
 {
-	memset(sessions, 0, sizeof(sessions));
+	memset(sessions, 0, (size_t)sess_max * sizeof(*sessions));
 }
 
 /* bfddp carries both families as in6_addr; v4 in the first four bytes. */

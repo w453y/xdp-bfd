@@ -11,13 +11,18 @@
 #include "bfd_shared.h"
 #include "bfddp.h"
 
-#define PORT_CTRL    BFD_PORT_1HOP
-#define SRC_PORT     BFD_SRC_PORT
-#define DEF_MIN_TX   10000
-#define DEF_MIN_RX   10000
-#define DEF_MULT     3
-#define SLOW_TX_US   1000000ull
-#define MAX_SESSIONS BFD_MAX_SESSIONS
+#define PORT_CTRL BFD_PORT_1HOP
+/* --max-sessions sets sess_max, at most SESSIONS_CEIL, which sizes the
+ * per-slot arrays. Source ports are the top sess_max of the range, as
+ * BFD_SRC_PORT is for the default.
+ */
+#define SESSIONS_CEIL 8192
+extern int sess_max;
+#define SRC_PORT   (65536 - sess_max)
+#define DEF_MIN_TX 10000
+#define DEF_MIN_RX 10000
+#define DEF_MULT   3
+#define SLOW_TX_US 1000000ull
 
 
 /* One key as bfdd sent it. send and accept overlap during a rollover. */
@@ -267,7 +272,7 @@ static inline int ktx_push_needed(const struct session *s, const struct tx_cfg *
 	       memcmp(c, &s->pushed_cfg, n) != 0;
 }
 
-extern struct session sessions[MAX_SESSIONS];
+extern struct session *sessions;
 
 /* The program's per-slot auth TX counters, mmapped; NULL without it. */
 extern uint64_t *ktx_seq_mem;
@@ -293,7 +298,7 @@ static inline uint32_t auth_seq_next(struct session *s)
 /* When the loop next visits each slot; 0 is the next pass. Set by whatever
  * touches a session, so the pass visits only those and the ones that are due.
  */
-extern uint64_t sess_wake_at[MAX_SESSIONS];
+extern uint64_t sess_wake_at[SESSIONS_CEIL];
 
 static inline void sess_wake(const struct session *s)
 {
@@ -301,6 +306,7 @@ static inline void sess_wake(const struct session *s)
 }
 
 void sess_wake_all(void);
+int sess_table_init(int n);
 struct session *sess_alloc(void);
 struct session *sess_alloc_at(int slot);
 /* After setting a session's lid, wire_disc or addresses. */

@@ -18,8 +18,10 @@
 #include "report.h"
 
 
-struct session sessions[MAX_SESSIONS];
-uint64_t sess_wake_at[MAX_SESSIONS];
+static struct session table[BFD_MAX_SESSIONS];
+struct session *sessions = table;
+int sess_max = BFD_MAX_SESSIONS;
+uint64_t sess_wake_at[SESSIONS_CEIL];
 int use_ktx;	       /* 0: the kernel-TX gate in fsm_tx stays shut */
 uint64_t *ktx_seq_mem; /* no program: the session's own counter */
 

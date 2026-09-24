@@ -132,12 +132,31 @@ static int ktx_abi_check(struct bpf_object *o, const char *path)
 	return bad ? -1 : 0;
 }
 
+/* The per-session maps, sized to --max-sessions; the object has the default. */
+static int ktx_size_maps(struct bpf_object *o)
+{
+	static const char *const per_session[] = {
+		"bfd_sessions", "tx_config", "echo_peers", "echo_disc", "our_discs", "auth_seq",
+	};
+
+	for (size_t i = 0; i < sizeof(per_session) / sizeof(per_session[0]); i++) {
+		struct bpf_map *m = bpf_object__find_map_by_name(o, per_session[i]);
+
+		if (!m || bpf_map__set_max_entries(m, (__u32)sess_max)) {
+			log_err("kernel-tx: cannot size %s to %d sessions\n", per_session[i],
+				sess_max);
+			return -1;
+		}
+	}
+	return 0;
+}
+
 /* Opened, checked and loaded; with --pin, over what a previous engine left. */
 static struct bpf_object *ktx_open(const char *obj)
 {
 	struct bpf_object *o = bpf_object__open_file(obj, NULL);
 
-	if (!o || ktx_abi_check(o, obj) || ktx_pin_prepare(o))
+	if (!o || ktx_abi_check(o, obj) || ktx_size_maps(o) || ktx_pin_prepare(o))
 		goto fail;
 	if (!bpf_object__load(o))
 		return o;
@@ -147,7 +166,7 @@ static struct bpf_object *ktx_open(const char *obj)
 	bpf_object__close(o);
 	ktx_pin_discard();
 	o = bpf_object__open_file(obj, NULL);
-	if (o && !ktx_pin_prepare(o) && !bpf_object__load(o))
+	if (o && !ktx_size_maps(o) && !ktx_pin_prepare(o) && !bpf_object__load(o))
 		return o;
 fail:
 	if (o)
@@ -177,7 +196,7 @@ int ktx_load(void)
 		void *m = MAP_FAILED;
 
 		if (sq_fd >= 0)
-			m = mmap(NULL, BFD_MAX_SESSIONS * sizeof(uint64_t), PROT_READ | PROT_WRITE,
+			m = mmap(NULL, (size_t)sess_max * sizeof(uint64_t), PROT_READ | PROT_WRITE,
 				 MAP_SHARED, sq_fd, 0);
 		if (m == MAP_FAILED) {
 			log_err("kernel-tx: auth_seq not mapped (%s)\n", strerror(errno));

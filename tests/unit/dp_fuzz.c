@@ -35,6 +35,8 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
 {
 	/* So the stub does not steer the parser into the uncovered branch. */
 	ktx_stub_attach_rc = 0;
+	if (sess_table_init(BFD_MAX_SESSIONS))
+		return 1;
 
 	(void)argc;
 	(void)argv;

@@ -74,10 +74,10 @@ uint16_t tx_bind(int fd, int family, const struct bfd_addr *local, uint16_t port
  * retried after SLOT_RETRY_US in case the address was not up yet.
  */
 #define SLOT_RETRY_US 1000000ull
-static int slot_tx[MAX_SESSIONS];
-static struct bfd_addr slot_tx_ip[MAX_SESSIONS];
-static uint16_t slot_tx_port[MAX_SESSIONS];
-static uint64_t slot_tx_retry_us[MAX_SESSIONS];
+static int slot_tx[SESSIONS_CEIL];
+static struct bfd_addr slot_tx_ip[SESSIONS_CEIL];
+static uint16_t slot_tx_port[SESSIONS_CEIL];
+static uint64_t slot_tx_retry_us[SESSIONS_CEIL];
 
 static int slot_sock(int slot, const struct session *s, uint16_t *port)
 {

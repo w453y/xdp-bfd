@@ -3,6 +3,7 @@
 #ifndef BFD_ENGINE_SESSION_H
 #define BFD_ENGINE_SESSION_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 #include <netinet/in.h>
@@ -253,10 +254,17 @@ static inline int ktx_answers(const struct session *s)
 	       !zero_rx_tx_held(s) && ktx_pace_ok(s);
 }
 
-/* tx_cfg carries its key, so an address move is a change too. */
+/* tx_cfg carries its key, so an address move is a change too. Accept keys
+ * past auth_nkeys are zero in both, so the compare stops at the last in use:
+ * this runs per session per pass.
+ */
 static inline int ktx_push_needed(const struct session *s, const struct tx_cfg *c)
 {
-	return !s->pushed_valid || memcmp(c, &s->pushed_cfg, sizeof(*c)) != 0;
+	size_t n = offsetof(struct tx_cfg, auth_accept) +
+		   (size_t)c->auth_nkeys * sizeof(c->auth_accept[0]);
+
+	return !s->pushed_valid || c->auth_nkeys != s->pushed_cfg.auth_nkeys ||
+	       memcmp(c, &s->pushed_cfg, n) != 0;
 }
 
 extern struct session sessions[MAX_SESSIONS];

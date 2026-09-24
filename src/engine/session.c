@@ -17,7 +17,7 @@ struct session sessions[MAX_SESSIONS];
  * falls back to the scan, so a stale or missing entry costs time, never an
  * answer. sess_reindex keeps them warm.
  */
-#define IX_BITS 10
+#define IX_BITS 12
 #define IX_WAYS 4
 #define IX_SIZE (1u << IX_BITS)
 
@@ -30,15 +30,25 @@ static uint32_t ix_u32(uint32_t v)
 	return (v * 0x9e3779b1u) >> (32 - IX_BITS);
 }
 
+/* murmur3's finalizer, so every input bit reaches the bucket bits. */
+static uint64_t ix_mix(uint64_t h)
+{
+	h ^= h >> 33;
+	h *= 0xff51afd7ed558ccdull;
+	h ^= h >> 33;
+	h *= 0xc4ceb9fe1a85ec53ull;
+	return h ^ (h >> 33);
+}
+
 static uint32_t ix_pair(const struct bfd_addr *peer, const struct bfd_addr *local)
 {
-	uint32_t h = 2166136261u;
+	uint64_t w[4], h = 0;
 
-	for (int i = 0; i < 16; i++)
-		h = (h ^ peer->b[i]) * 16777619u;
-	for (int i = 0; i < 16; i++)
-		h = (h ^ local->b[i]) * 16777619u;
-	return ix_u32(h);
+	memcpy(w, peer->b, 16);
+	memcpy(w + 2, local->b, 16);
+	for (int i = 0; i < 4; i++)
+		h = ix_mix(h ^ w[i]);
+	return ix_u32((uint32_t)h);
 }
 
 static int ix_match(int k, const struct session *s, uint32_t v, const struct bfd_addr *peer,

@@ -75,6 +75,7 @@ fi
 %dir %{_libdir}/xdp-bfd
 %{_libdir}/xdp-bfd/bfd_xdp.o
 %{_unitdir}/xdp-bfd.service
+%{_unitdir}/xdp-bfd-pin.service
 %{_sysctldir}/50-xdp-bfd.conf
 %dir %{_sysconfdir}/xdp-bfd
 %config(noreplace) %{_sysconfdir}/xdp-bfd/engine.conf

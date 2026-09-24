@@ -27,7 +27,7 @@ SHARED_HDRS := $(wildcard include/*.h)
 
 ENGINE_OBJS := src/engine/log.o src/engine/main.o src/engine/session.o src/engine/dplane.o src/engine/ktx.o src/engine/echo_tx.o src/engine/fsm.o src/engine/stats.o src/engine/rx.o src/engine/ktx_cfg.o \
 	       src/engine/opts.o src/engine/sock.o src/engine/static.o \
-	       src/engine/dplane_conn.o src/engine/ktx_load.o src/engine/ktx_pin.o \
+	       src/engine/dplane_conn.o src/engine/ktx_load.o src/engine/ktx_pin.o src/engine/notify.o \
 	       src/engine/ktx_adopt.o
 
 all: abi-check bfd_xdp.o bfd_loader bfd_tx
@@ -41,6 +41,7 @@ install: all
 	$(INSTALL) -m 0644 bfd_xdp.o  $(DESTDIR)$(LIBDIR)/bfd_xdp.o
 	$(INSTALL) -d $(DESTDIR)$(UNITDIR) $(DESTDIR)$(SYSCTLDIR)
 	$(INSTALL) -m 0644 packaging/xdp-bfd.service $(DESTDIR)$(UNITDIR)/xdp-bfd.service
+	$(INSTALL) -m 0644 packaging/xdp-bfd-pin.service $(DESTDIR)$(UNITDIR)/xdp-bfd-pin.service
 	$(INSTALL) -m 0644 packaging/50-xdp-bfd.conf  $(DESTDIR)$(SYSCTLDIR)/50-xdp-bfd.conf
 	$(INSTALL) -d $(DESTDIR)$(SYSCONFDIR)/xdp-bfd
 	$(INSTALL) -m 0644 packaging/engine.conf $(DESTDIR)$(SYSCONFDIR)/xdp-bfd/engine.conf

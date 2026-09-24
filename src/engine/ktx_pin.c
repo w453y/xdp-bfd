@@ -19,6 +19,7 @@
 #include "log.h"
 #include "session.h"
 #include "ktx.h"
+#include "notify.h"
 
 const char *ktx_pin_dir; /* --pin, or NULL */
 int ktx_reused;		 /* the state maps came from a pin */
@@ -208,7 +209,13 @@ int ktx_pin_holder(void)
 int ktx_pin_take_over(int pid)
 {
 	uint64_t t0 = now_us();
+	char note[32];
 
+	/* Under systemd we become the service before the old engine leaves, so
+	 * its exit is not the service's.
+	 */
+	snprintf(note, sizeof(note), "MAINPID=%d", (int)getpid());
+	sd_note(note);
 	if (kill(pid, SIGUSR2)) {
 		log_err("--pin: cannot signal engine %d: %s\n", pid, strerror(errno));
 		return -1;

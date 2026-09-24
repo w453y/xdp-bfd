@@ -119,10 +119,17 @@ over; it discards them and starts fresh.
 .PP
 The pin directory must be on bpffs and writable by the engine, and
 .I /run/xdp-bfd
-must be writable for the file naming the engine that holds the pins. The
-packaged unit runs as an unprivileged user and provides neither, so
-.B --pin
-is for an engine started directly for now.
+must be writable for the file naming the engine that holds the pins. Under
+the packaged unit, give
+.B --dp-hold 30 --pin /run/xdp-bfd-pin
+in
+.IR engine.conf ;
+.B xdp-bfd-pin.service
+mounts that bpffs for the unit's user, and
+.B systemctl reload xdp-bfd
+does the restart above.
+.B systemctl restart
+still stops first.
 .SH FILES
 .TP
 .I /etc/xdp-bfd/engine.conf

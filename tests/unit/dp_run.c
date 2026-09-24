@@ -32,6 +32,7 @@
 #include "dp/t_resolve.c"
 #include "dp/t_resync.c"
 #include "dp/t_index.c"
+#include "dp/t_scale.c"
 
 int main(void)
 {
@@ -63,6 +64,7 @@ int main(void)
 	case_local_resolve_v6();
 	case_local_resolve_mhop();
 	case_index_matches_scan();
+	case_table_fills();
 
 	/* Below the header, and above the buffer. */
 	case_bad_length(sizeof(struct bfddp_message_header) - 1, "bad-length-under-header");

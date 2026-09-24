@@ -133,12 +133,12 @@ def frr_rm(name):
     sh("sudo %s rm -f %s" % (RUNTIME, name), check=False)
 
 
-def frr_start(name, confdir):
+def frr_start(name, confdir, image=None):
     """Returns the pid, to move a veth end in."""
     frr_rm(name)
     sh(
         "sudo %s run -d --name %s --network none --privileged -v %s:/etc/frr %s"
-        % (RUNTIME, name, confdir, FRR_IMAGE),
+        % (RUNTIME, name, confdir, image or FRR_IMAGE),
         check=False,
     )
     for _ in range(50):

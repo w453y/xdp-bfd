@@ -45,6 +45,7 @@ static struct bpf_program *ktx_prog;
 int ktx_cfg_fd = -1;
 int sess_fd = -1, echo_peers_fd = -1;
 int echo_disc_fd = -1;
+int disc_fd = -1;
 int stats_fd = -1;
 int ktx_flags_fd = -1;
 static struct bpf_object *bpf_obj;
@@ -221,6 +222,7 @@ int ktx_load(void)
 	sess_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_sessions");
 	echo_peers_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_peers");
 	echo_disc_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_disc");
+	disc_fd = bpf_object__find_map_fd_by_name(bpf_obj, "our_discs");
 	ktx_flags_fd = bpf_object__find_map_fd_by_name(bpf_obj, "prog_flags");
 	stats_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_stats");
 

@@ -54,6 +54,14 @@ struct {
 	__type(value, __u8);
 } echo_peers SEC(".maps");
 
+/* Our my_discs, so a peer whose address moved still reaches userspace. */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, BFD_MAX_SESSIONS);
+	__type(key, __u32);
+	__type(value, __u8);
+} our_discs SEC(".maps");
+
 /* Our my_disc to session key, for our returning echoes, which carry no Your Disc. */
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);

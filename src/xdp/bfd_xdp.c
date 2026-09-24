@@ -153,6 +153,16 @@ int bfd_observer(struct xdp_md *ctx)
 
 	count(BFD_STAT_WELL_FORMED);
 
+	/* RFC 5880 s6.3: a nonzero Your Discriminator alone selects the session,
+	 * so when the address pair misses, userspace demuxes on it.
+	 */
+	if (!cfg && bfd->your_disc) {
+		__u32 yd = bpf_ntohl(bfd->your_disc);
+
+		if (bpf_map_lookup_elem(&our_discs, &yd))
+			return XDP_PASS;
+	}
+
 	/* Deferred GTSM: below 255 only for a configured session whose minimum
 	 * admits it. Before the promiscuous PASS, which must not relax it.
 	 */

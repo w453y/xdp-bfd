@@ -319,6 +319,64 @@ static void case_demux(int v6, const char *name, uint32_t ydisc, uint8_t peer_st
 		map_reset();
 }
 
+/* RFC 5880 s6.3: the peer's address moved, so the pair misses. A nonzero Your
+ * Discriminator naming one of ours goes up to userspace, which demuxes on it;
+ * anything else is still an unknown session.
+ */
+static void case_demux_moved(int v6, const char *name, uint32_t ydisc, int want_v)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	__u32 disc = 0x22222222;
+	__u8 one = 1;
+	unsigned long long before;
+	char full[64];
+	struct frame f;
+	int v;
+
+	snprintf(full, sizeof(full), "%s-%s", name, v6 ? "v6" : "v4");
+	if (v6) {
+		map_reset_v6();
+		arm_session_v6();
+	} else {
+		map_reset();
+		arm_session();
+	}
+	if (disc_fd >= 0)
+		bpf_map_update_elem(disc_fd, &disc, &one, BPF_ANY);
+
+	p.your_disc = htonl(ydisc);
+	if (v6) {
+		build_v6(&f, 255, BFD_PORT_1HOP, &p, 0);
+		inet_pton(AF_INET6, "fd00::9", f.b + sizeof(struct ethhdr) + 8);
+	} else {
+		struct iphdr *ip = (void *)(f.b + sizeof(struct ethhdr));
+
+		build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+		ip->saddr = inet_addr("10.0.0.9");
+		ip->check = 0;
+		ip->check = csum16(ip, sizeof(*ip), 0);
+	}
+
+	before = stat_get(BFD_STAT_UNKNOWN_SESSION);
+	v = run_frame(&f, NULL, NULL);
+	if (v != want_v) {
+		printf("FAIL %-40s verdict %s, want %s\n", full,
+		       v < 0 ? "syscall-error" : verdict_str(v), verdict_str(want_v));
+		fails++;
+	} else if (want_v == XDP_DROP && stat_get(BFD_STAT_UNKNOWN_SESSION) != before + 1) {
+		printf("FAIL %-40s unknown-session did not move\n", full);
+		fails++;
+	} else {
+		printf("ok   %-40s %s\n", full, verdict_str(want_v));
+	}
+	if (disc_fd >= 0)
+		bpf_map_delete_elem(disc_fd, &disc);
+	if (v6)
+		map_reset_v6();
+	else
+		map_reset();
+}
+
 static void run_demux_matrix(void)
 {
 	for (int v6 = 0; v6 < 2; v6++) {
@@ -330,6 +388,9 @@ static void run_demux_matrix(void)
 		case_demux(v6, "demux-zero-peer-down", 0, ST_DOWN, XDP_PASS, 1);
 		/* zero with the peer Up: not the restart case, rejected */
 		case_demux(v6, "demux-zero-peer-up", 0, ST_UP, XDP_DROP, 0);
+		case_demux_moved(v6, "demux-moved-names-ours", 0x22222222, XDP_PASS);
+		case_demux_moved(v6, "demux-moved-names-none", 0x99999999, XDP_DROP);
+		case_demux_moved(v6, "demux-moved-zero", 0, XDP_DROP);
 	}
 }
 

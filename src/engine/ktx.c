@@ -166,6 +166,11 @@ void ktx_mirror(struct session *s)
 		s->pushed_valid = 0;
 		return;
 	}
+	if (disc_fd >= 0 && c.my_disc) {
+		__u8 one = 1;
+
+		bpf_map_update_elem(disc_fd, &c.my_disc, &one, 0);
+	}
 	s->pushed_cfg = c;
 	s->pushed_valid = 1;
 }
@@ -216,6 +221,9 @@ void ktx_clear(struct session *s)
 	if (!use_ktx)
 		return;
 	ktx_clear_key(&s->peer, &s->local, s->wire_disc);
+	/* Not in ktx_clear_key: the discriminator outlives an address change. */
+	if (disc_fd >= 0 && s->wire_disc)
+		bpf_map_delete_elem(disc_fd, &s->wire_disc);
 	echo_peer_refresh(&s->peer, s);
 	s->min_ttl = 0;
 	ktx_update_mhop_flag();

@@ -16,6 +16,7 @@ extern int ktx_flags_fd;
 extern int sess_fd;
 extern int echo_peers_fd;
 extern int echo_disc_fd;
+extern int disc_fd;
 extern int stats_fd;
 
 int ktx_load(void);

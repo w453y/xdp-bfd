@@ -270,6 +270,8 @@ void fsm_detect(struct session *s, uint64_t t)
 				      : (s->r_min_tx > s->min_rx_us ? s->r_min_tx : s->min_rx_us);
 		uint8_t mult = s->r_mult ? s->r_mult : s->detect_mult;
 
+		if (iv && t - s->last_rx_us > 2ull * mult * iv && use_ktx)
+			ktx_sync(s, t);
 		if (iv && t - s->last_rx_us > 2ull * mult * iv) {
 			s->auth_rx_seen = 0;
 			s->auth_rx_seq = 0;
@@ -300,6 +302,16 @@ void fsm_detect(struct session *s, uint64_t t)
 	    s->last_rx_us <= s->ktx_seen_us + iv)
 		budget *= 2;
 
+	/* The kernel's view is read only now, when it could save the session. */
+	if ((uint64_t)sd > budget && use_ktx) {
+		ktx_sync(s, t);
+		if (s->state == ST_DOWN || s->state == ST_ADMINDOWN)
+			return;
+		sd = t > s->last_rx_us ? (int64_t)(t - s->last_rx_us) : 0;
+		budget = (uint64_t)mult * iv;
+		if (ktx_events_fd() >= 0 && s->ktx_seen_us && s->last_rx_us <= s->ktx_seen_us + iv)
+			budget *= 2;
+	}
 	if ((uint64_t)sd > budget) {
 		log_debug("[%llu] lid=%u DETECT TIMEOUT (silent %.1fms)\n", (unsigned long long)t,
 			  s->lid, sd / 1000.0);
@@ -485,6 +497,8 @@ void fsm_tx(struct session *s, uint64_t t)
 		every = (uint64_t)mult * iv;
 		if (every < demand_poll_us)
 			every = demand_poll_us;
+		if (t - s->last_rx_us >= every && use_ktx)
+			ktx_sync(s, t);
 		if (t - s->last_rx_us >= every) {
 			log_debug("[%llu] lid=%u demand poll (unverified %.1fms)\n",
 				  (unsigned long long)t, s->lid, (t - s->last_rx_us) / 1000.0);
@@ -515,6 +529,8 @@ void fsm_tx(struct session *s, uint64_t t)
 		 */
 		uint64_t pace = s->applied_tx_us > s->r_min_rx ? s->applied_tx_us : s->r_min_rx;
 
+		if (due && t - s->last_ktx_us >= pace)
+			ktx_sync(s, t);
 		if (t - s->last_ktx_us < pace)
 			due = 0;
 	}

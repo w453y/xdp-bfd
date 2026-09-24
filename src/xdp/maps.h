@@ -25,6 +25,14 @@ struct {
 	__uint(max_entries, 1 << 18);
 } bfd_events SEC(".maps");
 
+/* Apart from bfd_events, so a forger changing fields cannot crowd out a
+ * detection.
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 1 << 16);
+} bfd_changes SEC(".maps");
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, BFD_MAX_SESSIONS);

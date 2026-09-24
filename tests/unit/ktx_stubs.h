@@ -31,6 +31,11 @@ void ktx_clear(struct session *s)
 {
 	(void)s;
 }
+void ktx_sync(struct session *s, uint64_t t)
+{
+	(void)s;
+	(void)t;
+}
 void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local, uint32_t wire_disc)
 {
 	(void)peer;

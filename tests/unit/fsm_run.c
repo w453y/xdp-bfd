@@ -25,6 +25,12 @@ uint64_t *ktx_seq_mem; /* no program: the session's own counter */
 /* No program, so no sweep ring unless a case pretends there is one. */
 static int stub_events_fd = -1;
 
+void ktx_sync(struct session *s, uint64_t t)
+{
+	(void)s;
+	(void)t;
+}
+
 int ktx_events_fd(void)
 {
 	return stub_events_fd;

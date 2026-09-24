@@ -291,6 +291,15 @@ int bfd_observer(struct xdp_md *ctx)
 			st->detect_iv_us = cand;
 	}
 
+	/* What the engine mirrors and would otherwise have to poll for. */
+	int changed = !st->last_seen_ns || st->remote_state != BFD_STATE(bfd) ||
+		      st->remote_flags != (bfd->flags & 0x3f) ||
+		      st->detect_mult != bfd->detect_mult ||
+		      st->min_tx_us != bpf_ntohl(bfd->min_tx) ||
+		      st->min_rx_us != bpf_ntohl(bfd->min_rx) ||
+		      st->remote_min_echo_us != bpf_ntohl(bfd->min_echo_rx) ||
+		      st->remote_disc != bpf_ntohl(bfd->my_disc);
+
 	/* Not atomic: RSS keeps a session on one CPU. Generic XDP with RPS
 	 * could accept one replayed packet.
 	 */
@@ -309,11 +318,20 @@ int bfd_observer(struct xdp_md *ctx)
 	st->detect_mult = bfd->detect_mult;
 
 	/* RFC 5880 s6.8.4: ack through the kernel-owned final_seq; tx_cfg belongs to userspace. */
-	if (cfg && cfg->poll && (bfd->flags & BFD_F_FINAL))
+	if (cfg && cfg->poll && (bfd->flags & BFD_F_FINAL) && st->final_seq != cfg->poll_seq) {
 		st->final_seq = cfg->poll_seq;
+		changed = 1;
+	}
+	if (changed)
+		st->chg_pending = 1;
+	if (st->chg_pending && now - st->chg_emit_ns >= CHANGE_MIN_NS) {
+		st->chg_pending = 0;
+		st->chg_emit_ns = now;
+		emit_change(&c.key, now);
+	}
 
 	if (__sync_val_compare_and_swap(&st->alive, 0, 1) == 0)
-		emit(&c.key, st, now, 1);
+		emit(&c.key, st, now, BFD_EV_ALIVE);
 
 	/* Rewrite this frame into our reply and bounce it. Not while the peer
 	 * is Down or AdminDown, nor without a sendable key.

@@ -22,6 +22,8 @@
 #include "echo_tx.h"
 
 static struct ring_buffer *sweep_rb;
+/* Without the change ring, every pass reads the whole map, as before it. */
+static int have_changes;
 
 int use_ktx;
 /* bfd_sessions, batch-fetched once per pass. */
@@ -48,7 +50,7 @@ static int on_sweep_event(void *ctx, void *data, size_t len)
 	uint64_t decided_us, now;
 
 	(void)ctx;
-	if (len < sizeof(*ev) || ev->event != 0)
+	if (len < sizeof(*ev) || ev->event != BFD_EV_DOWN)
 		return 0; /* ALIVE is in the map already */
 
 	s = sess_by_addr(&ev->key.peer, &ev->key.local);
@@ -56,6 +58,7 @@ static int on_sweep_event(void *ctx, void *data, size_t len)
 		return 0;
 	if (s->state != ST_UP && s->state != ST_INIT)
 		return 0; /* already down, or never up */
+	ktx_sync(s, now_us());
 
 	/* A packet arrived after the sweep looked. */
 	decided_us = ev->last_seen_ns / 1000;
@@ -71,12 +74,46 @@ static int on_sweep_event(void *ctx, void *data, size_t len)
 	return 0;
 }
 
-void ktx_events_init(int map_fd)
+/* Sessions with an announced change, read once each per pass however many
+ * announcements arrived.
+ */
+static uint16_t dirty[MAX_SESSIONS];
+static uint8_t is_dirty[MAX_SESSIONS];
+static int ndirty;
+
+/* The peer changed something the engine mirrors. */
+static int on_change(void *ctx, void *data, size_t len)
+{
+	const struct bfd_event *ev = data;
+	struct session *s;
+	int i;
+
+	(void)ctx;
+	if (len < sizeof(*ev) || ev->event != BFD_EV_CHANGED)
+		return 0;
+	s = sess_by_addr(&ev->key.peer, &ev->key.local);
+	if (!s)
+		return 0;
+	i = (int)(s - sessions);
+	if (!is_dirty[i]) {
+		is_dirty[i] = 1;
+		dirty[ndirty++] = (uint16_t)i;
+	}
+	return 0;
+}
+
+void ktx_events_init(int map_fd, int changes_fd)
 {
 	if (map_fd >= 0)
 		sweep_rb = ring_buffer__new(map_fd, on_sweep_event, NULL, NULL);
-	if (!sweep_rb)
+	if (!sweep_rb) {
 		log_err("kernel-tx: no sweep event ring, detection falls back to the loop\n");
+		return;
+	}
+	if (changes_fd >= 0 && !ring_buffer__add(sweep_rb, changes_fd, on_change, NULL))
+		have_changes = 1;
+	else
+		log_err("kernel-tx: no change ring, the map is read every pass\n");
 }
 
 int ktx_events_fd(void)
@@ -266,27 +303,11 @@ void ktx_session_counters(const struct session *s, uint64_t *rx, uint64_t *tx)
 	}
 }
 
-void ktx_poll_map(struct session *s, uint64_t t)
+/* What the program saw of the peer, mirrored into the session. */
+static void ktx_apply(struct session *s, const struct session_state *m, uint64_t t)
 {
-	struct session_state ms;
+	struct session_state ms = *m;
 
-	if (!use_ktx)
-		return;
-
-	if (poll_batch_unsupported) {
-		struct session_key k = {};
-
-		k.peer = s->peer;
-		k.local = s->local;
-		if (bpf_map_lookup_elem(sess_fd, &k, &ms))
-			return;
-	} else {
-		const struct session_state *msp = poll_find(s);
-
-		if (!msp)
-			return;
-		ms = *msp;
-	}
 	s->ktx_seen_us = ms.last_seen_ns / 1000;
 	if (s->state != ST_UP)
 		return;
@@ -361,4 +382,83 @@ void ktx_poll_map(struct session *s, uint64_t t)
 	}
 	if (ms.remote_state == ST_DOWN)
 		state_transition(s, ST_DOWN, 3, t, "map: peer sent Down");
+}
+
+/* One session, now: before a decision that rests on what the kernel saw. */
+void ktx_sync(struct session *s, uint64_t t)
+{
+	struct session_key k = {};
+	struct session_state ms;
+
+	if (!use_ktx || sess_fd < 0)
+		return;
+	k.peer = s->peer;
+	k.local = s->local;
+	if (!bpf_map_lookup_elem(sess_fd, &k, &ms))
+		ktx_apply(s, &ms, t);
+}
+
+/* Every session, by batch where it works. */
+void ktx_sync_all(uint64_t t)
+{
+	ktx_poll_all();
+	for (int i = 0; i < MAX_SESSIONS; i++) {
+		struct session *s = &sessions[i];
+
+		if (!s->used)
+			continue;
+		if (poll_batch_unsupported) {
+			ktx_sync(s, t);
+		} else {
+			const struct session_state *ms = poll_find(s);
+
+			if (ms)
+				ktx_apply(s, ms, t);
+		}
+	}
+}
+
+static uint64_t ktx_stat_total(__u32 idx)
+{
+	static int ncpu;
+	uint64_t tot = 0;
+
+	if (!ncpu)
+		ncpu = libbpf_num_possible_cpus();
+	if (ncpu <= 0 || ncpu > 1024)
+		return 0;
+
+	__u64 vals[ncpu];
+
+	if (bpf_map_lookup_elem(stats_fd, &idx, vals))
+		return 0;
+	for (int c = 0; c < ncpu; c++)
+		tot += vals[c];
+	return tot;
+}
+
+/* The whole map each second, and whenever the change ring overflowed; each
+ * pass without the ring.
+ */
+void ktx_sync_due(uint64_t t)
+{
+	static uint64_t last_us, lost_seen;
+	uint64_t lost;
+
+	if (!use_ktx)
+		return;
+	for (int k = 0; k < ndirty; k++) {
+		struct session *s = &sessions[dirty[k]];
+
+		is_dirty[dirty[k]] = 0;
+		if (s->used)
+			ktx_sync(s, t);
+	}
+	ndirty = 0;
+	lost = stats_fd >= 0 ? ktx_stat_total(BFD_STAT_CHANGES_LOST) : 0;
+	if (have_changes && lost == lost_seen && t - last_us < 1000000)
+		return;
+	lost_seen = lost;
+	last_us = t;
+	ktx_sync_all(t);
 }

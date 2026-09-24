@@ -44,7 +44,7 @@ static int tune_fd = -1, hb_fd = -1;
 static int flags_fd = -1;
 static int echo_peers_fd = -1, echo_disc_fd = -1;
 static int seq_fd = -1;
-static int disc_fd = -1, budget_fd = -1;
+static int disc_fd = -1, budget_fd = -1, changes_fd = -1;
 static struct bpf_object *sweep_obj;
 static int sweep_prog_fd = -1, sweep_sess_fd = -1, sweep_cfg_fd = -1;
 static int hmac_prog_fd = -1, hmac_map_fd = -1;
@@ -60,6 +60,7 @@ static const char *arm_extra_key = "";
 #include "xdp/t_parse.c"
 #include "xdp/t_tx.c"
 #include "xdp/t_race.c"
+#include "xdp/t_change.c"
 #include "xdp/t_echo.c"
 #include "xdp/t_auth.c"
 #include "xdp/t_sweep.c"
@@ -94,6 +95,7 @@ int main(void)
 	seq_fd = bpf_object__find_map_fd_by_name(obj, "auth_seq");
 	disc_fd = bpf_object__find_map_fd_by_name(obj, "our_discs");
 	budget_fd = bpf_object__find_map_fd_by_name(obj, "moved_budget");
+	changes_fd = bpf_object__find_map_fd_by_name(obj, "bfd_changes");
 	if (cfg_fd < 0 || sess_fd < 0) {
 		fprintf(stderr, "maps not found in %s\n", path);
 		return 1;
@@ -132,6 +134,7 @@ int main(void)
 	case_bounce_v4();
 	case_bounce_v4_frame();
 	case_cfg_update_race();
+	case_change_events();
 	case_bounce_v6_frame();
 	case_trim(0, 8);
 	case_trim(1, 8);

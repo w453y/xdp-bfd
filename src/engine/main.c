@@ -235,7 +235,7 @@ static void session_pass(uint64_t t)
 	/* Sweep verdicts first, so this pass sees them. */
 	ktx_drain_events();
 
-	ktx_poll_all();
+	ktx_sync_due(t);
 	for (int i = 0; i < MAX_SESSIONS; i++) {
 		struct session *cs = &sessions[i];
 
@@ -246,7 +246,6 @@ static void session_pass(uint64_t t)
 			continue;
 		}
 		auth_keys_watch(cs, t);
-		ktx_poll_map(cs, t);
 		fsm_detect(cs, t);
 		fsm_tx(cs, t);
 		echo_tx_maybe(cs, t);

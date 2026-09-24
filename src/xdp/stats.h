@@ -27,4 +27,20 @@ static __always_inline void emit(struct session_key *k, struct session_state *st
 	bpf_ringbuf_submit(e, 0);
 }
 
+/* Only the key: the engine reads the rest from bfd_sessions. */
+static __always_inline void emit_change(struct session_key *k, __u64 now)
+{
+	struct bfd_event *e = bpf_ringbuf_reserve(&bfd_changes, sizeof(*e), 0);
+
+	if (!e) {
+		count(BFD_STAT_CHANGES_LOST);
+		return;
+	}
+	__builtin_memset(e, 0, sizeof(*e));
+	e->ts_ns = now;
+	e->key = *k;
+	e->event = BFD_EV_CHANGED;
+	bpf_ringbuf_submit(e, 0);
+}
+
 #endif /* BFD_XDP_STATS_H */

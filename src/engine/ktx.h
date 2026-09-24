@@ -28,7 +28,7 @@ void ktx_heartbeat(uint64_t now);
 /* ktx.c */
 extern int use_ktx;
 
-void ktx_events_init(int map_fd);
+void ktx_events_init(int map_fd, int changes_fd);
 int ktx_events_fd(void);
 void ktx_drain_events(void);
 void ktx_mirror(struct session *s);
@@ -50,7 +50,9 @@ static inline uint32_t echo_budget_for(uint32_t iv_us)
 void ktx_update_mhop_flag(void);
 void ktx_poll_all(void);
 const char *ktx_poll_mode(void);
-void ktx_poll_map(struct session *s, uint64_t t);
+void ktx_sync(struct session *s, uint64_t t);
+void ktx_sync_all(uint64_t t);
+void ktx_sync_due(uint64_t t);
 void ktx_session_counters(const struct session *s, uint64_t *rx, uint64_t *tx);
 
 /* ktx_cfg.c */

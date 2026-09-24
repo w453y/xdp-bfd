@@ -243,6 +243,8 @@ void echo_tx_maybe(struct session *s, uint64_t t)
 		return;
 	if (t < s->next_echo_tx_us)
 		return;
+	/* Collects the last echo's return before it would count as lost. */
+	ktx_sync(s, t);
 	if (s->echo_last_send_us) {
 		uint64_t gap = t - s->echo_last_send_us;
 

@@ -57,6 +57,8 @@ int main(void)
 	O(session_state, auth_rx_seen);
 	O(session_state, auth_fail_n);
 	O(session_state, auth_fail_ts);
+	O(session_state, chg_pending);
+	O(session_state, chg_emit_ns);
 
 	S(bfd_event);
 	O(bfd_event, ts_ns);

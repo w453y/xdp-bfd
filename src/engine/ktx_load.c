@@ -227,7 +227,8 @@ int ktx_load(void)
 	stats_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_stats");
 
 	/* Optional: fsm_detect covers detection without it. */
-	ktx_events_init(bpf_object__find_map_fd_by_name(bpf_obj, "bfd_events"));
+	ktx_events_init(bpf_object__find_map_fd_by_name(bpf_obj, "bfd_events"),
+			bpf_object__find_map_fd_by_name(bpf_obj, "bfd_changes"));
 
 	if (ktx_deadman_ns)
 		log_info("kernel-tx: dead-man gate at %lluus\n",

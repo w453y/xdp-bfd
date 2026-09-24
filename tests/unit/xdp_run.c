@@ -133,6 +133,9 @@ int main(void)
 	case_auth_seq_by_slot();
 	case_bounce_v4();
 	case_bounce_v4_frame();
+	case_reply_pacing();
+	case_pass_pacing();
+	case_poll_budget();
 	case_cfg_update_race();
 	case_change_events();
 	case_bounce_v6_frame();

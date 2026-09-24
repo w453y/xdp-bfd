@@ -469,3 +469,116 @@ static void case_bounce_envelope_is_ours(void)
 	}
 	map_reset();
 }
+
+/* RFC 5880 s6.8.7: the peer sends no faster than our Required Min RX (10ms
+ * here), so the program answers at most once per 5ms; the packet still counts.
+ */
+static void case_reply_pacing(void)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct bfd_ctrl_pkt p = ctrl_up();
+	unsigned long long r0 = stat_get(BFD_STAT_TOO_FAST);
+	struct session_state st;
+	struct frame f;
+	int bad = 0;
+
+	map_reset();
+	arm_session();
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+	if (run_frame(&f, NULL, NULL) != XDP_TX) {
+		printf("     first frame not answered\n");
+		bad = 1;
+	}
+	if (run_frame(&f, NULL, NULL) != XDP_DROP) {
+		printf("     an immediate second frame was answered\n");
+		bad = 1;
+	}
+	if (stat_get(BFD_STAT_TOO_FAST) != r0 + 1) {
+		printf("     too-fast did not move\n");
+		bad = 1;
+	}
+	if (read_state(&k, &st) && st.rx_pkts != 2) {
+		printf("     rx_pkts %llu, want 2: the withheld frame must still count\n",
+		       (unsigned long long)st.rx_pkts);
+		bad = 1;
+	}
+	usleep(6000);
+	if (run_frame(&f, NULL, NULL) != XDP_TX) {
+		printf("     not answered again after half the interval\n");
+		bad = 1;
+	}
+	map_reset();
+	if (bad) {
+		printf("FAIL %-40s\n", "reply-pacing");
+		fails++;
+	} else {
+		printf("ok   %-40s one reply per half Required Min RX\n", "reply-pacing");
+	}
+}
+
+/* The same spacing when the fast path is off: passed up once, then dropped,
+ * so a forger who turns the fast path off cannot flood the socket instead.
+ */
+static void case_pass_pacing(void)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct tx_cfg cfg;
+	struct frame f;
+	int bad = 0;
+
+	map_reset();
+	arm_session();
+	if (!bpf_map_lookup_elem(cfg_fd, &k, &cfg)) {
+		cfg.enable = 0;
+		cfg_put(cfg_fd, &k, &cfg);
+	}
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+	if (run_frame(&f, NULL, NULL) != XDP_PASS) {
+		printf("     first frame not passed up\n");
+		bad = 1;
+	}
+	if (run_frame(&f, NULL, NULL) != XDP_DROP) {
+		printf("     an immediate second frame was passed up\n");
+		bad = 1;
+	}
+	map_reset();
+	if (bad) {
+		printf("FAIL %-40s\n", "pass-pacing");
+		fails++;
+	} else {
+		printf("ok   %-40s passed up at the same spacing\n", "pass-pacing");
+	}
+}
+
+/* A Final MUST answer every Poll, whatever the spacing, within PF_MAX (32)
+ * per 100ms.
+ */
+static void case_poll_budget(void)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct frame f;
+	int tx = 0, drop = 0, bad = 0;
+
+	map_reset();
+	arm_session();
+	p.flags |= BFD_F_POLL;
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+	for (int i = 0; i < 40; i++) {
+		int v = run_frame(&f, NULL, NULL);
+
+		tx += v == XDP_TX;
+		drop += v == XDP_DROP;
+	}
+	if (tx != 32 || drop != 8) {
+		printf("     %d answered, %d dropped; want 32 and 8\n", tx, drop);
+		bad = 1;
+	}
+	map_reset();
+	if (bad) {
+		printf("FAIL %-40s\n", "poll-budget");
+		fails++;
+	} else {
+		printf("ok   %-40s 32 Polls answered back to back, then dropped\n", "poll-budget");
+	}
+}

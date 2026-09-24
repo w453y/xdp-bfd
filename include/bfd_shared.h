@@ -85,7 +85,8 @@ struct bfd_ctrl_pkt {
 	X(AUTH_RATELIMITED, "auth-ratelimited")	  /* A-bit drop before digest */                  \
 	X(MOVED_RATELIMITED, "moved-ratelimited") /* over the moved-address budget */             \
 	X(ECHO_RATELIMITED, "echo-ratelimited")	  /* over a peer's echo budget */                 \
-	X(CHANGES_LOST, "changes-lost")		  /* change ring full; engine resyncs */
+	X(CHANGES_LOST, "changes-lost")		  /* change ring full; engine resyncs */          \
+	X(TOO_FAST, "too-fast")			  /* faster than the peer may send; dropped */
 
 /* Written between load and attach. Their own map: .rodata would need rewriting
  * whole, and sweep_map holds a bpf_timer.
@@ -222,6 +223,10 @@ struct session_state {
 	__u32 chg_pending;  /* a change not yet announced on bfd_changes */
 	__u64 auth_fail_ts; /* start of the current interval, ns */
 	__u64 chg_emit_ns;  /* the last announcement */
+	__u64 last_act_ns;  /* the last packet answered or passed up */
+	__u64 pf_win_ns;    /* Poll and Final budget window */
+	__u32 pf_n;
+	__u32 pad6;
 };
 
 /* DOWN and ALIVE on bfd_events; CHANGED on bfd_changes, when something the

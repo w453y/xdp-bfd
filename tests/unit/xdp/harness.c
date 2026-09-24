@@ -424,6 +424,19 @@ static void arm_session_v6_ttl(__u32 min_ttl)
 	}
 }
 
+/* So the next frame is answered: the program takes at most two per
+ * Required Min RX.
+ */
+static void reply_window_clear(const struct session_key *k)
+{
+	struct session_state st;
+
+	if (!bpf_map_lookup_elem(sess_fd, k, &st)) {
+		st.last_act_ns = 0;
+		bpf_map_update_elem(sess_fd, k, &st, BPF_ANY);
+	}
+}
+
 /* Read a session's kernel-owned state back after a run. */
 static int read_state(const struct session_key *k, struct session_state *out)
 {

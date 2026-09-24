@@ -333,6 +333,30 @@ int bfd_observer(struct xdp_md *ctx)
 	if (__sync_val_compare_and_swap(&st->alive, 0, 1) == 0)
 		emit(&c.key, st, now, BFD_EV_ALIVE);
 
+	/* RFC 5880 s6.8.7: the peer sends no faster than our Required Min RX,
+	 * jitter included, so twice that is a forger. The packet has counted
+	 * above; it is neither answered nor passed up, so a flood can fill
+	 * neither the transmit ring nor the socket. Poll and Final are exempt,
+	 * within a budget of their own.
+	 */
+	if (cfg) {
+		if (bfd->flags & (BFD_F_POLL | BFD_F_FINAL)) {
+			if (now - st->pf_win_ns > PF_WIN_NS) {
+				st->pf_win_ns = now;
+				st->pf_n = 0;
+			}
+			if (st->pf_n >= PF_MAX) {
+				count(BFD_STAT_TOO_FAST);
+				return XDP_DROP;
+			}
+			st->pf_n++;
+		} else if (now - st->last_act_ns < (__u64)cfg->min_rx_us * 500ull) {
+			count(BFD_STAT_TOO_FAST);
+			return XDP_DROP;
+		}
+		st->last_act_ns = now;
+	}
+
 	/* Rewrite this frame into our reply and bounce it. Not while the peer
 	 * is Down or AdminDown, nor without a sendable key.
 	 */

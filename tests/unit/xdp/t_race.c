@@ -17,7 +17,8 @@ static void race_cfg(struct tx_cfg *c, __u32 my, __u32 your, __u8 mult, __u32 tx
 	c->my_disc = my;
 	c->your_disc = your;
 	c->min_tx_us = tx;
-	c->min_rx_us = tx;
+	/* 0 turns off reply pacing: every frame here must be answered. */
+	c->min_rx_us = 0;
 	c->state = ST_UP;
 	c->mult = mult;
 	c->min_ttl = 255;
@@ -75,6 +76,14 @@ static void case_cfg_update_race(void)
 
 	map_reset();
 	arm_session();
+	{
+		struct session_key ka = key_v4("10.0.0.2", "10.0.0.1");
+		struct tx_cfg a1;
+
+		/* The writer's first config: arm_session's would pace the replies. */
+		race_cfg(&a1, 0x22222222, 0x11111111, 3, 10000);
+		cfg_put(cfg_fd, &ka, &a1);
+	}
 	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
 	pthread_create(&t, NULL, race_writer, &r);
 

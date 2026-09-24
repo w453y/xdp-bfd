@@ -231,9 +231,12 @@ int bfd_observer(struct xdp_md *ctx)
 	struct session_state *st = bpf_map_lookup_elem(&bfd_sessions, &c.key);
 
 	if (!st) {
-		struct session_state init = {};
+		__u32 z = 0;
+		struct session_state *init = bpf_map_lookup_elem(&state_zero, &z);
 
-		bpf_map_update_elem(&bfd_sessions, &c.key, &init, BPF_NOEXIST);
+		if (!init)
+			return XDP_PASS;
+		bpf_map_update_elem(&bfd_sessions, &c.key, init, BPF_NOEXIST);
 		st = bpf_map_lookup_elem(&bfd_sessions, &c.key);
 		if (!st)
 			return XDP_PASS;

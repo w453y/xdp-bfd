@@ -54,6 +54,17 @@ struct {
 	__type(value, struct tx_snap);
 } tx_snap SEC(".maps");
 
+/* All zero, never written: a new bfd_sessions entry is copied from it, not
+ * from a session_state on the stack.
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__uint(map_flags, BPF_F_RDONLY_PROG);
+	__type(key, __u32);
+	__type(value, struct session_state);
+} state_zero SEC(".maps");
+
 /* Peers of echo-active sessions; the reflector returns only their echoes. */
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);

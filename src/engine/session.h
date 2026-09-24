@@ -104,6 +104,7 @@ struct session {
 	uint32_t min_echo_rx_us;     /* advertised Required Min Echo RX */
 	uint8_t min_ttl;	     /* from the ADD; 255 = single-hop */
 	int is_mhop;		     /* RFC 5883: control port 4784 */
+	uint16_t tx_port;	     /* source port of our sends; 0 before the first */
 	uint32_t ifindex;	     /* 0 if unresolved or multihop */
 	uint8_t echo_mac[6];	     /* that interface's MAC, for echo TX */
 	uint8_t echo_mac_valid;

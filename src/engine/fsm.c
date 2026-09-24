@@ -22,6 +22,7 @@
 
 
 int tx_sock = -1, tx6_sock = -1;
+uint16_t tx_sock_port, tx6_sock_port;
 
 /* Tests replace this to fail sends. */
 ssize_t (*fsm_send_hook)(int fd, const void *buf, size_t len, const struct sockaddr *dst,
@@ -35,23 +36,63 @@ static ssize_t fsm_send(int fd, const void *buf, size_t len, const struct sockad
 	return sendto(fd, buf, len, 0, dst, dlen);
 }
 
-/* TX sockets bound to the session's local address and SRC_PORT + slot, so the
- * peer can demux your_disc 0. Stored as fd+1: 0 not opened, -1 bind failed.
+/* RFC 5881 s4: 49152-65535. Binds fd to port on local (NULL: any), or if
+ * another socket holds it, to the highest free port below the slot block,
+ * away from bfdd's from 49152 up. Returns the port, or 0.
  */
+uint16_t tx_bind(int fd, int family, const struct bfd_addr *local, uint16_t port)
+{
+	for (int p = port; p >= 49152; p = p >= SRC_PORT ? SRC_PORT - 1 : p - 1) {
+		int rc;
+
+		if (family == AF_INET6) {
+			struct sockaddr_in6 sa6 = { .sin6_family = AF_INET6,
+						    .sin6_port = htons((uint16_t)p) };
+
+			if (local)
+				memcpy(&sa6.sin6_addr, local->b, 16);
+			rc = bind(fd, (void *)&sa6, sizeof(sa6));
+		} else {
+			struct sockaddr_in sa = { .sin_family = AF_INET,
+						  .sin_port = htons((uint16_t)p) };
+
+			if (local)
+				memcpy(&sa.sin_addr.s_addr, &local->b[12], 4);
+			rc = bind(fd, (void *)&sa, sizeof(sa));
+		}
+		if (!rc)
+			return (uint16_t)p;
+		if (errno != EADDRINUSE)
+			return 0;
+	}
+	errno = EADDRINUSE;
+	return 0;
+}
+
+/* TX sockets bound to the session's local address and SRC_PORT + slot, so the
+ * peer can demux your_disc 0. Stored as fd+1: 0 not opened, -1 bind failed,
+ * retried after SLOT_RETRY_US in case the address was not up yet.
+ */
+#define SLOT_RETRY_US 1000000ull
 static int slot_tx[MAX_SESSIONS];
 static struct bfd_addr slot_tx_ip[MAX_SESSIONS];
+static uint16_t slot_tx_port[MAX_SESSIONS];
+static uint64_t slot_tx_retry_us[MAX_SESSIONS];
 
-static int slot_sock(int slot, const struct session *s)
+static int slot_sock(int slot, const struct session *s, uint16_t *port)
 {
-	if (slot_tx[slot] > 0 && !memcmp(&slot_tx_ip[slot], &s->local, 16))
+	if (slot_tx[slot] > 0 && !memcmp(&slot_tx_ip[slot], &s->local, 16)) {
+		*port = slot_tx_port[slot];
 		return slot_tx[slot] - 1;
-	if (slot_tx[slot] < 0 && !memcmp(&slot_tx_ip[slot], &s->local, 16))
-		return -1; /* bind failed earlier; caller uses fallback */
+	}
+	if (slot_tx[slot] < 0 && !memcmp(&slot_tx_ip[slot], &s->local, 16) &&
+	    now_us() < slot_tx_retry_us[slot])
+		return -1; /* caller uses fallback */
 	if (slot_tx[slot] > 0)
 		close(slot_tx[slot] - 1); /* slot reused, new local addr */
 	slot_tx[slot] = 0;
 	slot_tx_ip[slot] = s->local;
-	int fd, rc;
+	int fd;
 
 	if (s->family == AF_INET6) {
 		fd = socket(AF_INET6, SOCK_DGRAM, 0);
@@ -62,10 +103,6 @@ static int slot_sock(int slot, const struct session *s)
 
 		setsockopt(fd, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &hops, sizeof(hops));
 		setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &on, sizeof(on));
-		struct sockaddr_in6 sa6 = { .sin6_family = AF_INET6,
-					    .sin6_port = htons(SRC_PORT + slot) };
-		memcpy(&sa6.sin6_addr, s->local.b, 16);
-		rc = bind(fd, (void *)&sa6, sizeof(sa6));
 	} else {
 		fd = socket(AF_INET, SOCK_DGRAM, 0);
 		if (fd < 0)
@@ -74,19 +111,23 @@ static int slot_sock(int slot, const struct session *s)
 		int ttl = 255;
 
 		setsockopt(fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
-		struct sockaddr_in sa = { .sin_family = AF_INET,
-					  .sin_port = htons(SRC_PORT + slot) };
-		memcpy(&sa.sin_addr.s_addr, &s->local.b[12], 4);
-		rc = bind(fd, (void *)&sa, sizeof(sa));
 	}
-	if (rc) {
-		log_err("slot %d: bind port %d: %s - using fallback socket (ephemeral src port) for this session\n",
-			slot, SRC_PORT + slot, strerror(errno));
+
+	uint16_t p = tx_bind(fd, s->family, &s->local, (uint16_t)(SRC_PORT + slot));
+
+	if (!p) {
+		log_err("slot %d: bind port %d: %s - sending from the fallback socket\n", slot,
+			SRC_PORT + slot, strerror(errno));
 		close(fd);
 		slot_tx[slot] = -1;
+		slot_tx_retry_us[slot] = now_us() + SLOT_RETRY_US;
 		return -1;
 	}
+	if (p != SRC_PORT + slot)
+		log_err("slot %d: port %d is taken; sending from %u\n", slot, SRC_PORT + slot, p);
 	slot_tx[slot] = fd + 1;
+	slot_tx_port[slot] = p;
+	*port = p;
 	return fd;
 }
 
@@ -337,10 +378,13 @@ static void tx_one(struct session *s)
 		memcpy(buf, &o, BFD_MIN_LEN);
 	}
 
-	int txfd = slot_sock((int)(s - sessions), s);
+	/* The program replies from tx_port, so both planes share one. */
+	int txfd = slot_sock((int)(s - sessions), s, &s->tx_port);
 
-	if (txfd < 0)
+	if (txfd < 0) {
 		txfd = s->family == AF_INET6 ? tx6_sock : tx_sock;
+		s->tx_port = s->family == AF_INET6 ? tx6_sock_port : tx_sock_port;
+	}
 	if (s->family == AF_INET6) {
 		struct sockaddr_in6 dst = { .sin6_family = AF_INET6,
 					    .sin6_port = htons(s->is_mhop ? BFD_PORT_MHOP

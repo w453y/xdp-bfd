@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include <arpa/inet.h>
 
 #include "bfd_auth.h"
@@ -51,6 +52,7 @@ int main(void)
 	run_detect_vectors();
 	case_zero_remote_min_rx_halts_tx();
 	case_failed_send_keeps_pending();
+	case_tx_bind_skips_taken_ports();
 	case_authenticated_output_verifies();
 	case_no_sendable_key_sends_nothing();
 	case_echo_only_change_notifies();

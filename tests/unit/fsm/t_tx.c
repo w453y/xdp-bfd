@@ -252,3 +252,47 @@ static void case_slow_rate_honours_remote_min_rx(void)
 		       (unsigned long long)lo);
 	report("slow-rate-honours-remote-min-rx", lo < 1500000, "no faster than 2s less jitter");
 }
+
+/* RFC 5881 s4: a taken port moves the session below the slot block, never out
+ * of 49152-65535, including when the first port below is taken too.
+ */
+static void case_tx_bind_skips_taken_ports(void)
+{
+	struct bfd_addr lo = { 0 };
+	struct sockaddr_in sa = { .sin_family = AF_INET };
+	uint32_t a = inet_addr("127.0.0.1");
+	int hold[2], fd, bad = 0;
+	uint16_t p;
+
+	lo.b[10] = lo.b[11] = 0xff;
+	memcpy(&lo.b[12], &a, 4);
+	sa.sin_addr.s_addr = a;
+	for (int i = 0; i < 2; i++) {
+		hold[i] = socket(AF_INET, SOCK_DGRAM, 0);
+		sa.sin_port = htons(i ? SRC_PORT - 1 : SRC_PORT + 3);
+		if (bind(hold[i], (void *)&sa, sizeof(sa))) {
+			printf("     cannot hold a port: %s\n", strerror(errno));
+			bad = 1;
+		}
+	}
+
+	fd = socket(AF_INET, SOCK_DGRAM, 0);
+	p = tx_bind(fd, AF_INET, &lo, SRC_PORT + 3);
+	if (p != SRC_PORT - 2) {
+		printf("     slot 3's port and the one below held: got %u, want %u\n", p,
+		       SRC_PORT - 2);
+		bad = 1;
+	}
+	close(fd);
+
+	fd = socket(AF_INET, SOCK_DGRAM, 0);
+	p = tx_bind(fd, AF_INET, &lo, SRC_PORT - 1);
+	if (p != SRC_PORT - 2) {
+		printf("     from a held first port: got %u, want %u\n", p, SRC_PORT - 2);
+		bad = 1;
+	}
+	close(fd);
+	close(hold[0]);
+	close(hold[1]);
+	report("tx-bind-skips-taken-ports", bad, "next free port down");
+}

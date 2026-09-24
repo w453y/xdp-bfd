@@ -253,7 +253,7 @@ struct tx_cfg {
 	__u32 your_disc;
 	__u32 min_tx_us;
 	__u32 min_rx_us;
-	__u16 src_port; /* source port of kernel replies; 0 = BFD_SRC_PORT */
+	__u16 src_port; /* userspace sends from it too; 0 = BFD_SRC_PORT */
 	__u8 state;
 	__u8 diag;
 	__u8 mult;
@@ -263,6 +263,7 @@ struct tx_cfg {
 	/* the peer's silence is requested; the engine sees the remote state */
 	__u8 demand_hold;
 	__u8 mhop;	      /* 4784 (RFC 5883), else 3784 */
+	__u8 slot;	      /* the session's slot, indexing auth_seq */
 	__u32 poll_seq;	      /* acked through session_state.final_seq */
 	__u32 echo_iv_us;     /* echo interval; 0 = echo off */
 	__u32 min_echo_rx_us; /* 0 unless echo is on */

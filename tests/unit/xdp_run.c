@@ -124,6 +124,7 @@ int main(void)
 	case_v6_exthdr();
 	case_auth_ratelimit();
 	case_auth_seq_shared();
+	case_auth_seq_by_slot();
 	case_bounce_v4();
 	case_bounce_v4_frame();
 	case_cfg_update_race();

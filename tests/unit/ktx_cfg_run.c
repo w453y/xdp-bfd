@@ -70,6 +70,18 @@ int main(void)
 		       c.mult != s->detect_mult || c.min_ttl != s->min_ttl,
 	       "");
 
+	report("key-carried-in-cfg", memcmp(&c.key, &k, sizeof(k)), "checked by the program");
+	report("port-before-first-send", c.src_port != SRC_PORT || c.slot != 0, "the slot's own");
+
+	s = &sessions[5];
+	*s = sessions[0];
+	s->tx_port = SRC_PORT - 2;
+	ktx_cfg_for(s, NOW, &c, &k);
+	report("port-follows-userspace", c.src_port != SRC_PORT - 2 || c.slot != 5,
+	       "the port sent from; slot 5 kept for auth_seq");
+	s = arm();
+	ktx_cfg_for(s, NOW, &c, &k);
+
 	/* --- enable: exactly ktx_answers --- */
 	report("enable-up-unauthenticated", c.enable != 1,
 	       "an Up session the program can answer for");

@@ -213,7 +213,7 @@ static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 
 	/* RFC 5880 s6.7.3, from the counter shared with the engine. */
 	{
-		__u32 slot = cfg->src_port ? (__u32)cfg->src_port - BFD_SRC_PORT : 0;
+		__u32 slot = cfg->slot;
 		__u64 *sq;
 
 		if (slot >= BFD_MAX_SESSIONS)

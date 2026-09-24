@@ -141,18 +141,30 @@ int rx_drain(const struct rx_sock *r, uint64_t t, int budget)
 	return d;
 }
 
+/* Shared by sessions whose own socket cannot be bound. Bound too, since an
+ * ephemeral port can fall outside RFC 5881's range.
+ */
 void tx_open_fallback(void)
 {
-	int hops = 255;
+	int hops = 255, on = 1;
 
 	tx_sock = socket(AF_INET, SOCK_DGRAM, 0);
-	if (tx_sock < 0)
+	if (tx_sock < 0) {
 		perror("socket v4 fallback TX");
-	else
+	} else {
 		setsockopt(tx_sock, IPPROTO_IP, IP_TTL, &hops, sizeof(hops));
+		tx_sock_port = tx_bind(tx_sock, AF_INET, NULL, SRC_PORT - 1);
+		if (!tx_sock_port)
+			perror("bind v4 fallback TX");
+	}
 	tx6_sock = socket(AF_INET6, SOCK_DGRAM, 0);
-	if (tx6_sock < 0)
+	if (tx6_sock < 0) {
 		perror("socket v6 fallback TX");
-	else
+	} else {
 		setsockopt(tx6_sock, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &hops, sizeof(hops));
+		setsockopt(tx6_sock, IPPROTO_IPV6, IPV6_V6ONLY, &on, sizeof(on));
+		tx6_sock_port = tx_bind(tx6_sock, AF_INET6, NULL, SRC_PORT - 1);
+		if (!tx6_sock_port)
+			perror("bind v6 fallback TX");
+	}
 }

@@ -289,3 +289,56 @@ static void case_auth_seq_shared(void)
 		printf("ok   %-40s one counter, no reuse\n", "auth-seq-shared-counter");
 	}
 }
+
+/* A session whose own port was taken replies from another, and still draws
+ * from its slot's counter.
+ */
+static void case_auth_seq_by_slot(void)
+{
+	const char *name = "auth-seq-by-slot-not-port";
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	unsigned char out[FRAME_MAX];
+	unsigned int out_len = 0;
+	struct tx_cfg cfg;
+	struct frame f;
+	__u32 slot = 5;
+	__u64 v = 500;
+	int bad = 0;
+
+	map_reset();
+	arm_session_auth(BFD_AUTH_METICULOUS_SHA1, 7, "topsecret");
+	if (seq_fd < 0 || bpf_map_lookup_elem(cfg_fd, &k, &cfg)) {
+		printf("FAIL %-40s no cfg or auth_seq\n", name);
+		fails++;
+		return;
+	}
+	cfg.slot = (__u8)slot;
+	cfg.src_port = BFD_SRC_PORT - 2;
+	cfg_put(cfg_fd, &k, &cfg);
+	bpf_map_update_elem(seq_fd, &slot, &v, BPF_ANY);
+
+	build_sha1_auth(&f, "topsecret", 7, 1, BFD_AUTH_METICULOUS_SHA1);
+	if (run_frame(&f, out, &out_len) != XDP_TX) {
+		printf("     no reply\n");
+		bad = 1;
+	} else {
+		const struct udphdr *ou = (const void *)(out + 14 + 20);
+
+		if (reply_seq(out) != 501) {
+			printf("     reply carries %u, want 501 from slot 5\n", reply_seq(out));
+			bad = 1;
+		}
+		if (ntohs(ou->source) != BFD_SRC_PORT - 2) {
+			printf("     reply from port %u, want %u\n", ntohs(ou->source),
+			       BFD_SRC_PORT - 2);
+			bad = 1;
+		}
+	}
+	map_reset();
+	if (bad) {
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s slot 5's counter, from the session's port\n", name);
+	}
+}

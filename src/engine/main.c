@@ -260,7 +260,7 @@ int main(int argc, char **argv)
 	/* Per socket per pass, so a flood cannot starve TX, detection or the
 	 * dplane.
 	 */
-	const int drain_budget = MAX_SESSIONS;
+	const int drain_budget = 64;
 	struct opts o;
 	int rc;
 

@@ -136,6 +136,7 @@ static int slot_sock(int slot, const struct session *s, uint16_t *port)
 
 void state_transition(struct session *s, int newstate, int diag, uint64_t t, const char *why)
 {
+	sess_wake(s);
 	if (s->state == newstate)
 		return;
 
@@ -189,6 +190,7 @@ void state_transition(struct session *s, int newstate, int diag, uint64_t t, con
 
 void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 {
+	sess_wake(s);
 	int ps = (p->flags >> 6) & 3;
 
 	s->rx_pkts++;
@@ -270,6 +272,8 @@ void fsm_detect(struct session *s, uint64_t t)
 				      : (s->r_min_tx > s->min_rx_us ? s->r_min_tx : s->min_rx_us);
 		uint8_t mult = s->r_mult ? s->r_mult : s->detect_mult;
 
+		if (iv && t - s->last_rx_us > 2ull * mult * iv && use_ktx)
+			ktx_sync(s, t);
 		if (iv && t - s->last_rx_us > 2ull * mult * iv) {
 			s->auth_rx_seen = 0;
 			s->auth_rx_seq = 0;
@@ -300,6 +304,16 @@ void fsm_detect(struct session *s, uint64_t t)
 	    s->last_rx_us <= s->ktx_seen_us + iv)
 		budget *= 2;
 
+	/* The kernel's view is read only now, when it could save the session. */
+	if ((uint64_t)sd > budget && use_ktx) {
+		ktx_sync(s, t);
+		if (s->state == ST_DOWN || s->state == ST_ADMINDOWN)
+			return;
+		sd = t > s->last_rx_us ? (int64_t)(t - s->last_rx_us) : 0;
+		budget = (uint64_t)mult * iv;
+		if (ktx_events_fd() >= 0 && s->ktx_seen_us && s->last_rx_us <= s->ktx_seen_us + iv)
+			budget *= 2;
+	}
 	if ((uint64_t)sd > budget) {
 		log_debug("[%llu] lid=%u DETECT TIMEOUT (silent %.1fms)\n", (unsigned long long)t,
 			  s->lid, sd / 1000.0);
@@ -485,6 +499,8 @@ void fsm_tx(struct session *s, uint64_t t)
 		every = (uint64_t)mult * iv;
 		if (every < demand_poll_us)
 			every = demand_poll_us;
+		if (t - s->last_rx_us >= every && use_ktx)
+			ktx_sync(s, t);
 		if (t - s->last_rx_us >= every) {
 			log_debug("[%llu] lid=%u demand poll (unverified %.1fms)\n",
 				  (unsigned long long)t, s->lid, (t - s->last_rx_us) / 1000.0);
@@ -515,6 +531,8 @@ void fsm_tx(struct session *s, uint64_t t)
 		 */
 		uint64_t pace = s->applied_tx_us > s->r_min_rx ? s->applied_tx_us : s->r_min_rx;
 
+		if (due && t - s->last_ktx_us >= pace)
+			ktx_sync(s, t);
 		if (t - s->last_ktx_us < pace)
 			due = 0;
 	}
@@ -525,4 +543,38 @@ void fsm_tx(struct session *s, uint64_t t)
 
 	if (t >= s->next_tx_us)
 		tx_reschedule(s, t);
+}
+
+/* When fsm_tx next has anything to do, mirroring its checks: early costs a
+ * visit, late would miss a transmission.
+ */
+uint64_t fsm_tx_next_at(const struct session *s, uint64_t t)
+{
+	uint64_t at = s->next_tx_us;
+
+	if (s->send_final || s->just_up || (s->admin_down && s->state != ST_ADMINDOWN) ||
+	    demand_announce_due(s))
+		return t;
+	if (demand_poll_us && demand_detect_held(s) && s->last_rx_us) {
+		uint64_t iv = s->detect_iv_us;
+		uint8_t mult = s->r_mult ? s->r_mult : s->detect_mult;
+		uint64_t every;
+
+		if (!iv)
+			iv = s->r_min_tx > s->min_rx_us ? s->r_min_tx : s->min_rx_us;
+		every = (uint64_t)mult * iv;
+		if (every < demand_poll_us)
+			every = demand_poll_us;
+		if (s->last_rx_us + every < at)
+			at = s->last_rx_us + every;
+	}
+	/* Overdue but held back while the fast path answers: due again once
+	 * its replies are a pace old.
+	 */
+	if (at <= t && use_ktx && !s->ktx_uncovered && ktx_answers(s)) {
+		uint64_t pace = s->applied_tx_us > s->r_min_rx ? s->applied_tx_us : s->r_min_rx;
+
+		at = s->last_ktx_us + pace;
+	}
+	return at > t ? at : t;
 }

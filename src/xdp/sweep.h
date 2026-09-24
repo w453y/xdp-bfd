@@ -52,7 +52,7 @@ static long check_session(struct bpf_map *map, struct session_key *k, struct ses
 	if (!st->alive)
 		return 0;
 	if ((__u64)delta > detect_ns && __sync_val_compare_and_swap(&st->alive, 1, 0) == 1)
-		emit(k, st, now, 0);
+		emit(k, st, now, BFD_EV_DOWN);
 	return 0;
 }
 

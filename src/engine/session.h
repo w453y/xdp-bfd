@@ -290,6 +290,17 @@ static inline uint32_t auth_seq_next(struct session *s)
 	return ++s->auth_tx_seq;
 }
 
+/* When the loop next visits each slot; 0 is the next pass. Set by whatever
+ * touches a session, so the pass visits only those and the ones that are due.
+ */
+extern uint64_t sess_wake_at[MAX_SESSIONS];
+
+static inline void sess_wake(const struct session *s)
+{
+	sess_wake_at[s - sessions] = 0;
+}
+
+void sess_wake_all(void);
 struct session *sess_alloc(void);
 /* After setting a session's lid, wire_disc or addresses. */
 void sess_reindex(const struct session *s);

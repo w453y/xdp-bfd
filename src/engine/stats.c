@@ -132,6 +132,7 @@ static void one_session(FILE *f, const struct session *s, int first)
 
 void stats_dump(void)
 {
+	ktx_sync_all(now_us());
 	/* From the list the program counts with. */
 	static const char *const names[] = {
 #define BFD_STAT_NAME(n, s) s,

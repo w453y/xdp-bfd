@@ -312,3 +312,36 @@ static void case_tx_bind_skips_taken_ports(void)
 	close(hold[1]);
 	report("tx-bind-skips-taken-ports", bad, "next free port down");
 }
+
+/* The loop sleeps a session until fsm_tx_next_at; late would miss a send. */
+static void case_tx_next_at(void)
+{
+	uint64_t t = 2000000;
+	struct session *s = sess_init(ST_UP);
+	int bad = 0;
+
+	s->next_tx_us = t + 5000;
+	if (fsm_tx_next_at(s, t) != t + 5000) {
+		printf("     plain: %llu, want the next transmission\n",
+		       (unsigned long long)(fsm_tx_next_at(s, t) - t));
+		bad = 1;
+	}
+	s->send_final = 1;
+	if (fsm_tx_next_at(s, t) != t) {
+		printf("     a Final pending does not wake now\n");
+		bad = 1;
+	}
+	s->send_final = 0;
+
+	/* Overdue, but the fast path answered 2ms ago at a 10ms pace. */
+	use_ktx = 1;
+	s->next_tx_us = t - 1;
+	s->last_ktx_us = t - 2000;
+	if (fsm_tx_next_at(s, t) != t + 8000) {
+		printf("     paced by the fast path: +%lld, want +8000\n",
+		       (long long)(fsm_tx_next_at(s, t) - t));
+		bad = 1;
+	}
+	use_ktx = 0;
+	report("tx-next-at", bad, "next send, a pending Final, the fast path's pace");
+}

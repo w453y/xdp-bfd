@@ -223,6 +223,34 @@ static void auth_keys_watch(struct session *cs, uint64_t t)
 	}
 }
 
+/* A session nothing touched is still looked at this often. */
+#define WAKE_CAP_US 100000
+
+/* The soonest anything in the pass acts on the session. */
+static uint64_t sess_next_wake(const struct session *s, uint64_t t)
+{
+	uint64_t w = t + WAKE_CAP_US, at = fsm_tx_next_at(s, t);
+
+	if (at < w)
+		w = at;
+	if (s->state != ST_DOWN && s->state != ST_ADMINDOWN && s->last_rx_us &&
+	    !demand_detect_held(s)) {
+		uint64_t iv = s->detect_iv_us;
+		uint8_t mult = s->r_mult ? s->r_mult : s->detect_mult;
+
+		if (!iv)
+			iv = s->r_min_tx > s->min_rx_us ? s->r_min_tx : s->min_rx_us;
+		at = s->last_rx_us + (uint64_t)mult * iv;
+		if (at < w)
+			w = at;
+	}
+	if (echo_interval(s) && s->next_echo_tx_us < w)
+		w = s->next_echo_tx_us;
+	if (s->orphaned && s->orphan_deadline_us < w)
+		w = s->orphan_deadline_us;
+	return w > t ? w : t;
+}
+
 static void session_pass(uint64_t t)
 {
 	if (dp_reconcile_us && t >= dp_reconcile_us) {
@@ -235,23 +263,29 @@ static void session_pass(uint64_t t)
 	/* Sweep verdicts first, so this pass sees them. */
 	ktx_drain_events();
 
-	ktx_poll_all();
+	ktx_sync_due(t);
 	for (int i = 0; i < MAX_SESSIONS; i++) {
 		struct session *cs = &sessions[i];
 
-		if (!cs->used)
+		/* The wake array only, so a session not due costs no cache miss. */
+		if (sess_wake_at[i] > t)
 			continue;
+		if (!cs->used) {
+			sess_wake_at[i] = UINT64_MAX;
+			continue;
+		}
 		if (cs->orphaned && t >= cs->orphan_deadline_us) {
 			sess_teardown_one(cs, "hold expired");
 			continue;
 		}
 		auth_keys_watch(cs, t);
-		ktx_poll_map(cs, t);
 		fsm_detect(cs, t);
 		fsm_tx(cs, t);
 		echo_tx_maybe(cs, t);
 		dp_reresolve_wildcard(cs, t);
 		ktx_mirror(cs);
+		/* Whatever touched it during the visit has been handled. */
+		sess_wake_at[i] = cs->used ? sess_next_wake(cs, t) : UINT64_MAX;
 	}
 }
 

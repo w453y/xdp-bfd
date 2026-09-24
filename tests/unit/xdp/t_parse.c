@@ -15,6 +15,11 @@ static void case_deferred_gtsm(void)
 	expect("deferred-gtsm-low-ttl-accepted", run_frame(&f, NULL, NULL), XDP_TX);
 
 	build_v4(&f, 32, BFD_PORT_MHOP, &p, 0);
+	{
+		struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+
+		reply_window_clear(&k);
+	}
 	expect("deferred-gtsm-exact-min-accepted", run_frame(&f, NULL, NULL), XDP_TX);
 
 	build_v4(&f, 16, BFD_PORT_MHOP, &p, 0);

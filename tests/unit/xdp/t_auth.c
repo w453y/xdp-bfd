@@ -275,6 +275,11 @@ static void case_auth_seq_shared(void)
 	v++;
 	bpf_map_update_elem(seq_fd, &slot, &v, BPF_ANY);
 
+	{
+		struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+
+		reply_window_clear(&k);
+	}
 	build_sha1_auth(&f, "topsecret", 7, 2, BFD_AUTH_METICULOUS_SHA1);
 	if (run_frame(&f, out, &out_len) != XDP_TX || reply_seq(out) != 1003) {
 		printf("     second reply carries %u, want 1003 after the engine took 1002\n",

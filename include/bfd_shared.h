@@ -84,7 +84,9 @@ struct bfd_ctrl_pkt {
 	X(V6_EXTHDR, "v6-exthdr")		  /* BFD behind a v6 ext hdr */                   \
 	X(AUTH_RATELIMITED, "auth-ratelimited")	  /* A-bit drop before digest */                  \
 	X(MOVED_RATELIMITED, "moved-ratelimited") /* over the moved-address budget */             \
-	X(ECHO_RATELIMITED, "echo-ratelimited")	  /* over a peer's echo budget */
+	X(ECHO_RATELIMITED, "echo-ratelimited")	  /* over a peer's echo budget */                 \
+	X(CHANGES_LOST, "changes-lost")		  /* change ring full; engine resyncs */          \
+	X(TOO_FAST, "too-fast")			  /* faster than the peer may send; dropped */
 
 /* Written between load and attach. Their own map: .rodata would need rewriting
  * whole, and sweep_map holds a bpf_timer.
@@ -218,9 +220,19 @@ struct session_state {
 	__u32 auth_rx_seq;  /* highest sequence accepted from the peer */
 	__u32 auth_rx_seen; /* auth_rx_seq is valid */
 	__u32 auth_fail_n;  /* digest failures this interval; kernel-owned */
-	__u32 pad5;
+	__u32 chg_pending;  /* a change not yet announced on bfd_changes */
 	__u64 auth_fail_ts; /* start of the current interval, ns */
+	__u64 chg_emit_ns;  /* the last announcement */
+	__u64 last_act_ns;  /* the last packet answered or passed up */
+	__u64 pf_win_ns;    /* Poll and Final budget window */
+	__u32 pf_n;
+	__u32 pad6;
 };
+
+/* DOWN and ALIVE on bfd_events; CHANGED on bfd_changes, when something the
+ * engine mirrors from the peer's packets moved.
+ */
+enum { BFD_EV_DOWN, BFD_EV_ALIVE, BFD_EV_CHANGED };
 
 /* Liveness transitions for userspace. */
 struct bfd_event {
@@ -228,7 +240,7 @@ struct bfd_event {
 	__u64 last_seen_ns; /* last packet before verdict  */
 	struct session_key key;
 	__u32 remote_disc;
-	__u8 event; /* 0 = DETECT-DOWN, 1 = ALIVE  */
+	__u8 event; /* BFD_EV_* */
 };
 
 /* A power of two, so a searched index can be masked. */

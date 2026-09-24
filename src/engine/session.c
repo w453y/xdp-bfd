@@ -11,6 +11,12 @@
 #include "session.h"
 
 struct session sessions[MAX_SESSIONS];
+uint64_t sess_wake_at[MAX_SESSIONS];
+
+void sess_wake_all(void)
+{
+	memset(sess_wake_at, 0, sizeof(sess_wake_at));
+}
 
 /* Lookup caches over the table, one per key, WAYS entries per bucket holding
  * slot + 1. A cache: every hit is checked against the session, and a miss
@@ -122,6 +128,7 @@ struct session *sess_alloc(void)
 		if (!sessions[i].used) {
 			memset(&sessions[i], 0, sizeof(sessions[i]));
 			sessions[i].used = 1;
+			sess_wake_at[i] = 0;
 			return &sessions[i];
 		}
 	return NULL;

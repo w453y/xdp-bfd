@@ -19,11 +19,18 @@
 
 
 struct session sessions[MAX_SESSIONS];
+uint64_t sess_wake_at[MAX_SESSIONS];
 int use_ktx;	       /* 0: the kernel-TX gate in fsm_tx stays shut */
 uint64_t *ktx_seq_mem; /* no program: the session's own counter */
 
 /* No program, so no sweep ring unless a case pretends there is one. */
 static int stub_events_fd = -1;
+
+void ktx_sync(struct session *s, uint64_t t)
+{
+	(void)s;
+	(void)t;
+}
 
 int ktx_events_fd(void)
 {
@@ -53,6 +60,7 @@ int main(void)
 	case_zero_remote_min_rx_halts_tx();
 	case_failed_send_keeps_pending();
 	case_tx_bind_skips_taken_ports();
+	case_tx_next_at();
 	case_authenticated_output_verifies();
 	case_no_sendable_key_sends_nothing();
 	case_echo_only_change_notifies();

@@ -28,7 +28,7 @@ void ktx_cfg_for(const struct session *s, int64_t now, struct tx_cfg *c, struct 
 		.min_tx_us = s->min_tx_us,
 		.min_rx_us = s->min_rx_us,
 		.src_port = s->tx_port ? s->tx_port : (__u16)(SRC_PORT + (s - sessions)),
-		.slot = (__u8)(s - sessions),
+		.slot = (__u16)(s - sessions),
 		.state = s->state,
 		.diag = s->diag,
 		.mult = s->detect_mult,

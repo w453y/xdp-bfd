@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <unistd.h>
 #include <pthread.h>
 #include <sched.h>
 #include <arpa/inet.h>
@@ -43,7 +44,7 @@ static int tune_fd = -1, hb_fd = -1;
 static int flags_fd = -1;
 static int echo_peers_fd = -1, echo_disc_fd = -1;
 static int seq_fd = -1;
-static int disc_fd = -1;
+static int disc_fd = -1, budget_fd = -1;
 static struct bpf_object *sweep_obj;
 static int sweep_prog_fd = -1, sweep_sess_fd = -1, sweep_cfg_fd = -1;
 static int hmac_prog_fd = -1, hmac_map_fd = -1;
@@ -92,6 +93,7 @@ int main(void)
 	echo_disc_fd = bpf_object__find_map_fd_by_name(obj, "echo_disc");
 	seq_fd = bpf_object__find_map_fd_by_name(obj, "auth_seq");
 	disc_fd = bpf_object__find_map_fd_by_name(obj, "our_discs");
+	budget_fd = bpf_object__find_map_fd_by_name(obj, "moved_budget");
 	if (cfg_fd < 0 || sess_fd < 0) {
 		fprintf(stderr, "maps not found in %s\n", path);
 		return 1;

@@ -17,7 +17,7 @@ from conftest import (
 )
 from lib.netns import IP_A
 
-SLOT0_PORT = 65472  # BFD_SRC_PORT + slot 0
+SLOT0_PORT = 64512  # BFD_SRC_PORT + slot 0
 CAP = "/tmp/bfd_rig_sport.txt"
 SPORT = re.compile(r"IP %s\.(\d+) > " % re.escape(IP_A))
 

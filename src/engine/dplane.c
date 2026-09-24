@@ -212,6 +212,7 @@ void dp_reresolve_wildcard(struct session *s, uint64_t now)
 		echo_peer_refresh(&s->peer, s);
 		s->echo_disc_done = 0;
 		s->pushed_valid = 0;
+		sess_reindex(s);
 	}
 }
 
@@ -393,6 +394,7 @@ static void dp_handle_add(const struct bfddp_session_msg *sm, uint64_t t)
 		s->wire_disc = d;
 	}
 	dp_add_addrs(s, sm, fresh);
+	sess_reindex(s);
 
 	old_tx = s->min_tx_us;
 	old_rx = s->min_rx_us;

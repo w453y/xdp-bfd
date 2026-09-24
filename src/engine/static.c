@@ -117,6 +117,7 @@ int static_session_add(const struct opts *o)
 		return -1;
 	s->lid = (random() & 0x7fffffff) | 1;
 	s->wire_disc = s->lid;
+	sess_reindex(s);
 	s->min_tx_us = DEF_MIN_TX;
 	s->applied_tx_us = DEF_MIN_TX;
 	s->min_rx_us = DEF_MIN_RX;

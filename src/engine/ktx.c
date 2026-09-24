@@ -28,6 +28,8 @@ int use_ktx;
 static struct session_key poll_keys[MAX_SESSIONS];
 static struct session_state poll_vals[MAX_SESSIONS];
 static __u32 poll_n;
+/* Each session's entry in the batch, + 1, so the pass is not quadratic. */
+static uint16_t poll_of[MAX_SESSIONS];
 static int poll_batch_unsupported;
 
 /* For the stats dump. */
@@ -92,6 +94,7 @@ void ktx_drain_events(void)
 void ktx_poll_all(void)
 {
 	poll_n = 0;
+	memset(poll_of, 0, sizeof(poll_of));
 	if (!use_ktx || sess_fd < 0)
 		return;
 
@@ -112,15 +115,23 @@ void ktx_poll_all(void)
 		return;
 	}
 	poll_n = count;
+	for (__u32 i = 0; i < poll_n; i++) {
+		struct session *s = sess_by_addr(&poll_keys[i].peer, &poll_keys[i].local);
+
+		if (s)
+			poll_of[s - sessions] = (uint16_t)(i + 1);
+	}
 }
 
+/* NULL until the program has seen the session. */
 static const struct session_state *poll_find(const struct session *s)
 {
-	for (__u32 i = 0; i < poll_n; i++)
-		if (!memcmp(&poll_keys[i].peer, &s->peer, sizeof(s->peer)) &&
-		    !memcmp(&poll_keys[i].local, &s->local, sizeof(s->local)))
-			return &poll_vals[i];
-	return NULL;
+	uint16_t e = poll_of[s - sessions];
+
+	if (!e || memcmp(&poll_keys[e - 1].peer, &s->peer, sizeof(s->peer)) ||
+	    memcmp(&poll_keys[e - 1].local, &s->local, sizeof(s->local)))
+		return NULL;
+	return &poll_vals[e - 1];
 }
 
 /* prog_flags bit 1: a multihop session exists, so the parser defers the TTL
@@ -180,7 +191,7 @@ void ktx_mirror(struct session *s)
  */
 void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip)
 {
-	__u8 one = 1;
+	uint32_t iv = 0;
 	int wanted = 0;
 
 	if (echo_peers_fd < 0)
@@ -191,14 +202,20 @@ void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip)
 		if (!o->used || o == skip || !o->echo_on)
 			continue;
 		if (!memcmp(&o->peer, peer, sizeof(*peer))) {
+			uint32_t r = o->min_echo_rx_us ? o->min_echo_rx_us : ECHO_IV_FLOOR_US;
+
 			wanted = 1;
-			break;
+			if (!iv || r < iv)
+				iv = r;
 		}
 	}
-	if (wanted)
-		bpf_map_update_elem(echo_peers_fd, peer, &one, 0);
-	else
+	if (wanted) {
+		struct echo_peer ep = { .max = echo_budget_for(iv) };
+
+		bpf_map_update_elem(echo_peers_fd, peer, &ep, 0);
+	} else {
 		bpf_map_delete_elem(echo_peers_fd, peer);
+	}
 }
 
 /* Separate from ktx_clear so an address change can drop the old key. */

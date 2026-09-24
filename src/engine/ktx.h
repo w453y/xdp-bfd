@@ -35,6 +35,18 @@ void ktx_mirror(struct session *s);
 void ktx_clear(struct session *s);
 void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local, uint32_t wire_disc);
 void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip);
+
+/* Echoes the reflector returns per BFD_ECHO_WIN_US for a peer whose fastest
+ * session wants one per iv_us: four times the RFC's rate, and room for a
+ * burst.
+ */
+#define ECHO_IV_FLOOR_US 10000
+static inline uint32_t echo_budget_for(uint32_t iv_us)
+{
+	if (iv_us < ECHO_IV_FLOOR_US)
+		iv_us = ECHO_IV_FLOOR_US;
+	return 4 * ((BFD_ECHO_WIN_US + iv_us - 1) / iv_us) + 16;
+}
 void ktx_update_mhop_flag(void);
 void ktx_poll_all(void);
 const char *ktx_poll_mode(void);

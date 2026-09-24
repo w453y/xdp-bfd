@@ -10,10 +10,10 @@
 #define BFD_PORT_MHOP 4784 /* RFC 5883 multihop */
 #define BFD_ECHO_PORT 3785
 /* Source port = base + slot, up to 65535, away from bfdd's sockets from 49152 up. */
-#define BFD_SRC_PORT	 65472
+#define BFD_SRC_PORT	 (65536 - BFD_MAX_SESSIONS)
 #define BFD_MIN_LEN	 24
 #define BFD_VERSION	 1
-#define BFD_MAX_SESSIONS 64
+#define BFD_MAX_SESSIONS 1024
 
 /* RFC 5880 s4.1 */
 #define BFD_F_POLL   0x20
@@ -82,7 +82,9 @@ struct bfd_ctrl_pkt {
 	X(DEADMAN_HOLD, "deadman-hold")		  /* reply withheld, engine stalled */            \
 	X(UNKNOWN_SESSION, "unknown-session")	  /* no session for the pair */                   \
 	X(V6_EXTHDR, "v6-exthdr")		  /* BFD behind a v6 ext hdr */                   \
-	X(AUTH_RATELIMITED, "auth-ratelimited")	  /* A-bit drop before digest */
+	X(AUTH_RATELIMITED, "auth-ratelimited")	  /* A-bit drop before digest */                  \
+	X(MOVED_RATELIMITED, "moved-ratelimited") /* over the moved-address budget */             \
+	X(ECHO_RATELIMITED, "echo-ratelimited")	  /* over a peer's echo budget */
 
 /* Written between load and attach. Their own map: .rodata would need rewriting
  * whole, and sweep_map holds a bpf_timer.
@@ -241,6 +243,18 @@ struct xdp_auth_key {
 	__u8 kpad[64];
 };
 
+/* echo_peers' value. RFC 5880 s6.8.9: a peer sends echo no faster than our
+ * Required Min Echo RX, so past a few times that the reflector drops, and a
+ * forger spoofing the peer cannot fill our transmit ring. The engine writes
+ * max; the program counts.
+ */
+#define BFD_ECHO_WIN_US 100000
+struct echo_peer {
+	__u64 win_ns;
+	__u32 n;
+	__u32 max; /* per BFD_ECHO_WIN_US */
+};
+
 /* Written by the engine in place under lock (BPF_F_LOCK); the program copies
  * it out under the same lock, so a reply never mixes two versions or sessions.
  */
@@ -263,7 +277,7 @@ struct tx_cfg {
 	/* the peer's silence is requested; the engine sees the remote state */
 	__u8 demand_hold;
 	__u8 mhop;	      /* 4784 (RFC 5883), else 3784 */
-	__u8 slot;	      /* the session's slot, indexing auth_seq */
+	__u16 slot;	      /* the session's slot, indexing auth_seq */
 	__u32 poll_seq;	      /* acked through session_state.final_seq */
 	__u32 echo_iv_us;     /* echo interval; 0 = echo off */
 	__u32 min_echo_rx_us; /* 0 unless echo is on */

@@ -174,6 +174,21 @@ static void case_mirror_cache_tracks_key(void)
 		bad = 1;
 	}
 
+	/* The compare stops at the last accept key in use. */
+	c.auth_nkeys = 1;
+	s.pushed_cfg = c;
+	c.auth_accept[0].kpad[63] = 1;
+	if (!ktx_push_needed(&s, &c)) {
+		printf("     an accept key in use changed and it wants no push\n");
+		bad = 1;
+	}
+	c.auth_accept[0].kpad[63] = 0;
+	c.auth_nkeys = 2;
+	if (!ktx_push_needed(&s, &c)) {
+		printf("     a key was added and it wants no push\n");
+		bad = 1;
+	}
+
 	report("mirror-cache-tracks-key", bad, "key and value both count");
 }
 

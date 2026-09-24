@@ -312,7 +312,7 @@ static void case_auth_seq_by_slot(void)
 		fails++;
 		return;
 	}
-	cfg.slot = (__u8)slot;
+	cfg.slot = (__u16)slot;
 	cfg.src_port = BFD_SRC_PORT - 2;
 	cfg_put(cfg_fd, &k, &cfg);
 	bpf_map_update_elem(seq_fd, &slot, &v, BPF_ANY);

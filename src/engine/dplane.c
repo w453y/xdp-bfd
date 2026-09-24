@@ -48,7 +48,7 @@ static void dp_sessions_teardown(const char *why)
 {
 	int n = 0;
 
-	for (int i = 0; i < MAX_SESSIONS; i++)
+	for (int i = 0; i < sess_max; i++)
 		if (sessions[i].used) {
 			fsm_announce_down(&sessions[i]);
 			ktx_clear(&sessions[i]);
@@ -79,7 +79,7 @@ void dp_sessions_orphan(const char *why)
 	uint64_t t = now_us();
 	int n = 0;
 
-	for (int i = 0; i < MAX_SESSIONS; i++)
+	for (int i = 0; i < sess_max; i++)
 		if (sessions[i].used && !sessions[i].orphaned) {
 			sessions[i].orphaned = 1;
 			sessions[i].orphan_deadline_us = t + dp_hold_us;
@@ -93,7 +93,7 @@ void dp_sessions_orphan(const char *why)
 /* bfdd is back: tear down in DP_RECONCILE_US whatever it has not re-added. */
 void dp_sessions_reclaim(void)
 {
-	for (int i = 0; i < MAX_SESSIONS; i++)
+	for (int i = 0; i < sess_max; i++)
 		if (sessions[i].used && sessions[i].orphaned) {
 			dp_reconcile_us = now_us() + DP_RECONCILE_US;
 			log_info("dplane: reconcile sweep armed (%llus)\n",
@@ -146,7 +146,7 @@ void dp_notify_flush_pending(void)
 {
 	if (!dp_connected())
 		return;
-	for (int i = 0; i < MAX_SESSIONS; i++)
+	for (int i = 0; i < sess_max; i++)
 		if (sessions[i].used && sessions[i].notify_pending)
 			dp_notify_state(&sessions[i]);
 }

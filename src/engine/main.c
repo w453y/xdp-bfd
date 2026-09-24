@@ -105,7 +105,7 @@ static void auth_rollover_tick(void)
 		return;
 	last = now;
 
-	for (i = 0; i < MAX_SESSIONS; i++) {
+	for (i = 0; i < sess_max; i++) {
 		struct session *s = &sessions[i];
 
 		if (!s->used || !s->auth_nkeys)
@@ -134,7 +134,7 @@ static void nofile_raise(void)
 		setrlimit(RLIMIT_NOFILE, &r);
 		getrlimit(RLIMIT_NOFILE, &r);
 	}
-	if (r.rlim_cur < MAX_SESSIONS + 64)
+	if (r.rlim_cur < sess_max + 64)
 		log_err("open files limited to %llu; sessions past that send from the fallback socket\n",
 			(unsigned long long)r.rlim_cur);
 }
@@ -143,7 +143,7 @@ static int sessions_used(void)
 {
 	int n = 0;
 
-	for (int i = 0; i < MAX_SESSIONS; i++)
+	for (int i = 0; i < sess_max; i++)
 		n += sessions[i].used;
 	return n;
 }
@@ -153,7 +153,7 @@ static void shutdown_announce(void)
 {
 	int announced = 0;
 
-	for (int i = 0; i < MAX_SESSIONS; i++) {
+	for (int i = 0; i < sess_max; i++) {
 		struct session *cs = &sessions[i];
 
 		if (!cs->used || cs->orphaned)
@@ -275,7 +275,7 @@ static void session_pass(uint64_t t)
 {
 	if (dp_reconcile_us && t >= dp_reconcile_us) {
 		dp_reconcile_us = 0;
-		for (int i = 0; i < MAX_SESSIONS; i++)
+		for (int i = 0; i < sess_max; i++)
 			if (sessions[i].used && sessions[i].orphaned)
 				sess_teardown_one(&sessions[i], "not re-added by bfdd");
 	}
@@ -284,7 +284,7 @@ static void session_pass(uint64_t t)
 	ktx_drain_events();
 
 	ktx_sync_due(t);
-	for (int i = 0; i < MAX_SESSIONS; i++) {
+	for (int i = 0; i < sess_max; i++) {
 		struct session *cs = &sessions[i];
 
 		/* The wake array only, so a session not due costs no cache miss. */
@@ -329,6 +329,10 @@ int main(int argc, char **argv)
 	}
 	if (!opts_complete(&o, argv[0]))
 		return 1;
+	if (sess_table_init(sess_max)) {
+		log_err("cannot allocate %d sessions\n", sess_max);
+		return 1;
+	}
 
 	nofile_raise();
 	/* A running engine hands over only once the slow part, loading and

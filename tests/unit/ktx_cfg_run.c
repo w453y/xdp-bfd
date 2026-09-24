@@ -12,7 +12,9 @@
 #include "ktx.h"
 
 /* ktx_cfg_for indexes the session table to derive the source port. */
-struct session sessions[MAX_SESSIONS];
+static struct session table[BFD_MAX_SESSIONS];
+struct session *sessions = table;
+int sess_max = BFD_MAX_SESSIONS;
 
 static int fails;
 
@@ -33,7 +35,7 @@ static struct session *arm(void)
 {
 	struct session *s = &sessions[0];
 
-	memset(sessions, 0, sizeof(sessions));
+	memset(sessions, 0, (size_t)sess_max * sizeof(*sessions));
 	s->used = 1;
 	s->lid = 7;
 	s->wire_disc = 0xaabbccdd;

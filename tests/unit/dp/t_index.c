@@ -28,7 +28,7 @@ static void case_index_matches_scan(void)
 
 	sessions_clear();
 	for (int op = 0; op < 20000 && !bad; op++) {
-		struct session *s = &sessions[rand_r(&seed) % MAX_SESSIONS];
+		struct session *s = &sessions[rand_r(&seed) % sess_max];
 		int kind = rand_r(&seed) % 4;
 
 		if (kind == 3) {
@@ -49,7 +49,7 @@ static void case_index_matches_scan(void)
 
 		idx_addr(&p, v);
 		idx_addr(&l, 7);
-		for (int i = 0; i < MAX_SESSIONS; i++) {
+		for (int i = 0; i < sess_max; i++) {
 			const struct session *o = &sessions[i];
 
 			if (!o->used)

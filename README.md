@@ -7,7 +7,7 @@ hold under load that makes a userspace BFD daemon flap.
 It runs standalone, or as a data plane for an unmodified FRR bfdd over
 FRR's distributed-BFD protocol. Asynchronous mode with the full state
 machine, single-hop and multihop, IPv4 and IPv6, echo, poll sequences and
-demand mode. 1024 sessions per host.
+demand mode. 1024 sessions per host by default, up to 8192 with `--max-sessions`.
 
 ## Build
 

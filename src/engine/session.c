@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* session.c - session table allocation and lookup. */
 #define _GNU_SOURCE
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -10,8 +11,21 @@
 #include "bfddp.h"
 #include "session.h"
 
-struct session sessions[MAX_SESSIONS];
-uint64_t sess_wake_at[MAX_SESSIONS];
+struct session *sessions;
+int sess_max = BFD_MAX_SESSIONS;
+uint64_t sess_wake_at[SESSIONS_CEIL];
+
+/* Allocated, since a session is 3 KB and the ceiling is 8192 of them. */
+int sess_table_init(int n)
+{
+	if (n < 1 || n > SESSIONS_CEIL)
+		return -1;
+	sessions = calloc((size_t)n, sizeof(*sessions));
+	if (!sessions)
+		return -1;
+	sess_max = n;
+	return 0;
+}
 
 void sess_wake_all(void)
 {
@@ -23,7 +37,7 @@ void sess_wake_all(void)
  * falls back to the scan, so a stale or missing entry costs time, never an
  * answer. sess_reindex keeps them warm.
  */
-#define IX_BITS 12
+#define IX_BITS 13
 #define IX_WAYS 4
 #define IX_SIZE (1u << IX_BITS)
 
@@ -103,7 +117,7 @@ static struct session *ix_get(int k, uint32_t v, const struct bfd_addr *peer,
 		if (e && ix_match(k, &sessions[e - 1], v, peer, local))
 			return &sessions[e - 1];
 	}
-	for (int i = 0; i < MAX_SESSIONS; i++)
+	for (int i = 0; i < sess_max; i++)
 		if (ix_match(k, &sessions[i], v, peer, local)) {
 			ix_put(k, h, &sessions[i]);
 			return &sessions[i];
@@ -124,7 +138,7 @@ void sess_reindex(const struct session *s)
 
 struct session *sess_alloc(void)
 {
-	for (int i = 0; i < MAX_SESSIONS; i++)
+	for (int i = 0; i < sess_max; i++)
 		if (!sessions[i].used) {
 			memset(&sessions[i], 0, sizeof(sessions[i]));
 			sessions[i].used = 1;
@@ -137,7 +151,7 @@ struct session *sess_alloc(void)
 /* A given slot, which keys the session's auth sequence and source port. */
 struct session *sess_alloc_at(int slot)
 {
-	if (slot < 0 || slot >= MAX_SESSIONS || sessions[slot].used)
+	if (slot < 0 || slot >= sess_max || sessions[slot].used)
 		return NULL;
 	memset(&sessions[slot], 0, sizeof(sessions[slot]));
 	sessions[slot].used = 1;

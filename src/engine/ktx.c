@@ -27,11 +27,11 @@ static int have_changes;
 
 int use_ktx;
 /* bfd_sessions, batch-fetched once per pass. */
-static struct session_key poll_keys[MAX_SESSIONS];
-static struct session_state poll_vals[MAX_SESSIONS];
+static struct session_key poll_keys[SESSIONS_CEIL];
+static struct session_state poll_vals[SESSIONS_CEIL];
 static __u32 poll_n;
 /* Each session's entry in the batch, + 1, so the pass is not quadratic. */
-static uint16_t poll_of[MAX_SESSIONS];
+static uint16_t poll_of[SESSIONS_CEIL];
 static int poll_batch_unsupported;
 
 /* For the stats dump. */
@@ -77,8 +77,8 @@ static int on_sweep_event(void *ctx, void *data, size_t len)
 /* Sessions with an announced change, read once each per pass however many
  * announcements arrived.
  */
-static uint16_t dirty[MAX_SESSIONS];
-static uint8_t is_dirty[MAX_SESSIONS];
+static uint16_t dirty[SESSIONS_CEIL];
+static uint8_t is_dirty[SESSIONS_CEIL];
 static int ndirty;
 
 /* The peer changed something the engine mirrors. */
@@ -135,7 +135,7 @@ void ktx_poll_all(void)
 	if (!use_ktx || sess_fd < 0)
 		return;
 
-	__u32 count = MAX_SESSIONS;
+	__u32 count = sess_max;
 	void *in = NULL, *out = NULL;
 
 	LIBBPF_OPTS(bpf_map_batch_opts, bopts);
@@ -181,7 +181,7 @@ void ktx_update_mhop_flag(void)
 
 	int mhop = 0;
 
-	for (int i = 0; i < MAX_SESSIONS; i++)
+	for (int i = 0; i < sess_max; i++)
 		if (sessions[i].used && sessions[i].min_ttl && sessions[i].min_ttl < 255) {
 			mhop = 1;
 			break;
@@ -233,7 +233,7 @@ void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip)
 
 	if (echo_peers_fd < 0)
 		return;
-	for (int i = 0; i < MAX_SESSIONS; i++) {
+	for (int i = 0; i < sess_max; i++) {
 		struct session *o = &sessions[i];
 
 		if (!o->used || o == skip || !o->echo_on)
@@ -403,7 +403,7 @@ void ktx_sync(struct session *s, uint64_t t)
 void ktx_sync_all(uint64_t t)
 {
 	ktx_poll_all();
-	for (int i = 0; i < MAX_SESSIONS; i++) {
+	for (int i = 0; i < sess_max; i++) {
 		struct session *s = &sessions[i];
 
 		if (!s->used)

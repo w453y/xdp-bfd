@@ -17,6 +17,7 @@
 #include "bfd_shared.h"
 #include "util.h"
 #include "log.h"
+#include "session.h"
 #include "ktx.h"
 
 const char *ktx_pin_dir; /* --pin, or NULL */
@@ -41,7 +42,7 @@ static uint32_t pin_abi(void)
 		sizeof(struct session_state),
 		sizeof(struct tx_cfg),
 		sizeof(struct echo_peer),
-		BFD_MAX_SESSIONS,
+		(uint32_t)sess_max,
 		BFD_STAT_MAX,
 		BFD_TUNE_MAX,
 		BFD_PIN_ABI,

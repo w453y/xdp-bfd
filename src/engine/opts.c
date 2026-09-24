@@ -92,7 +92,13 @@ static int opt_value(const char *opt, const char *a, struct opts *o)
 		return xdp_mode(a);
 	else if (!strcmp(opt, "--dp-peer"))
 		return dp_peer(a);
-	else if (!strcmp(opt, "--sweep-us")) {
+	else if (!strcmp(opt, "--max-sessions")) {
+		if (num(a, &v) || v < 64 || v > SESSIONS_CEIL) {
+			log_err("--max-sessions: expected 64-%d, got '%s'\n", SESSIONS_CEIL, a);
+			return -1;
+		}
+		sess_max = (int)v;
+	} else if (!strcmp(opt, "--sweep-us")) {
 		/* Under 0.5ms the timer churns; over 100ms beats any detect budget. */
 		if (num(a, &v) || v < 500 || v > 100000) {
 			log_err("--sweep-us: expected 500-100000, got '%s'\n", a);
@@ -197,6 +203,7 @@ int opts_complete(const struct opts *o, const char *argv0)
 			"       [--dp-peer <user|uid>]  (the account bfdd runs as)\n"
 			"       [--bpf-obj <path>] [--xdp-mode drv|generic]\n"
 			"       [--pin <bpffs dir>]  (SIGUSR2 hands over to the next engine; needs --dp-hold)\n"
+			"       [--max-sessions <64-8192>]  (default 1024)\n"
 			"       [--stats-dump <path>]   (SIGUSR1 writes it)\n"
 			"       [--sweep-us <500-100000>]\n"
 			"       [--tick-us <200-100000>]\n"

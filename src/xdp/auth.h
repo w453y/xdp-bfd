@@ -214,11 +214,9 @@ static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 	/* RFC 5880 s6.7.3, from the counter shared with the engine. */
 	{
 		__u32 slot = cfg->slot;
-		__u64 *sq;
+		/* The engine sizes auth_seq (--max-sessions); the lookup bounds it. */
+		__u64 *sq = bpf_map_lookup_elem(&auth_seq, &slot);
 
-		if (slot >= BFD_MAX_SESSIONS)
-			return 0;
-		sq = bpf_map_lookup_elem(&auth_seq, &slot);
 		if (!sq)
 			return 0;
 		seq = (__u32)(__sync_fetch_and_add(sq, 1) + 1);

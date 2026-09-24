@@ -35,7 +35,7 @@
 
 int main(void)
 {
-	if (!rig_up()) {
+	if (sess_table_init(BFD_MAX_SESSIONS) || !rig_up()) {
 		printf("rig setup failed\n");
 		return 1;
 	}

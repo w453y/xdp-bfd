@@ -462,8 +462,8 @@ def v6_cases(s):
         ),
         (
             "echo-not-self-v6",
-            "a v6 3785 packet that is not self-addressed is never reflected",
-            spec(6, peer, local, dport=3785, l2dst=MAC, capture=True),
+            "a v6 echo to an address that is no session of ours is never reflected",
+            spec(6, peer, UNKNOWN_ECHO6, dport=3785, l2dst=MAC, capture=True),
             [("not-self", AtLeast(COUNT)), ("cap:replies", 0)],
         ),
     ]
@@ -506,7 +506,7 @@ def mhop_cases(got):
     return c
 
 
-def echo_reflect_cases():
+def echo_reflect_cases(sess):
     """Judged by capture alone: `reflected` is global and the mesh moves it. The
     capture counts only frames to the injector's MAC.
     """
@@ -532,10 +532,21 @@ def echo_reflect_cases():
                 [("echo-ttl", COUNT), ("cap:replies", 0)],
             )
         )
+        # bfdd's v6 echo is sent to its peer's address, not to itself.
+        local = next((s["local"] for s in sess if s["peer"] == addr), None)
+        if fam == 6 and local:
+            c.append(
+                (
+                    "echo-to-us-v6",
+                    "a v6 echo sent to us for a session we hold is returned",
+                    spec(6, addr, local, dport=3785, l2dst=MAC, capture=True),
+                    [("cap:replies", COUNT)],
+                )
+            )
     return c
 
 
-def build_cases(got):
+def build_cases(got, sess):
     """(name, what it shows, frame, [(counter, delta)])"""
     c = []
     if "v4" in got:
@@ -543,7 +554,7 @@ def build_cases(got):
     if "v6" in got:
         c += v6_cases(got["v6"])
     c += mhop_cases(got)
-    c += echo_reflect_cases()
+    c += echo_reflect_cases(sess)
     for role, fam in (("phantom", 4), ("phantom6", 6)):
         if role in got:
             c += phantom_cases(got[role], fam)
@@ -558,7 +569,7 @@ def orchestrate(args):
         sys.exit("no configured sessions; start the engine first")
 
     got = pick(sess)
-    cases = build_cases(got)
+    cases = build_cases(got, sess)
 
     if args.list:
         for name, desc, _, checks in cases:

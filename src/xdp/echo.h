@@ -93,7 +93,7 @@ static __always_inline int echo_reflect_v4(struct ethhdr *eth, struct iphdr *iph
 static __always_inline int echo_reflect_v6(struct ethhdr *eth, struct ipv6hdr *ip6,
 					   struct udphdr *udp, void *data_end)
 {
-	struct bfd_addr esrc;
+	struct session_key sk; /* .peer is also the echo_peers key */
 	__u8 tmp[6];
 
 	/* Our own at 254. Every miss inside returns, so 254 never reaches the GTSM check. */
@@ -124,14 +124,22 @@ static __always_inline int echo_reflect_v6(struct ethhdr *eth, struct ipv6hdr *i
 		return XDP_PASS;
 	}
 
-	if (!v6_self_addressed(ip6)) {
-		count(BFD_STAT_NOT_SELF);
-		return XDP_PASS;
+	/* bfdd sends a v6 echo to its peer's address and returns one sent to
+	 * it for a session it holds. Do the same, so an FRR peer's echo works.
+	 */
+	int to_us = !v6_self_addressed(ip6);
+
+	key_set_v6(&sk.peer, &ip6->saddr);
+	if (to_us) {
+		key_set_v6(&sk.local, &ip6->daddr);
+		if (!bpf_map_lookup_elem(&tx_config, &sk)) {
+			count(BFD_STAT_NOT_SELF);
+			return XDP_PASS;
+		}
 	}
 
 	/* Only for peers of echo-active sessions: otherwise an amplifier. */
-	key_set_v6(&esrc, &ip6->saddr);
-	struct echo_peer *ep = bpf_map_lookup_elem(&echo_peers, &esrc);
+	struct echo_peer *ep = bpf_map_lookup_elem(&echo_peers, &sk.peer);
 
 	if (!ep) {
 		count(BFD_STAT_DECLINED);
@@ -146,6 +154,16 @@ static __always_inline int echo_reflect_v6(struct ethhdr *eth, struct ipv6hdr *i
 	__builtin_memcpy(eth->h_dest, eth->h_source, 6);
 	__builtin_memcpy(eth->h_source, tmp, 6);
 
+	if (to_us) {
+		__u32 *sa = (__u32 *)&ip6->saddr, *da = (__u32 *)&ip6->daddr;
+
+		for (int i = 0; i < 4; i++) {
+			__u32 w = sa[i];
+
+			sa[i] = da[i];
+			da[i] = w;
+		}
+	}
 	ip6->hop_limit--;
 
 	count(BFD_STAT_REFLECTED);

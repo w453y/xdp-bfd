@@ -201,6 +201,58 @@ static void case_echo_v6(const char *name, uint8_t hlim, const char *src, const 
 	map_reset_v6();
 }
 
+/* bfdd's v6 echo, sent to our address: it must come back to the sender. */
+static void case_echo_v6_to_us(void)
+{
+	const char *name = "echo-v6-to-us-returned-to-sender";
+	struct bfd_addr peer = { 0 };
+	struct echo_peer ep = { .max = 64 };
+	unsigned char out[FRAME_MAX];
+	unsigned int out_len = 0;
+	struct in6_addr src, dst;
+	struct frame f;
+	int v, bad = 0;
+
+	map_reset_v6();
+	arm_session_v6();
+	inet_pton(AF_INET6, "fd00::2", peer.b);
+	bpf_map_update_elem(echo_peers_fd, &peer, &ep, BPF_ANY);
+
+	build_echo_v6(&f, 255, "fd00::2", "fd00::1", 0x33333333, 0xa5a5a5a5);
+	v = run_frame(&f, out, &out_len);
+
+	struct ethhdr *ein = (void *)f.b, *eout = (void *)out;
+	struct ipv6hdr *ip6 = (void *)(out + sizeof(struct ethhdr));
+
+	inet_pton(AF_INET6, "fd00::1", &src);
+	inet_pton(AF_INET6, "fd00::2", &dst);
+	if (v != XDP_TX) {
+		printf("     verdict %s, want XDP_TX\n", v < 0 ? "syscall-error" : verdict_str(v));
+		bad = 1;
+	} else if (out_len < sizeof(struct ethhdr) + sizeof(*ip6) ||
+		   memcmp(&ip6->saddr, &src, 16) || memcmp(&ip6->daddr, &dst, 16)) {
+		printf("     not addressed back to the sender\n");
+		bad = 1;
+	} else if (ip6->hop_limit != 254) {
+		printf("     hop limit %u, want 254\n", ip6->hop_limit);
+		bad = 1;
+	} else if (memcmp(eout->h_dest, ein->h_source, 6) ||
+		   memcmp(eout->h_source, ein->h_dest, 6)) {
+		printf("     MACs not swapped\n");
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s %s\n", name, verdict_str(XDP_TX));
+	}
+
+	bpf_map_delete_elem(echo_peers_fd, &peer);
+	map_reset_v6();
+}
+
 /* Consumed with a known discriminator, passed with an unknown one. */
 static void case_echo_v6_return(int arm_disc, int want_v, const char *name)
 {
@@ -276,8 +328,14 @@ static void run_echo_v6_matrix(void)
 	/* off-link echo: same parser GTSM, same disposition */
 	case_echo_v6("echo-v6-off-link-rejected", 200, "fd00::2", "fd00::2", 1, XDP_DROP,
 		     BFD_STAT_REJECTED);
-	/* not self-addressed at 255 */
-	case_echo_v6("echo-v6-not-self", 255, "fd00::2", "fd00::1", 1, XDP_PASS, BFD_STAT_NOT_SELF);
+	/* sent to us for a session we hold, as bfdd does: returned */
+	case_echo_v6("echo-v6-to-us", 255, "fd00::2", "fd00::1", 1, XDP_TX, BFD_STAT_REFLECTED);
+	case_echo_v6_to_us();
+	/* sent to us, but no session holds that pair */
+	case_echo_v6("echo-v6-not-self", 255, "fd00::3", "fd00::1", 1, XDP_PASS, BFD_STAT_NOT_SELF);
+	/* sent to us for a session whose peer is not echo-active */
+	case_echo_v6("echo-v6-to-us-declined", 255, "fd00::2", "fd00::1", 0, XDP_PASS,
+		     BFD_STAT_DECLINED);
 	/* self-addressed but the peer is not echo-active: no amplifier */
 	case_echo_v6("echo-v6-declined", 255, "fd00::2", "fd00::2", 0, XDP_PASS, BFD_STAT_DECLINED);
 	/* Not swallowed by the return branch above it. */

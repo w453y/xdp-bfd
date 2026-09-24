@@ -93,7 +93,7 @@ int bfd_observer(struct xdp_md *ctx)
 	struct udphdr *udp = c.udp;
 
 	/* RFC 5880 s6.4: return a self-addressed echo to its originator at TTL
-	 * 254, which its GTSM expects.
+	 * 254, which its GTSM expects; and a v6 one sent to us, as bfdd does.
 	 */
 	if (udp->dest == bpf_htons(BFD_ECHO_PORT)) {
 		if (ip6)

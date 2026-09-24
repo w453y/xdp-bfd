@@ -40,6 +40,14 @@ root, is the only account allowed to connect. Ignored for a TCP port.
 .BI --dp-hold " sec"
 Hold sessions this many seconds after bfdd disconnects (0-86400).
 .TP
+.BI --pin " dir"
+Pin the program's state and links under this bpffs directory, so a
+restarted engine takes over without the peers noticing; see
+.BR RESTARTING .
+Needs
+.BR --dp-hold ,
+which holds the sessions until bfdd reconnects.
+.TP
 .BI --kernel-tx " if"
 Transmit from the kernel on this interface.
 .TP
@@ -82,6 +90,32 @@ exit. Used by the package postinst and the support matrix.
 .TP
 .B --version
 Print the version and exit.
+.SH RESTARTING
+With
+.BR --pin ,
+start the new engine with the same arguments while the old one runs. It
+loads and verifies the object first, then sends the old engine SIGUSR2 and
+waits the few milliseconds it takes to leave. The program keeps answering
+from the pinned maps throughout; the new engine rebuilds the sessions from
+them and holds them until bfdd re-adds them. The old engine exits 75.
+.PP
+SIGUSR2 on its own does the same leaving, for a supervisor that restarts on
+exit status 75, but then the new engine loads the object after the old one
+has gone, and sessions whose peer depends on this host's own transmissions
+with a detection time under about half a second may flap. For about ten seconds
+past the handover the dead-man gate keeps the program answering with no
+engine running.
+.PP
+SIGTERM stops the engine as before: AdminDown to every peer, and the pins
+removed. A build whose maps differ from the pinned ones does not take them
+over; it discards them and starts fresh.
+.PP
+The pin directory must be on bpffs and writable by the engine, and
+.I /run/xdp-bfd
+must be writable for the file naming the engine that holds the pins. The
+packaged unit runs as an unprivileged user and provides neither, so
+.B --pin
+is for an engine started directly for now.
 .SH FILES
 .TP
 .I /etc/xdp-bfd/engine.conf

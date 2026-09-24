@@ -14,6 +14,10 @@
 #define BFD_MIN_LEN	 24
 #define BFD_VERSION	 1
 #define BFD_MAX_SESSIONS 1024
+/* Bump when a pinned map's layout changes but not its size, so a restarted
+ * engine does not take over state it would misread (--pin).
+ */
+#define BFD_PIN_ABI 1
 
 /* RFC 5880 s4.1 */
 #define BFD_F_POLL   0x20

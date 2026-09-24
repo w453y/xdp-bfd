@@ -302,6 +302,7 @@ static inline void sess_wake(const struct session *s)
 
 void sess_wake_all(void);
 struct session *sess_alloc(void);
+struct session *sess_alloc_at(int slot);
 /* After setting a session's lid, wire_disc or addresses. */
 void sess_reindex(const struct session *s);
 int session_auth_evaluate(struct session *s, int64_t now);

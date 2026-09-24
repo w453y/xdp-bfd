@@ -132,6 +132,29 @@ static int ktx_abi_check(struct bpf_object *o, const char *path)
 	return bad ? -1 : 0;
 }
 
+/* Opened, checked and loaded; with --pin, over what a previous engine left. */
+static struct bpf_object *ktx_open(const char *obj)
+{
+	struct bpf_object *o = bpf_object__open_file(obj, NULL);
+
+	if (!o || ktx_abi_check(o, obj) || ktx_pin_prepare(o))
+		goto fail;
+	if (!bpf_object__load(o))
+		return o;
+	if (!ktx_reused)
+		goto fail;
+	/* Pins from this build that no longer fit: start over without them. */
+	bpf_object__close(o);
+	ktx_pin_discard();
+	o = bpf_object__open_file(obj, NULL);
+	if (o && !ktx_pin_prepare(o) && !bpf_object__load(o))
+		return o;
+fail:
+	if (o)
+		bpf_object__close(o);
+	return NULL;
+}
+
 int ktx_load(void)
 {
 	if (bpf_obj)
@@ -139,13 +162,10 @@ int ktx_load(void)
 
 	const char *obj = bfd_obj_path(ktx_obj_path);
 
-	bpf_obj = bpf_object__open_file(obj, NULL);
-	if (!bpf_obj || ktx_abi_check(bpf_obj, obj) || bpf_object__load(bpf_obj)) {
+	/* ktx_load may be called again. */
+	bpf_obj = ktx_open(obj);
+	if (!bpf_obj) {
 		log_err("%s load failed\n", obj);
-		/* ktx_load may be called again. */
-		if (bpf_obj)
-			bpf_object__close(bpf_obj);
-		bpf_obj = NULL;
 		return -1;
 	}
 
@@ -268,12 +288,23 @@ int ktx_attach_if(int ifindex, const char *ifname)
 
 	unsigned int flags = ktx_xdp_flags;
 	const char *mode = (flags & XDP_FLAGS_SKB_MODE) ? "generic" : "native";
+	int fd = ktx_pin_take_link(ifindex, bpf_program__fd(ktx_prog));
+
+	if (fd >= 0) {
+		ktx_ifaces[ktx_niface].ifindex = ifindex;
+		ktx_ifaces[ktx_niface].link_fd = fd;
+		ktx_ifaces[ktx_niface].mode = "pinned";
+		ktx_niface++;
+		log_info("kernel-tx: took over the program on %s from the previous engine\n",
+			 ifname);
+		return 0;
+	}
 
 	/* bpf_link detaches on exit, even on SIGKILL. Fall back to generic
 	 * mode, then to a flags attach.
 	 */
 	LIBBPF_OPTS(bpf_link_create_opts, lopts, .flags = flags);
-	int fd = bpf_link_create(bpf_program__fd(ktx_prog), ifindex, BPF_XDP, &lopts);
+	fd = bpf_link_create(bpf_program__fd(ktx_prog), ifindex, BPF_XDP, &lopts);
 
 	if (fd < 0 && !(flags & XDP_FLAGS_SKB_MODE)) {
 		flags = XDP_FLAGS_SKB_MODE;
@@ -294,6 +325,7 @@ int ktx_attach_if(int ifindex, const char *ifname)
 	ktx_ifaces[ktx_niface].link_fd = fd;
 	ktx_ifaces[ktx_niface].mode = mode;
 	ktx_niface++;
+	ktx_pin_link(ifindex, fd);
 
 	log_info("kernel-tx: XDP attached to %s (%s mode, %s)\n", ifname, mode,
 		 fd >= 0 ? "link" : "flags");

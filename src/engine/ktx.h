@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0
-/* ktx.h - the kernel fast path: load (ktx_load.c), mirror (ktx.c), config (ktx_cfg.c). */
+/* ktx.h - the kernel fast path: load (ktx_load.c), mirror (ktx.c), config
+ * (ktx_cfg.c), and across a restart pin (ktx_pin.c) and adopt (ktx_adopt.c).
+ */
 #ifndef BFD_ENGINE_KTX_H
 #define BFD_ENGINE_KTX_H
 
 #include "session.h"
+
+struct bpf_object;
 
 /* ktx_load.c */
 extern const char *ktx_obj_path;
@@ -20,6 +24,21 @@ extern int disc_fd;
 extern int stats_fd;
 
 int ktx_load(void);
+
+/* ktx_pin.c */
+extern const char *ktx_pin_dir;
+extern int ktx_reused;
+int ktx_pin_prepare(struct bpf_object *o);
+void ktx_pin_discard(void);
+int ktx_pin_take_link(int ifindex, int prog_fd);
+void ktx_pin_link(int ifindex, int link_fd);
+void ktx_unpin(void);
+int ktx_pin_holder(void);
+int ktx_pin_take_over(int pid);
+void ktx_pin_claim(void);
+
+/* ktx_adopt.c */
+int ktx_adopt(uint64_t hold_us);
 int ktx_attach(const char *ifname);
 int ktx_attach_if(int ifindex, const char *ifname);
 int ktx_covers(int ifindex);

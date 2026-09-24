@@ -80,6 +80,8 @@ static int opt_value(const char *opt, const char *a, struct opts *o)
 		o->ktx_if = a;
 	else if (!strcmp(opt, "--bpf-obj"))
 		ktx_obj_path = a;
+	else if (!strcmp(opt, "--pin"))
+		ktx_pin_dir = a;
 	else if (!strcmp(opt, "--stats-dump"))
 		stats_path = a;
 	else if (!strcmp(opt, "--auth"))
@@ -179,6 +181,12 @@ int opts_parse(int argc, char **argv, struct opts *o)
 
 int opts_complete(const struct opts *o, const char *argv0)
 {
+	/* The held orphans are what bfdd re-adds after a handover. */
+	if (ktx_pin_dir && !dp_hold_us) {
+		log_err("--pin needs --dp-hold, which holds the sessions until bfdd reconnects\n");
+		return 0;
+	}
+
 	if (o->local && !o->peer) {
 		log_err("static: %s given without a peer address\n", o->local);
 		return 0;
@@ -188,6 +196,7 @@ int opts_complete(const struct opts *o, const char *argv0)
 			"       %s --dplane <port|sock-path> [--kernel-tx <if>] [--dp-hold <sec>]\n"
 			"       [--dp-peer <user|uid>]  (the account bfdd runs as)\n"
 			"       [--bpf-obj <path>] [--xdp-mode drv|generic]\n"
+			"       [--pin <bpffs dir>]  (SIGUSR2 hands over to the next engine; needs --dp-hold)\n"
 			"       [--stats-dump <path>]   (SIGUSR1 writes it)\n"
 			"       [--sweep-us <500-100000>]\n"
 			"       [--tick-us <200-100000>]\n"

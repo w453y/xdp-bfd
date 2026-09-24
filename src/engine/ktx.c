@@ -308,6 +308,7 @@ static void ktx_apply(struct session *s, const struct session_state *m, uint64_t
 {
 	struct session_state ms = *m;
 
+	sess_wake(s);
 	s->ktx_seen_us = ms.last_seen_ns / 1000;
 	if (s->state != ST_UP)
 		return;

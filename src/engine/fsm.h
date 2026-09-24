@@ -25,6 +25,7 @@ void state_transition(struct session *s, int newstate, int diag, uint64_t t, con
 void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t);
 void fsm_detect(struct session *s, uint64_t t);
 void fsm_tx(struct session *s, uint64_t t);
+uint64_t fsm_tx_next_at(const struct session *s, uint64_t t);
 void fsm_start_poll(struct session *s, uint64_t t);
 extern uint64_t demand_poll_us;
 

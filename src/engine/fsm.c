@@ -136,6 +136,7 @@ static int slot_sock(int slot, const struct session *s, uint16_t *port)
 
 void state_transition(struct session *s, int newstate, int diag, uint64_t t, const char *why)
 {
+	sess_wake(s);
 	if (s->state == newstate)
 		return;
 
@@ -189,6 +190,7 @@ void state_transition(struct session *s, int newstate, int diag, uint64_t t, con
 
 void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t)
 {
+	sess_wake(s);
 	int ps = (p->flags >> 6) & 3;
 
 	s->rx_pkts++;
@@ -541,4 +543,38 @@ void fsm_tx(struct session *s, uint64_t t)
 
 	if (t >= s->next_tx_us)
 		tx_reschedule(s, t);
+}
+
+/* When fsm_tx next has anything to do, mirroring its checks: early costs a
+ * visit, late would miss a transmission.
+ */
+uint64_t fsm_tx_next_at(const struct session *s, uint64_t t)
+{
+	uint64_t at = s->next_tx_us;
+
+	if (s->send_final || s->just_up || (s->admin_down && s->state != ST_ADMINDOWN) ||
+	    demand_announce_due(s))
+		return t;
+	if (demand_poll_us && demand_detect_held(s) && s->last_rx_us) {
+		uint64_t iv = s->detect_iv_us;
+		uint8_t mult = s->r_mult ? s->r_mult : s->detect_mult;
+		uint64_t every;
+
+		if (!iv)
+			iv = s->r_min_tx > s->min_rx_us ? s->r_min_tx : s->min_rx_us;
+		every = (uint64_t)mult * iv;
+		if (every < demand_poll_us)
+			every = demand_poll_us;
+		if (s->last_rx_us + every < at)
+			at = s->last_rx_us + every;
+	}
+	/* Overdue but held back while the fast path answers: due again once
+	 * its replies are a pace old.
+	 */
+	if (at <= t && use_ktx && !s->ktx_uncovered && ktx_answers(s)) {
+		uint64_t pace = s->applied_tx_us > s->r_min_rx ? s->applied_tx_us : s->r_min_rx;
+
+		at = s->last_ktx_us + pace;
+	}
+	return at > t ? at : t;
 }

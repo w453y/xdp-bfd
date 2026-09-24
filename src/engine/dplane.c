@@ -553,6 +553,8 @@ static void dp_session_auth(const struct bfddp_session_auth *sa, size_t plen)
 
 void dp_process(const uint8_t *buf, size_t len)
 {
+	/* Rare, and any message may touch any session. */
+	sess_wake_all();
 	const struct bfddp_message_header *h = (const void *)buf;
 	uint16_t type = ntohs(h->type);
 	const uint8_t *payload = buf + sizeof(*h);

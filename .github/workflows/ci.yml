@@ -266,7 +266,9 @@ jobs:
         run: tools/checkstyle.sh
 
   package:
-    if: github.event_name == 'pull_request'
+    # Not on push: four distro containers each time. workflow_dispatch runs it
+    # on a branch with no PR.
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:

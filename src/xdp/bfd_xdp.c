@@ -154,13 +154,30 @@ int bfd_observer(struct xdp_md *ctx)
 	count(BFD_STAT_WELL_FORMED);
 
 	/* RFC 5880 s6.3: a nonzero Your Discriminator alone selects the session,
-	 * so when the address pair misses, userspace demuxes on it.
+	 * so when the address pair misses, userspace demuxes on it, within a
+	 * per-CPU budget: a forger who has seen a discriminator must not be
+	 * able to flood the socket.
 	 */
 	if (!cfg && bfd->your_disc) {
-		__u32 yd = bpf_ntohl(bfd->your_disc);
+		__u32 yd = bpf_ntohl(bfd->your_disc), zero = 0;
 
-		if (bpf_map_lookup_elem(&our_discs, &yd))
-			return XDP_PASS;
+		if (bpf_map_lookup_elem(&our_discs, &yd)) {
+			struct moved_budget *mb = bpf_map_lookup_elem(&moved_budget, &zero);
+			__u64 now = bpf_ktime_get_ns();
+
+			if (!mb)
+				return XDP_DROP;
+			if (now - mb->win_ns > MOVED_WIN_NS) {
+				mb->win_ns = now;
+				mb->n = 0;
+			}
+			if (mb->n < MOVED_MAX) {
+				mb->n++;
+				return XDP_PASS;
+			}
+			count(BFD_STAT_MOVED_RATELIMITED);
+			return XDP_DROP;
+		}
 	}
 
 	/* Deferred GTSM: below 255 only for a configured session whose minimum

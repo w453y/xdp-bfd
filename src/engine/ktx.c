@@ -191,7 +191,7 @@ void ktx_mirror(struct session *s)
  */
 void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip)
 {
-	__u8 one = 1;
+	uint32_t iv = 0;
 	int wanted = 0;
 
 	if (echo_peers_fd < 0)
@@ -202,14 +202,20 @@ void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip)
 		if (!o->used || o == skip || !o->echo_on)
 			continue;
 		if (!memcmp(&o->peer, peer, sizeof(*peer))) {
+			uint32_t r = o->min_echo_rx_us ? o->min_echo_rx_us : ECHO_IV_FLOOR_US;
+
 			wanted = 1;
-			break;
+			if (!iv || r < iv)
+				iv = r;
 		}
 	}
-	if (wanted)
-		bpf_map_update_elem(echo_peers_fd, peer, &one, 0);
-	else
+	if (wanted) {
+		struct echo_peer ep = { .max = echo_budget_for(iv) };
+
+		bpf_map_update_elem(echo_peers_fd, peer, &ep, 0);
+	} else {
 		bpf_map_delete_elem(echo_peers_fd, peer);
+	}
 }
 
 /* Separate from ktx_clear so an address change can drop the old key. */

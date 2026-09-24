@@ -377,6 +377,69 @@ static void case_demux_moved(int v6, const char *name, uint32_t ydisc, int want_
 		map_reset();
 }
 
+/* The moved-address pass is budgeted per CPU per window: a flood naming our
+ * discriminator gets MOVED_MAX through, the rest dropped and counted.
+ */
+static void case_demux_moved_budget(void)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct iphdr *ip;
+	__u32 disc = 0x22222222, zero = 0;
+	__u8 one = 1;
+	int ncpu = libbpf_num_possible_cpus(), pass = 0, drop = 0, bad = 0;
+	unsigned long long before = stat_get(BFD_STAT_MOVED_RATELIMITED);
+	struct frame f;
+	void *z;
+
+	map_reset();
+	arm_session();
+	z = calloc(ncpu, 16);
+	if (disc_fd < 0 || budget_fd < 0 || !z ||
+	    bpf_map_update_elem(budget_fd, &zero, z, BPF_ANY) ||
+	    bpf_map_update_elem(disc_fd, &disc, &one, BPF_ANY)) {
+		printf("FAIL %-40s no our_discs or moved_budget\n", "demux-moved-budget");
+		fails++;
+		free(z);
+		return;
+	}
+	p.your_disc = htonl(disc);
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+	ip = (void *)(f.b + sizeof(struct ethhdr));
+	ip->saddr = inet_addr("10.0.0.9");
+	ip->check = 0;
+	ip->check = csum16(ip, sizeof(*ip), 0);
+
+	for (int i = 0; i < 300; i++) {
+		int v = run_frame(&f, NULL, NULL);
+
+		pass += v == XDP_PASS;
+		drop += v == XDP_DROP;
+	}
+	if (pass != 256 || drop != 44) {
+		printf("     %d passed, %d dropped; want 256 and 44\n", pass, drop);
+		bad = 1;
+	}
+	if (stat_get(BFD_STAT_MOVED_RATELIMITED) != before + 44) {
+		printf("     moved-ratelimited +%llu, want +44\n",
+		       stat_get(BFD_STAT_MOVED_RATELIMITED) - before);
+		bad = 1;
+	}
+	usleep(110000);
+	if (run_frame(&f, NULL, NULL) != XDP_PASS) {
+		printf("     the next window did not pass\n");
+		bad = 1;
+	}
+	bpf_map_delete_elem(disc_fd, &disc);
+	free(z);
+	map_reset();
+	if (bad) {
+		printf("FAIL %-40s\n", "demux-moved-budget");
+		fails++;
+	} else {
+		printf("ok   %-40s 256 of 300 up, then the next window\n", "demux-moved-budget");
+	}
+}
+
 static void run_demux_matrix(void)
 {
 	for (int v6 = 0; v6 < 2; v6++) {
@@ -392,6 +455,7 @@ static void run_demux_matrix(void)
 		case_demux_moved(v6, "demux-moved-names-none", 0x99999999, XDP_DROP);
 		case_demux_moved(v6, "demux-moved-zero", 0, XDP_DROP);
 	}
+	case_demux_moved_budget();
 }
 
 /* RFC 5880 s6.8.6: omitting authentication must not downgrade a keyed session. */

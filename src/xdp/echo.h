@@ -6,6 +6,21 @@
 #include "parse.h"
 
 /* Reflect a v4 echo, or consume our own coming back. */
+/* Racy across CPUs, which at worst lets a few more through. */
+static __always_inline int echo_budget(struct echo_peer *ep)
+{
+	__u64 now = bpf_ktime_get_ns();
+
+	if (now - ep->win_ns > BFD_ECHO_WIN_US * 1000ull) {
+		ep->win_ns = now;
+		ep->n = 0;
+	}
+	if (ep->n >= ep->max)
+		return 0;
+	ep->n++;
+	return 1;
+}
+
 static __always_inline int echo_reflect_v4(struct ethhdr *eth, struct iphdr *iph,
 					   struct udphdr *udp, void *data_end)
 {
@@ -42,9 +57,15 @@ static __always_inline int echo_reflect_v4(struct ethhdr *eth, struct iphdr *iph
 	struct bfd_addr esrc;
 
 	key_set_v4(&esrc, iph->saddr);
-	if (!bpf_map_lookup_elem(&echo_peers, &esrc)) {
+	struct echo_peer *ep = bpf_map_lookup_elem(&echo_peers, &esrc);
+
+	if (!ep) {
 		count(BFD_STAT_DECLINED);
 		return XDP_PASS;
+	}
+	if (!echo_budget(ep)) {
+		count(BFD_STAT_ECHO_RATELIMITED);
+		return XDP_DROP;
 	}
 
 	__u8 tmp[6];
@@ -110,9 +131,15 @@ static __always_inline int echo_reflect_v6(struct ethhdr *eth, struct ipv6hdr *i
 
 	/* Only for peers of echo-active sessions: otherwise an amplifier. */
 	key_set_v6(&esrc, &ip6->saddr);
-	if (!bpf_map_lookup_elem(&echo_peers, &esrc)) {
+	struct echo_peer *ep = bpf_map_lookup_elem(&echo_peers, &esrc);
+
+	if (!ep) {
 		count(BFD_STAT_DECLINED);
 		return XDP_PASS;
+	}
+	if (!echo_budget(ep)) {
+		count(BFD_STAT_ECHO_RATELIMITED);
+		return XDP_DROP;
 	}
 
 	__builtin_memcpy(tmp, eth->h_dest, 6);

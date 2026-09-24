@@ -7,6 +7,11 @@
 #define LOCAL_MIN_RX_US 10000
 /* The tunables map overrides it (--sweep-us). */
 #define SWEEP_NS BFD_SWEEP_NS_DEFAULT
+/* Packets per CPU per window passed up for a known discriminator from an
+ * unknown pair: a moved peer needs one per detect time, a flood gets no more.
+ */
+#define MOVED_MAX    256
+#define MOVED_WIN_NS 100000000ull
 
 
 #endif /* BFD_XDP_TUNABLES_H */

@@ -82,6 +82,11 @@ int main(void)
 	s = arm();
 	ktx_cfg_for(s, NOW, &c, &k);
 
+	report("echo-budget-for",
+	       echo_budget_for(50000) != 24 || echo_budget_for(10000) != 56 ||
+		       echo_budget_for(1000) != 56 || echo_budget_for(1000000) != 20,
+	       "four times the RFC rate plus 16, 10ms floor");
+
 	/* --- enable: exactly ktx_answers --- */
 	report("enable-up-unauthenticated", c.enable != 1,
 	       "an Up session the program can answer for");

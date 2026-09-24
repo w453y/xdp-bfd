@@ -27,7 +27,8 @@ static void case_echo(const char *name, uint8_t ttl, const char *src, const char
 	unsigned long long before;
 	struct frame f;
 	int v, bad = 0;
-	__u32 one = 1, disc = 0x33333333;
+	struct echo_peer ep = { .max = 64 };
+	__u32 disc = 0x33333333;
 
 	map_reset();
 	arm_session();
@@ -38,7 +39,7 @@ static void case_echo(const char *name, uint8_t ttl, const char *src, const char
 		peer.b[10] = 0xff;
 		peer.b[11] = 0xff;
 		memcpy(&peer.b[12], &a, 4);
-		bpf_map_update_elem(echo_peers_fd, &peer, &one, BPF_ANY);
+		bpf_map_update_elem(echo_peers_fd, &peer, &ep, BPF_ANY);
 	}
 	if (arm_disc)
 		bpf_map_update_elem(echo_disc_fd, &disc, &k, BPF_ANY);
@@ -72,8 +73,57 @@ static void case_echo(const char *name, uint8_t ttl, const char *src, const char
 	map_reset();
 }
 
+/* RFC 5880 s6.8.9: past the peer's budget the reflector drops, so a forger
+ * spoofing a known peer cannot fill the transmit ring.
+ */
+static void case_echo_budget(void)
+{
+	struct echo_peer ep = { .max = 24 };
+	struct bfd_addr peer = { 0 };
+	__u32 a = inet_addr("10.0.0.2");
+	unsigned long long before = stat_get(BFD_STAT_ECHO_RATELIMITED);
+	int tx = 0, drop = 0, bad = 0;
+	struct frame f;
+
+	map_reset();
+	arm_session();
+	peer.b[10] = peer.b[11] = 0xff;
+	memcpy(&peer.b[12], &a, 4);
+	bpf_map_update_elem(echo_peers_fd, &peer, &ep, BPF_ANY);
+	build_echo(&f, 255, "10.0.0.2", "10.0.0.2", 0x44444444, 1);
+	for (int i = 0; i < 100; i++) {
+		int v = run_frame(&f, NULL, NULL);
+
+		tx += v == XDP_TX;
+		drop += v == XDP_DROP;
+	}
+	if (tx != 24 || drop != 76) {
+		printf("     %d reflected, %d dropped; want 24 and 76\n", tx, drop);
+		bad = 1;
+	}
+	if (stat_get(BFD_STAT_ECHO_RATELIMITED) != before + 76) {
+		printf("     echo-ratelimited +%llu, want +76\n",
+		       stat_get(BFD_STAT_ECHO_RATELIMITED) - before);
+		bad = 1;
+	}
+	usleep(110000);
+	if (run_frame(&f, NULL, NULL) != XDP_TX) {
+		printf("     the next window was not reflected\n");
+		bad = 1;
+	}
+	bpf_map_delete_elem(echo_peers_fd, &peer);
+	map_reset();
+	if (bad) {
+		printf("FAIL %-40s\n", "echo-budget");
+		fails++;
+	} else {
+		printf("ok   %-40s 24 of 100, then the next window\n", "echo-budget");
+	}
+}
+
 static void run_echo_matrix(void)
 {
+	case_echo_budget();
 	/* our own echo returning: 254 and self-addressed, consumed */
 	case_echo("echo-returns", 254, "10.0.0.1", "10.0.0.1", 0, 1, XDP_DROP,
 		  BFD_STAT_ECHO_RETURNS);
@@ -114,14 +164,14 @@ static void case_echo_v6(const char *name, uint8_t hlim, const char *src, const 
 	unsigned long long before;
 	struct frame f;
 	int v, bad = 0;
-	__u32 one = 1;
+	struct echo_peer ep = { .max = 64 };
 
 	map_reset_v6();
 	arm_session_v6();
 
 	if (arm_peer) {
 		inet_pton(AF_INET6, src, peer.b);
-		bpf_map_update_elem(echo_peers_fd, &peer, &one, BPF_ANY);
+		bpf_map_update_elem(echo_peers_fd, &peer, &ep, BPF_ANY);
 	}
 
 	build_echo_v6(&f, hlim, src, dst, 0x33333333, 0xa5a5a5a5);

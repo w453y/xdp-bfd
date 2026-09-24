@@ -82,7 +82,9 @@ struct bfd_ctrl_pkt {
 	X(DEADMAN_HOLD, "deadman-hold")		  /* reply withheld, engine stalled */            \
 	X(UNKNOWN_SESSION, "unknown-session")	  /* no session for the pair */                   \
 	X(V6_EXTHDR, "v6-exthdr")		  /* BFD behind a v6 ext hdr */                   \
-	X(AUTH_RATELIMITED, "auth-ratelimited")	  /* A-bit drop before digest */
+	X(AUTH_RATELIMITED, "auth-ratelimited")	  /* A-bit drop before digest */                  \
+	X(MOVED_RATELIMITED, "moved-ratelimited") /* over the moved-address budget */             \
+	X(ECHO_RATELIMITED, "echo-ratelimited")	  /* over a peer's echo budget */
 
 /* Written between load and attach. Their own map: .rodata would need rewriting
  * whole, and sweep_map holds a bpf_timer.
@@ -239,6 +241,18 @@ struct xdp_auth_key {
 	__u8 keylen;
 	__u8 pad;
 	__u8 kpad[64];
+};
+
+/* echo_peers' value. RFC 5880 s6.8.9: a peer sends echo no faster than our
+ * Required Min Echo RX, so past a few times that the reflector drops, and a
+ * forger spoofing the peer cannot fill our transmit ring. The engine writes
+ * max; the program counts.
+ */
+#define BFD_ECHO_WIN_US 100000
+struct echo_peer {
+	__u64 win_ns;
+	__u32 n;
+	__u32 max; /* per BFD_ECHO_WIN_US */
 };
 
 /* Written by the engine in place under lock (BPF_F_LOCK); the program copies

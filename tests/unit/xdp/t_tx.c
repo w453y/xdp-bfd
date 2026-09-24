@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of the xdp_run test, split by subject.
- * Compiled as one unit via tests/unit/xdp_run.c, which carries the
- * includes, the shared globals and main; include order there is the
- * dependency order (harness first, sweep last). */
+/* Part of xdp_run.c. */
 
-/* An Up packet from an armed peer must be bounced, not passed. This is
- * the gate in bfd_xdp.c: cfg->enable and the peer at Init or better. */
+/* Bounced: cfg->enable and the peer at Init or better. */
 static void case_bounce_v4(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -18,9 +14,7 @@ static void case_bounce_v4(void)
 	map_reset();
 }
 
-/* The verdict says the program chose to bounce. This says the frame it
- * produced is the one tx.h describes. Checked field by field rather than
- * memcmp against a whole expected frame, so a failure names what moved. */
+/* The frame tx.h describes, field by field so a failure names what moved. */
 static void case_bounce_v4_frame(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -49,8 +43,13 @@ static void case_bounce_v4_frame(void)
 	unsigned int want_len = sizeof(*oe) + sizeof(*oi) + sizeof(*ou) + 24;
 	int bad = 0;
 
-#define CHK(cond, what) do { if (!(cond)) { \
-	printf("     %s\n", what); bad = 1; } } while (0)
+#define CHK(cond, what)                                                                           \
+	do {                                                                                      \
+		if (!(cond)) {                                                                    \
+			printf("     %s\n", what);                                                \
+			bad = 1;                                                                  \
+		}                                                                                 \
+	} while (0)
 
 	CHK(out_len == want_len, "frame length not eth+ip+udp+24");
 	CHK(!memcmp(oe->h_dest, ie->h_source, 6), "dest MAC is not the arriving source");
@@ -80,23 +79,15 @@ static void case_bounce_v4_frame(void)
 	map_reset();
 }
 
-/* The D bit on an RX-clocked reply. The engine decides whether it goes
- * out - the kernel has no view of the remote state that s6.8.6 requires
- * - so this checks the flag is carried, and that it rides alongside a
- * Final rather than displacing it: only P and F are mutually exclusive
- * (s6.5).
- *
- * in_flags picks what the arriving frame carries, so the D-with-F case
- * comes from a real Poll rather than being constructed. */
-static void case_demand_bit_out(uint8_t cfg_demand, uint8_t in_flags,
-				uint8_t want_set, uint8_t want_final,
-				const char *name)
+/* The engine decides D, the program carries it, with a Final too (s6.5). */
+static void case_demand_bit_out(uint8_t cfg_demand, uint8_t in_flags, uint8_t want_set,
+				uint8_t want_final, const char *name)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
 	struct bfd_ctrl_pkt p = ctrl_up();
 	unsigned char out[FRAME_MAX];
 	unsigned int out_len = 0;
-	struct tx_cfg cfg = {0};
+	struct tx_cfg cfg = { 0 };
 	struct frame f;
 	int v, bad = 0;
 
@@ -108,7 +99,7 @@ static void case_demand_bit_out(uint8_t cfg_demand, uint8_t in_flags,
 		return;
 	}
 	cfg.demand = cfg_demand;
-	bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY);
+	cfg_put(cfg_fd, &k, &cfg);
 
 	p.flags |= in_flags;
 	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
@@ -146,23 +137,10 @@ static void case_demand_bit_out(uint8_t cfg_demand, uint8_t in_flags,
 	map_reset();
 }
 
-/* The dead-man gate: the fast path answers on the engine's behalf only
- * while the engine is still saying it is there.
- *
- * `age_us` is how stale the heartbeat is made, relative to the bound. The
- * program reads bpf_ktime_get_ns itself, so the heartbeat is written as an
- * offset from the same clock rather than the clock being controlled - the
- * margins here are whole seconds against a test that takes microseconds,
- * so the drift between writing it and the program reading it cannot reach
- * a verdict.
- *
- * A bound of zero is the gate switched off, and a heartbeat of zero is an
- * engine that has not written one yet; both must answer, and both are
- * checked, because they are the two ways the gate could be armed against a
- * healthy system.
+/* hb_ns is against the program's clock; margins are whole seconds. A zero bound
+ * and a zero heartbeat both answer.
  */
-static void case_deadman(const char *name, __u64 bound_ns, __u64 hb_ns,
-			 int want_tx)
+static void case_deadman(const char *name, __u64 bound_ns, __u64 hb_ns, int want_tx)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
 	unsigned char out[FRAME_MAX];
@@ -188,20 +166,14 @@ static void case_deadman(const char *name, __u64 bound_ns, __u64 hb_ns,
 	v = run_frame(&f, out, &out_len);
 	held1 = stat_get(BFD_STAT_DEADMAN_HOLD);
 
-	/* Withholding the reply is XDP_PASS, which is also what an
-	 * unconfigured session gets, so the verdict alone would pass if the
-	 * gate were deleted and the session simply failed to arm. The
-	 * counter is the witness that this packet reached the gate. */
+	/* Withheld is XDP_PASS, so the counter is the witness. */
 	want = want_tx ? XDP_TX : XDP_PASS;
 	if (v != want || (held1 - held0) != (unsigned long long)!want_tx) {
-		printf("FAIL %-40s want %s hold+%d, got %s hold+%llu\n",
-		       name, verdict_str(want), !want_tx,
-		       v < 0 ? "syscall-error" : verdict_str(v),
-		       held1 - held0);
+		printf("FAIL %-40s want %s hold+%d, got %s hold+%llu\n", name, verdict_str(want),
+		       !want_tx, v < 0 ? "syscall-error" : verdict_str(v), held1 - held0);
 		fails++;
 	} else {
-		printf("ok   %-40s %s, hold+%llu\n", name, verdict_str(v),
-		       held1 - held0);
+		printf("ok   %-40s %s, hold+%llu\n", name, verdict_str(v), held1 - held0);
 	}
 
 	bound_ns = 0;
@@ -211,8 +183,7 @@ static void case_deadman(const char *name, __u64 bound_ns, __u64 hb_ns,
 	map_reset();
 }
 
-/* The v6 bounce, and the only independent check the hand-rolled fold in
- * tx.h has ever had. */
+/* The v6 bounce, the independent check on tx.h's checksum fold. */
 static void case_bounce_v6_frame(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -235,8 +206,7 @@ static void case_bounce_v6_frame(void)
 
 	const struct ipv6hdr *oi = (const void *)(out + sizeof(struct ethhdr));
 	const struct udphdr *ou = (const void *)(oi + 1);
-	unsigned int want_len = sizeof(struct ethhdr) + sizeof(*oi) +
-				sizeof(*ou) + 24;
+	unsigned int want_len = sizeof(struct ethhdr) + sizeof(*oi) + sizeof(*ou) + 24;
 	int bad = 0;
 
 	if (out_len != want_len) {
@@ -264,21 +234,13 @@ static void case_bounce_v6_frame(void)
 		printf("FAIL %-40s\n", "bounce-v6-frame");
 		fails++;
 	} else {
-		printf("ok   %-40s %u bytes, csum 0x%04x\n", "bounce-v6-frame",
-		       out_len, ntohs(ou->check));
+		printf("ok   %-40s %u bytes, csum 0x%04x\n", "bounce-v6-frame", out_len,
+		       ntohs(ou->check));
 	}
 	map_reset_v6();
 }
 
-/* A peer frame carrying more than 24 bytes of BFD (auth section, trailer)
- * must not go back out with the extra bytes attached. tx.h trims with
- * bpf_xdp_adjust_tail after rewriting.
- *
- * The v6 arm is the one worth having. The checksum fold runs BEFORE the
- * trim, because adjust_tail invalidates the pointers it reads, so the
- * fold's claim that it "never reads past payload byte 24, which survives
- * the trim" is only true if the trim removes exactly the excess. This is
- * the only input that can tell. */
+/* Trimmed to our packet; the v6 arm checks the fold, which runs before the trim. */
 static void case_trim(int v6, unsigned int extra)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -309,28 +271,23 @@ static void case_trim(int v6, unsigned int extra)
 	}
 
 	unsigned int l3 = v6 ? sizeof(struct ipv6hdr) : sizeof(struct iphdr);
-	unsigned int want_len = sizeof(struct ethhdr) + l3 +
-				sizeof(struct udphdr) + 24;
-	const struct udphdr *ou =
-		(const void *)(out + sizeof(struct ethhdr) + l3);
+	unsigned int want_len = sizeof(struct ethhdr) + l3 + sizeof(struct udphdr) + 24;
+	const struct udphdr *ou = (const void *)(out + sizeof(struct ethhdr) + l3);
 
 	if (out_len != want_len) {
-		printf("     frame is %u bytes, want %u (not trimmed)\n",
-		       out_len, want_len);
+		printf("     frame is %u bytes, want %u (not trimmed)\n", out_len, want_len);
 		bad = 1;
 	}
 	if (ntohs(ou->len) != (int)(sizeof(*ou) + 24)) {
-		printf("     udp len is %u, want %zu\n", ntohs(ou->len),
-		       sizeof(*ou) + 24);
+		printf("     udp len is %u, want %zu\n", ntohs(ou->len), sizeof(*ou) + 24);
 		bad = 1;
 	}
 	if (v6) {
-		const struct ipv6hdr *oi =
-			(const void *)(out + sizeof(struct ethhdr));
+		const struct ipv6hdr *oi = (const void *)(out + sizeof(struct ethhdr));
 
 		if (ntohs(oi->payload_len) != (int)(sizeof(*ou) + 24)) {
-			printf("     payload_len is %u, want %zu\n",
-			       ntohs(oi->payload_len), sizeof(*ou) + 24);
+			printf("     payload_len is %u, want %zu\n", ntohs(oi->payload_len),
+			       sizeof(*ou) + 24);
 			bad = 1;
 		}
 		if (!v6_udp_csum_ok(out, out_len)) {
@@ -338,8 +295,7 @@ static void case_trim(int v6, unsigned int extra)
 			bad = 1;
 		}
 	} else {
-		const struct iphdr *oi =
-			(const void *)(out + sizeof(struct ethhdr));
+		const struct iphdr *oi = (const void *)(out + sizeof(struct ethhdr));
 
 		if (ntohs(oi->tot_len) != (int)(l3 + sizeof(*ou) + 24)) {
 			printf("     tot_len is %u, want %zu\n", ntohs(oi->tot_len),
@@ -365,37 +321,32 @@ out:
 		map_reset();
 }
 
-/* RFC 5880 s6.8.4 poll termination. tx_cfg is userspace-owned, so the
- * kernel acks the peer's F by writing the sequence into kernel-owned
- * final_seq rather than clearing cfg->poll in place. Guard is
- * cfg->poll && incoming F, so all three arms below are reachable. */
-static void case_poll_final(uint8_t in_flags, uint32_t cfg_poll,
-			    uint32_t poll_seq, uint32_t want_seq,
-			    const char *name)
+/* RFC 5880 s6.8.4: F is acked in final_seq only under cfg->poll. */
+static void case_poll_final(uint8_t in_flags, uint32_t cfg_poll, uint32_t poll_seq,
+			    uint32_t want_seq, const char *name)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
 	struct bfd_ctrl_pkt p = ctrl_up();
-	struct session_state st = {0};
-	struct tx_cfg cfg = {0};
+	struct session_state st = { 0 };
+	struct tx_cfg cfg = { 0 };
 	struct frame f;
 
 	map_reset();
 
-	cfg.enable    = 1;
-	cfg.my_disc   = 0x22222222;
+	cfg.enable = 1;
+	cfg.my_disc = 0x22222222;
 	cfg.your_disc = 0x11111111;
 	cfg.min_tx_us = 10000;
 	cfg.min_rx_us = 10000;
-	cfg.state     = ST_UP;
-	cfg.mult      = 3;
-	cfg.min_ttl   = 255;
-	cfg.poll      = cfg_poll;
-	cfg.poll_seq  = poll_seq;
+	cfg.state = ST_UP;
+	cfg.mult = 3;
+	cfg.min_ttl = 255;
+	cfg.poll = cfg_poll;
+	cfg.poll_seq = poll_seq;
 
 	st.remote_state = ST_UP;
 
-	if (bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY) ||
-	    bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
+	if (cfg_put(cfg_fd, &k, &cfg) || bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
 		printf("FAIL %-40s map setup: %s\n", name, strerror(errno));
 		fails++;
 		return;
@@ -405,7 +356,8 @@ static void case_poll_final(uint8_t in_flags, uint32_t cfg_poll,
 	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
 	run_frame(&f, NULL, NULL);
 
-	struct session_state after = {0};
+	struct session_state after = { 0 };
+
 	if (!read_state(&k, &after)) {
 		printf("FAIL %-40s\n", name);
 		fails++;
@@ -414,8 +366,7 @@ static void case_poll_final(uint8_t in_flags, uint32_t cfg_poll,
 	}
 
 	if (after.final_seq != want_seq) {
-		printf("     final_seq is %u, want %u\n", after.final_seq,
-		       want_seq);
+		printf("     final_seq is %u, want %u\n", after.final_seq, want_seq);
 		printf("FAIL %-40s\n", name);
 		fails++;
 	} else {
@@ -424,12 +375,12 @@ static void case_poll_final(uint8_t in_flags, uint32_t cfg_poll,
 	map_reset();
 }
 
-/* Liveness and the RX counter are map-side effects nothing has checked. */
+/* Liveness and the RX counter, the map-side effects of an accepted packet. */
 static void case_rx_state(void)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
 	struct bfd_ctrl_pkt p = ctrl_up();
-	struct session_state after = {0};
+	struct session_state after = { 0 };
 	struct frame f;
 	int bad = 0;
 
@@ -450,12 +401,11 @@ static void case_rx_state(void)
 		bad = 1;
 	}
 	if (after.rx_pkts != 1) {
-		printf("     rx_pkts is %llu, want 1\n",
-		       (unsigned long long)after.rx_pkts);
+		printf("     rx_pkts is %llu, want 1\n", (unsigned long long)after.rx_pkts);
 		bad = 1;
 	}
-	if ((unsigned)after.alive != 1) {
-		printf("     alive is %u, want 1\n", (unsigned)after.alive);
+	if ((unsigned int)after.alive != 1) {
+		printf("     alive is %u, want 1\n", (unsigned int)after.alive);
 		bad = 1;
 	}
 	if (after.remote_disc != 0x11111111) {
@@ -468,23 +418,17 @@ static void case_rx_state(void)
 		fails++;
 	} else {
 		printf("ok   %-40s rx %llu alive %u\n", "rx-updates-state",
-		       (unsigned long long)after.rx_pkts, (unsigned)after.alive);
+		       (unsigned long long)after.rx_pkts, (unsigned int)after.alive);
 	}
 	map_reset();
 }
 
-/* Whatever came in, what goes out says 24 bytes of BFD.
- *
- * The reply is the received frame rewritten in place, so its envelope is
- * the sender's until this overwrites it. Asserting on the reply is the
- * only way to see that: the trim used to be conditional on there being a
- * tail, and a frame with none kept whatever length it arrived with.
- */
+/* Whatever came in, the reply's envelope says 24 bytes of BFD. */
 static void case_bounce_envelope_is_ours(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
 	unsigned char out[256];
-	unsigned out_len = 0;
+	unsigned int out_len = 0;
 	struct frame f;
 	int v, bad = 0;
 
@@ -494,28 +438,25 @@ static void case_bounce_envelope_is_ours(void)
 
 	v = run_frame(&f, out, &out_len);
 	if (v != XDP_TX) {
-		printf("     verdict %s, want TX\n",
-		       v < 0 ? "syscall-error" : verdict_str(v));
+		printf("     verdict %s, want TX\n", v < 0 ? "syscall-error" : verdict_str(v));
 		bad = 1;
 	} else {
 		const struct iphdr *oi = (void *)(out + sizeof(struct ethhdr));
 		const struct udphdr *ou = (void *)(oi + 1);
-		unsigned want_udp = sizeof(*ou) + BFD_MIN_LEN;
-		unsigned want_ip = sizeof(*oi) + want_udp;
+		unsigned int want_udp = sizeof(*ou) + BFD_MIN_LEN;
+		unsigned int want_ip = sizeof(*oi) + want_udp;
 
 		if (ntohs(ou->len) != want_udp) {
-			printf("     reply udp->len %u, want %u\n",
-			       ntohs(ou->len), want_udp);
+			printf("     reply udp->len %u, want %u\n", ntohs(ou->len), want_udp);
 			bad = 1;
 		}
 		if (ntohs(oi->tot_len) != want_ip) {
-			printf("     reply tot_len %u, want %u\n",
-			       ntohs(oi->tot_len), want_ip);
+			printf("     reply tot_len %u, want %u\n", ntohs(oi->tot_len), want_ip);
 			bad = 1;
 		}
 		if (out_len != sizeof(struct ethhdr) + want_ip) {
-			printf("     reply is %u bytes, want %zu\n",
-			       out_len, sizeof(struct ethhdr) + want_ip);
+			printf("     reply is %u bytes, want %zu\n", out_len,
+			       sizeof(struct ethhdr) + want_ip);
 			bad = 1;
 		}
 	}
@@ -524,8 +465,7 @@ static void case_bounce_envelope_is_ours(void)
 		printf("FAIL %-40s\n", "bounce-envelope-is-ours");
 		fails++;
 	} else {
-		printf("ok   %-40s lengths rewritten\n",
-		       "bounce-envelope-is-ours");
+		printf("ok   %-40s lengths rewritten\n", "bounce-envelope-is-ours");
 	}
 	map_reset();
 }

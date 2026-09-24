@@ -1,20 +1,11 @@
 #!/bin/bash
-# Run the injection matrix before pushing. Not in CI: it needs the
-# testbed.
-#
-# Skips rather than blocks when the testbed is not there. A hook that
-# fails on an unrelated machine gets disabled, and a disabled hook catches
-# nothing.
+# The injection matrix, which needs the testbed; skipped when it is absent.
 set -u
 cd "$(git rev-parse --show-toplevel)" || exit 0
 
 pgrep -x bfd_tx >/dev/null || { echo "pre-push: no engine, skipping matrix"; exit 0; }
 stats=/tmp/bfd_tx_stats.json
-# The snapshot is written on SIGUSR1, so ask for one rather than reading
-# whatever is lying there. An engine started without --stats-dump does not
-# answer, and the file it leaves behind will claim a full mesh for days,
-# so check afterwards that the file actually moved: an unknown mesh has to
-# read as unknown, not as a healthy one.
+# An engine without --stats-dump leaves a stale file, so check it moved.
 sudo pkill -USR1 -x bfd_tx 2>/dev/null
 sleep 1
 if [ ! -f "$stats" ]; then
@@ -37,12 +28,7 @@ PY
 [ "${up:-0}" -ge 2 ] || { echo "pre-push: mesh is down ($up up), skipping"; exit 0; }
 
 matrix=tests/testbed/inject_matrix.py
-# A missing script means one of two very different things. If the engine
-# sources are not here either, this is a branch the gate does not apply
-# to, such as docs, and there is nothing to check. If they are here, the
-# script has moved or been deleted and the gate is broken, which must not
-# pass quietly: that is exactly how the stale path below went unnoticed
-# for weeks.
+# Fine on a docs branch; a broken gate if the engine is here.
 if [ ! -f "$matrix" ]; then
     if [ ! -d src/engine ]; then
         echo "pre-push: no engine sources here, skipping matrix"
@@ -54,15 +40,10 @@ if [ ! -f "$matrix" ]; then
 fi
 
 echo "pre-push: running the injection matrix against $up sessions"
-# stdout only: progress goes to stderr, and folding it back in with 2>&1
-# breaks the parse. The script exits non-zero when cases fail, which is
-# what this hook exists to catch, so the status is deliberately not
-# checked here - valid JSON means the run happened and `failures` is the
-# answer whatever the exit status was.
+# Valid JSON means the run happened; failures is the answer.
 out=$(python3 "$matrix" --json)
 fails=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["failures"])')
 if [ -z "$fails" ]; then
-    # A hook problem, not a test failure. Say so and get out of the way.
     echo "pre-push: could not parse --json output, skipping"
     exit 0
 fi

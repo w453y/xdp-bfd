@@ -1,19 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * bfd_auth.h - the authentication section (RFC 5880 s6.7).
- *
- * Two types are handled, because two are all bfdd can produce: simple
- * password, and keyed SHA1 in its plain and meticulous forms. Keyed MD5
- * exists in the RFC and in bfdd's enum, but no keychain algorithm maps
- * onto it there, so nothing ever sends one.
- *
- * The digest is not the RFC's. RFC 5880 s6.7.3 computes a plain SHA1
- * over the packet with the shared key sitting in the digest field; bfdd
- * zeroes that field and computes an HMAC instead. This follows bfdd,
- * because bfdd is the control plane on one side of every session here
- * and a session that authenticates against the RFC would fail against
- * every packet it sends. The two are not interoperable and the
- * difference is not ours to split.
+/* bfd_auth.h - the RFC 5880 s6.7 section bfdd produces: simple password, keyed
+ * and meticulous SHA1. The digest follows bfdd, an HMAC with the field zeroed,
+ * not the RFC's keyed SHA1; the two do not interoperate (FRR #23274).
  */
 #ifndef BFD_AUTH_H
 #define BFD_AUTH_H
@@ -21,15 +9,8 @@
 #include "bfd_shared.h"
 #include "hmac_sha1.h"
 
-/* The HMAC over a control packet, with the digest field zeroed as bfdd
- * does it. Every bound is a compile-time constant, so this is the half
- * the fast path can call: a keyed-SHA1 packet is exactly 52 bytes, which
- * is one block once the key block is out of the way.
- *
- * `pkt` must hold at least BFD_MIN_LEN + BFD_AUTH_SHA1_LEN bytes.
- */
-static inline int bfd_auth_sha1(const __u8 *pkt,
-				const __u8 kpad[SHA1_BLOCK_LEN],
+/* Userspace only. pkt holds BFD_MIN_LEN + BFD_AUTH_SHA1_LEN bytes. */
+static inline int bfd_auth_sha1(const __u8 *pkt, const __u8 kpad[SHA1_BLOCK_LEN],
 				__u8 out[SHA1_DIGEST_LEN])
 {
 	__u8 blk[SHA1_BLOCK_LEN] = {};
@@ -42,33 +23,26 @@ static inline int bfd_auth_sha1(const __u8 *pkt,
 
 	__u8 tmp[SHA1_BLOCK_LEN];
 
-	return hmac_sha1_blocks(kpad, blk, BFD_MIN_LEN + BFD_AUTH_SHA1_LEN,
-				out, tmp);
+	return hmac_sha1_blocks(kpad, blk, BFD_MIN_LEN + BFD_AUTH_SHA1_LEN, out, tmp);
 }
 
-/* How long a packet of this type is. 0 for a type we do not produce. */
+/* 0 for a type we do not produce. */
 static inline __u8 bfd_auth_pkt_len(__u8 auth_type, __u8 keylen)
 {
 	if (auth_type == BFD_AUTH_SIMPLE)
 		return keylen && keylen <= BFD_AUTH_SIMPLE_MAXKEY
 			       ? BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR + keylen
 			       : 0;
-	if (auth_type == BFD_AUTH_KEYED_SHA1 ||
-	    auth_type == BFD_AUTH_METICULOUS_SHA1)
+	if (auth_type == BFD_AUTH_KEYED_SHA1 || auth_type == BFD_AUTH_METICULOUS_SHA1)
 		return BFD_MIN_LEN + BFD_AUTH_SHA1_LEN;
 	return 0;
 }
 
-/* Append the authentication section to a 24-byte control packet whose
- * `len` and A bit the caller has already set, and return the whole
- * packet length. Returns 0 on refusal, having written nothing worth
- * sending - a half-built section would authenticate as garbage.
- *
- * `pkt` must have room for BFD_MAX_LEN.
+/* Append to a 24-byte packet with len and the A bit set. Returns the length, 0
+ * on refusal; pkt needs BFD_MAX_LEN.
  */
-static inline __u8 bfd_auth_build(__u8 *pkt, __u8 auth_type, __u8 keyid,
-				  const __u8 *key, __u8 keylen,
-				  const __u8 kpad[SHA1_BLOCK_LEN], __u32 seq)
+static inline __u8 bfd_auth_build(__u8 *pkt, __u8 auth_type, __u8 keyid, const __u8 *key,
+				  __u8 keylen, const __u8 kpad[SHA1_BLOCK_LEN], __u32 seq)
 {
 	__u8 len = bfd_auth_pkt_len(auth_type, keylen);
 	__u8 *a = pkt + BFD_MIN_LEN;
@@ -88,7 +62,7 @@ static inline __u8 bfd_auth_build(__u8 *pkt, __u8 auth_type, __u8 keyid,
 	}
 
 	a[3] = 0;
-	a[BFD_AUTH_SHA1_SEQ_OFF]     = (__u8)(seq >> 24);
+	a[BFD_AUTH_SHA1_SEQ_OFF] = (__u8)(seq >> 24);
 	a[BFD_AUTH_SHA1_SEQ_OFF + 1] = (__u8)(seq >> 16);
 	a[BFD_AUTH_SHA1_SEQ_OFF + 2] = (__u8)(seq >> 8);
 	a[BFD_AUTH_SHA1_SEQ_OFF + 3] = (__u8)seq;
@@ -100,54 +74,29 @@ static inline __u8 bfd_auth_build(__u8 *pkt, __u8 auth_type, __u8 keyid,
 	return len;
 }
 
-/* Is this sequence number inside the replay window?
- *
- * RFC 5880 s6.7.4: the sequence must lie in bfd.RcvAuthSeq to
- * bfd.RcvAuthSeq+(3*Detect Mult) inclusive, or +1 to the same bound for
- * the meticulous form, "when treated as an unsigned 32-bit circular
- * number space". Unsigned subtraction gives that circularity for free:
- * a sequence below the watermark wraps to an enormous distance and
- * falls outside the span.
- *
- * The upper bound is what makes the window a window. Without it any
- * sequence above the watermark is acceptable, which is most of the
- * number space, and a wrap leaves the session rejecting forever.
- */
-static inline int bfd_auth_seq_ok(__u32 seq, __u32 rx_seq, int meticulous,
-				  __u8 mult)
+/* RFC 5880 s6.7.4: [rx_seq, rx_seq + 3*mult], from +1 if meticulous, circular. */
+static inline int bfd_auth_seq_ok(__u32 seq, __u32 rx_seq, int meticulous, __u8 mult)
 {
 	__u32 lo = meticulous ? 1u : 0u;
 	__u32 span = 3u * (mult ? mult : 3u);
-	__u32 d = seq - rx_seq;   /* circular distance, deliberately unsigned */
+	__u32 d = seq - rx_seq; /* circular, deliberately unsigned */
 
 	return d >= lo && d <= span;
 }
 
-/* Why an authenticated packet was not accepted. */
 enum bfd_auth_verdict {
 	BFD_AUTH_OK = 0,
-	BFD_AUTH_MALFORMED,   /* section absent, short, or the wrong type */
-	BFD_AUTH_BADKEY,      /* key id or password does not match */
+	BFD_AUTH_MALFORMED, /* section absent, short, or the wrong type */
+	BFD_AUTH_BADKEY,    /* key id or password does not match */
 	BFD_AUTH_BADDIGEST,
-	BFD_AUTH_REPLAY,      /* sequence number went backwards */
+	BFD_AUTH_REPLAY, /* sequence number outside the replay window */
 };
 
-/* Check the section on a received packet.
- *
- * `rx_seq` and `seen` carry the replay window across calls and are
- * updated only on success. The first authenticated packet has nothing to
- * compare against, so it sets the window instead of being judged by it -
- * which is what bfdd does, and what lets a session survive the peer
- * restarting with a fresh random sequence.
- *
- * `mult` is the Detect Mult carried by the packet being checked. RFC
- * 5880 names the local state variable bfd.DetectMult and the header
- * field Detect Mult, and s6.7.4 asks for the latter; bfd_ctrl_check has
- * already rejected the packet if that field is zero.
+/* rx_seq and seen change only on success. The first packet sets the window, as
+ * bfdd does. mult is the packet's Detect Mult (s6.7.4).
  */
-static inline int bfd_auth_check(const __u8 *pkt, __u8 len, __u8 auth_type,
-				 __u8 keyid, const __u8 *key, __u8 keylen,
-				 const __u8 kpad[SHA1_BLOCK_LEN],
+static inline int bfd_auth_check(const __u8 *pkt, __u8 len, __u8 auth_type, __u8 keyid,
+				 const __u8 *key, __u8 keylen, const __u8 kpad[SHA1_BLOCK_LEN],
 				 __u32 *rx_seq, int *seen, __u8 mult)
 {
 	const __u8 *a = pkt + BFD_MIN_LEN;
@@ -166,8 +115,7 @@ static inline int bfd_auth_check(const __u8 *pkt, __u8 len, __u8 auth_type,
 	if (auth_type == BFD_AUTH_SIMPLE) {
 		__u8 diff = 0;
 
-		/* Constant time over the configured length: a password
-		 * compare that returns early leaks it a byte at a time. */
+		/* Constant time: an early return leaks the password a byte at a time. */
 		for (i = 0; i < keylen; i++)
 			diff |= (__u8)(a[BFD_AUTH_SIMPLE_HDR + i] ^ key[i]);
 		return diff ? BFD_AUTH_BADKEY : BFD_AUTH_OK;
@@ -175,11 +123,9 @@ static inline int bfd_auth_check(const __u8 *pkt, __u8 len, __u8 auth_type,
 
 	seq = ((__u32)a[BFD_AUTH_SHA1_SEQ_OFF] << 24) |
 	      ((__u32)a[BFD_AUTH_SHA1_SEQ_OFF + 1] << 16) |
-	      ((__u32)a[BFD_AUTH_SHA1_SEQ_OFF + 2] << 8) |
-	      (__u32)a[BFD_AUTH_SHA1_SEQ_OFF + 3];
+	      ((__u32)a[BFD_AUTH_SHA1_SEQ_OFF + 2] << 8) | (__u32)a[BFD_AUTH_SHA1_SEQ_OFF + 3];
 
-	if (*seen && !bfd_auth_seq_ok(seq, *rx_seq, auth_type ==
-				     BFD_AUTH_METICULOUS_SHA1, mult))
+	if (*seen && !bfd_auth_seq_ok(seq, *rx_seq, auth_type == BFD_AUTH_METICULOUS_SHA1, mult))
 		return BFD_AUTH_REPLAY;
 
 	if (!bfd_auth_sha1(pkt, kpad, dig))
@@ -193,11 +139,7 @@ static inline int bfd_auth_check(const __u8 *pkt, __u8 len, __u8 auth_type,
 			return BFD_AUTH_BADDIGEST;
 	}
 
-	/* Advanced on every accepted packet. The RFC only states this for
-	 * the first one, which cannot be the whole rule: a watermark that
-	 * never moves puts every packet past 3*Detect Mult outside its own
-	 * window. Advancing also keeps the window as tight as the spec
-	 * intends, which a lagging watermark does not. */
+	/* Every accepted packet moves the window. */
 	*rx_seq = seq;
 	*seen = 1;
 	return BFD_AUTH_OK;

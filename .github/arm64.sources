@@ -1,7 +1,4 @@
-# arm64 apt source for the cross job (ci.yml). Ubuntu splits
-# architectures across mirrors: archive.ubuntu.com is amd64 only, the
-# rest live on ports.ubuntu.com. Copied into place, not generated in
-# YAML, so the content is reviewable as a file.
+# arm64 apt source for the cross job in ci.yml.
 Types: deb
 URIs: http://ports.ubuntu.com/ubuntu-ports
 Suites: noble noble-updates

@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-/* hmac_run.c - the shared HMAC-SHA1 on the host, against known answers.
- *
- * The same vectors run through the kernel in xdp_run.c. Two builds of one
- * header, checked against one table: a divergence between them would
- * otherwise show up only as every authenticated packet failing, on both
- * sides, with nothing to say which end was wrong.
- *
- *     make test-hmac
+/* hmac_run.c - the shared HMAC-SHA1 on the host, against known answers; xdp_run
+ * runs them in the kernel.
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -29,8 +23,7 @@ static void case_vec(const struct hmac_vec *v)
 	char a[64], b[64];
 
 	if (!hmac_sha1(v->key, v->keylen, v->msg, v->msglen, got)) {
-		printf("FAIL %-28s refused key %u msg %u\n",
-		       v->name, v->keylen, v->msglen);
+		printf("FAIL %-28s refused key %u msg %u\n", v->name, v->keylen, v->msglen);
 		fails++;
 		return;
 	}
@@ -44,8 +37,7 @@ static void case_vec(const struct hmac_vec *v)
 	printf("ok   %-28s key %2u msg %2u\n", v->name, v->keylen, v->msglen);
 }
 
-/* The block API is what the fast path calls, so it is checked directly
- * rather than only through the padding wrapper above. */
+/* The block API is what the fast path calls. */
 static void case_blocks(const struct hmac_vec *v)
 {
 	__u8 kpad[SHA1_BLOCK_LEN] = {}, mblk[SHA1_BLOCK_LEN] = {};
@@ -56,17 +48,14 @@ static void case_blocks(const struct hmac_vec *v)
 	memcpy(mblk, v->msg, v->msglen);
 	if (!hmac_sha1_blocks(kpad, mblk, v->msglen, got, tmp) ||
 	    memcmp(v->want, got, SHA1_DIGEST_LEN)) {
-		printf("FAIL %-28s block API disagrees with the wrapper\n",
-		       v->name);
+		printf("FAIL %-28s block API disagrees with the wrapper\n", v->name);
 		fails++;
 		return;
 	}
 	printf("ok   %-28s via blocks\n", v->name);
 }
 
-/* A refused input must leave the output untouched. A caller that ignored
- * the return would otherwise transmit a digest of the wrong bytes, and
- * the only symptom would be a peer rejecting every packet. */
+/* A refused input must leave the output untouched. */
 static void case_refusal(void)
 {
 	unsigned char key[16], msg[128], out[SHA1_DIGEST_LEN];

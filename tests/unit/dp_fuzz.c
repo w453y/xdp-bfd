@@ -1,19 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * dp_fuzz.c - libFuzzer target for the bfddp parser.
- *
- * dp_run.c covers the edges a person can enumerate. This targets what
- * nobody does: a header claiming one type with another type's payload
- * length, nonsense type codes at plausible lengths, bodies that parse as
- * one message and mean another.
- *
- * No socket: dp_recv_hook feeds dp_read straight from the fuzzer's
- * buffer. Driving a real socket per iteration finds bugs in the
- * connection lifecycle rather than in the parser under test.
- *
- *     make tests/unit/dp_fuzz
- *     ./tests/unit/dp_fuzz -runs=100000
- */
+/* dp_fuzz.c - libFuzzer target for the bfddp parser, fed through dp_recv_hook with no socket. */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,7 +22,7 @@ static ssize_t feed_recv(int fd, void *buf, size_t len)
 {
 	(void)fd;
 	if (!feed_left)
-		return 0;			/* EOF: peer went away */
+		return 0; /* EOF: peer went away */
 	if (len > feed_left)
 		len = feed_left;
 	memcpy(buf, feed_p, len);
@@ -47,20 +33,14 @@ static ssize_t feed_recv(int fd, void *buf, size_t len)
 
 int LLVMFuzzerInitialize(int *argc, char ***argv)
 {
-	/* Let an ADD naming any interface succeed, so the parser under test
-	 * is not steered down the uncovered branch by a stub. dp_run wants
-	 * the opposite, and that is the whole of the difference. */
+	/* So the stub does not steer the parser into the uncovered branch. */
 	ktx_stub_attach_rc = 0;
 
-	(void)argc; (void)argv;
+	(void)argc;
+	(void)argv;
 	dp_recv_hook = feed_recv;
 
-	/* Send the engine's error lines to /dev/null. They are not
-	 * level-gated, and "bad frame length" is what most random inputs
-	 * produce, so they dominate the run - exec/s reads 0 with them on.
-	 * Only this stream moves: the sanitizer reports and libFuzzer's
-	 * own stats still go to the real stderr, which is what a finding
-	 * is made of. */
+	/* "bad frame length" dominates random input; sanitizer output still reaches stderr. */
 	bfd_log_err_fp = fopen("/dev/null", "w");
 	return 0;
 }
@@ -70,19 +50,16 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	if (!size)
 		return 0;
 
-	/* dp_conn is static and only dp_accept assigns it. Any non-negative
-	 * value gets dp_read past its guard; the hook never touches the fd. */
+	/* Any fd gets dp_read past its guard; the hook never uses it. */
 	dp_set_conn_for_test(1);
 
 	feed_p = data;
 	feed_left = size;
 
-	/* Drive until the parser stops consuming: EOF drops the connection,
-	 * a bad frame drops it too. Bounded so a parser that neither
-	 * consumes nor drops cannot spin. */
+	/* Until the parser stops consuming; bounded so it cannot spin. */
 	for (int i = 0; i < 64 && feed_left; i++)
 		dp_read();
-	dp_read();				/* the EOF that tears down */
+	dp_read(); /* the EOF that tears down */
 
 	return 0;
 }

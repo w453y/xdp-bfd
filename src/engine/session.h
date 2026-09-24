@@ -1,14 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
-/* session.h - the session table and engine-wide constants.
- *
- * struct session is the engine's whole per-peer state; the dplane,
- * kernel-TX mirror and FSM modules are peers over this table rather
- * than layers, so they all include this header.
- */
+/* session.h - the session table, shared by dplane, ktx and fsm. */
 #ifndef BFD_ENGINE_SESSION_H
 #define BFD_ENGINE_SESSION_H
 
 #include <stdint.h>
+#include <string.h>
 #include <netinet/in.h>
 
 #include "bfd_shared.h"
@@ -23,29 +19,19 @@
 #define MAX_SESSIONS BFD_MAX_SESSIONS
 
 
-/* ---------- session ---------- */
-/* One key as the control plane sent it.
- *
- * `send` says when it may be used to sign, `accept` when a packet signed
- * with it may still be believed. The two overlap during a rollover so a
- * packet already in flight is not refused, which is why both travel. */
+/* One key as bfdd sent it. send and accept overlap during a rollover. */
 struct auth_key {
-	uint8_t  type;
-	uint8_t  key_id;
-	uint8_t  keylen;
-	uint8_t  kpad[64];
-	int64_t  send_start;
-	int64_t  send_end;
-	int64_t  accept_start;
-	int64_t  accept_end;
+	uint8_t type;
+	uint8_t key_id;
+	uint8_t keylen;
+	uint8_t kpad[64];
+	int64_t send_start;
+	int64_t send_end;
+	int64_t accept_start;
+	int64_t accept_end;
 };
 
-/* Is `now` inside the period?
- *
- * A start of zero means the key has always been valid and an end of -1
- * that it never expires, which is how bfdd's key chain spells a key
- * configured without lifetimes. Both sentinels have to be honoured or a
- * key configured the simple way is never usable. */
+/* A start of 0 is always valid; an end of -1 never expires. */
 static inline int auth_within(int64_t start, int64_t end, int64_t now)
 {
 	if (start == 0)
@@ -66,199 +52,114 @@ static inline int auth_key_acceptable(const struct auth_key *k, int64_t now)
 }
 
 struct session {
-	int      used;
+	int used;
 	uint32_t lid;
-	struct bfd_addr local, peer;  /* v4 stored v4-mapped */
-	int      family;              /* AF_INET / AF_INET6 */
-	uint8_t  local_wildcard;      /* bfdd offered no local address, so
-	                               * `local` above was resolved from the
-	                               * route to the peer and must be
-	                               * re-resolved if that route moves */
-	uint64_t last_reresolve_us;   /* rate-limits the re-resolve probe */
+	struct bfd_addr local, peer; /* v4 stored v4-mapped */
+	int family;		     /* AF_INET / AF_INET6 */
+	/* bfdd sent no local address; resolved from the route */
+	uint8_t local_wildcard;
+	uint64_t last_reresolve_us; /* rate-limits the re-resolve probe */
 	uint32_t min_tx_us, min_rx_us;
-	uint8_t  detect_mult;
-	int      passive;
-	int      admin_down;          /* SESSION_SHUTDOWN */
+	uint8_t detect_mult;
+	int passive;
+	int admin_down; /* SESSION_SHUTDOWN */
 
-	int      state, diag;
-	/* bfddp_counters has no field for these, so they cannot travel over
-	 * the dplane socket; they come out of the stats dump instead. */
+	int state, diag;
+	/* Not in bfddp_counters; the stats dump reports them. */
 	uint32_t up_events, down_events;
 	uint64_t last_transition_us;
-	/* Captured when the detection fires: state_transition clears
-	 * detect_iv_us on the way into Down, so the budget the overshoot is
-	 * measured against is gone by the time anything reads the session.
-	 * Detect-timeout transitions only - a peer-signalled Down has no
-	 * overshoot, and mixing the two puts a false spike at zero. */
-	uint32_t last_detect_us;     /* silence before we declared Down */
-	uint32_t last_overshoot_us;  /* that, minus the negotiated budget */
-	char     last_reason[24];    /* copied, not aliased */
+	/* Taken when detection fires; state_transition clears detect_iv_us. */
+	uint32_t last_detect_us;    /* silence before we declared Down */
+	uint32_t last_overshoot_us; /* that, minus the negotiated budget */
+	char last_reason[24];	    /* copied, not aliased */
 	uint32_t rdisc;
 	uint32_t r_min_tx, r_min_rx;
-	uint32_t r_min_echo;          /* peer's Required Min Echo RX */
-	uint8_t  r_mult, r_flags;     /* r_flags: last rx flags & 0x3f */
-	int      r_state;
-	uint32_t detect_iv_us;        /* poll-aware effective detect basis */
-	int      send_final, just_up;
-	int      polling;             /* our Poll sequence in flight */
-	uint32_t demand_polls;        /* Polls started to verify an idle
-	                               * demanding session. Flat while
-	                               * sessions demand is the witness that
-	                               * the verification is not running. */
-	uint32_t poll_seq;            /* id of current/last Poll sequence */
-	uint32_t wire_disc;           /* my_disc on the wire; survives bfdd
-	                               * restarts even when lid changes */
-	int      orphaned;            /* held across a bfdd disconnect */
+	uint32_t r_min_echo;	 /* peer's Required Min Echo RX */
+	uint8_t r_mult, r_flags; /* r_flags: last rx flags & 0x3f */
+	int r_state;
+	uint32_t detect_iv_us; /* poll-aware effective detect basis */
+	int send_final, just_up;
+	int polling;	       /* our Poll sequence in flight */
+	uint32_t demand_polls; /* Polls started to verify an idle demanding session */
+	uint32_t poll_seq;     /* id of current/last Poll sequence */
+	uint32_t wire_disc;    /* my_disc on the wire; survives a bfdd restart */
+	int orphaned;	       /* held across a bfdd disconnect */
 	uint64_t orphan_deadline_us;
-	uint32_t applied_tx_us;       /* actual TX pace; lags an advertised
-	                               * min_tx increase until poll ends */
-	int      pushed_valid;
+	/* lags a min_tx increase until the Poll ends */
+	uint32_t applied_tx_us;
+	int pushed_valid;
 	struct tx_cfg pushed_cfg;
-	/* The map key the cached config was pushed under. Without it a
-	 * session whose address pair moves compares equal on the value
-	 * alone and never gets inserted under the new key. */
-	struct session_key pushed_key;
 	uint64_t last_rx_us, next_tx_us;
-	uint64_t last_ktx_us;         /* when the fast path last transmitted
-	                               * for this session. What fsm_tx's
-	                               * backstop keys off, so it asks whether
-	                               * the kernel sent rather than inferring
-	                               * it from a packet having arrived. */
-	uint64_t ktx_tx_pkts;         /* the kernel's reply count as of the
-	                               * previous poll; the two differing is
-	                               * what says it transmitted. */
-	uint64_t tx_pkts;             /* userspace-sent control packets */
-	uint32_t last_detect_lag_us;  /* between the sweep deciding a session
-	                               * was down and the loop acting on it.
-	                               * The verdict is the kernel's and
-	                               * carries its own timestamp, so this
-	                               * separates how long detection took
-	                               * from how late the loop was. */
-	uint32_t kernel_detects;      /* verdicts taken from the sweep rather
-	                               * than re-derived here */
-	uint64_t tx_fail;             /* sendto(2) refused the packet: it
-	                               * never reached the wire, and the
-	                               * state it would have consumed is
-	                               * still pending */
-	uint64_t rx_pkts;             /* userspace-received control packets;
-	                               * the kernel keeps its own in
-	                               * session_state.rx_pkts and the two are
-	                               * summed for the counters reply */
-	uint64_t rx_bytes;            /* exact, from the validated len field */
-	uint8_t  echo_on;             /* SESSION_ECHO from the ADD. Explicit
-	                               * rather than inferred from echo_tx_us,
-	                               * which is 0 for an echo-enabled
-	                               * session whose peer asked for 0 */
-	uint32_t echo_tx_us;          /* echo interval from the ADD; 0 = off */
-	uint32_t min_echo_rx_us;      /* advertised Required Min Echo RX */
-	uint8_t  min_ttl;             /* from the ADD; 255 = single-hop */
-	int      is_mhop;             /* RFC 5883: control port 4784 */
-	uint32_t ifindex;             /* where bfdd placed this session. 0
-	                               * when bfdd could not resolve one,
-	                               * which is also what a multihop ADD
-	                               * carries */
-	uint8_t  echo_mac[6];         /* that interface's own MAC, resolved
-	                               * once for echo TX */
-	uint8_t  echo_mac_valid;
-	int      demand;              /* SESSION_DEMAND from the ADD: we ask
-	                               * the peer to stop transmitting. Its
-	                               * own request is the D bit in r_flags,
-	                               * not copied here */
-	uint8_t  demand_announced;    /* D bits actually put on the wire
-	                               * since entering Up; see
-	                               * demand_announce_due */
-	/* Authentication (RFC 5880 s6.7).
-	 *
-	 * The keys arrive in a DP_SESSION_AUTH with the periods in which
-	 * each may be used, and this side decides which applies. The
-	 * control plane cannot: it does not see the packets, and a key
-	 * chain rolls over on a clock rather than on a configuration
-	 * change. */
-	uint8_t  auth_present;        /* the session is meant to authenticate */
-	uint8_t  auth_nkeys;
+	uint64_t last_ktx_us;	     /* last fast-path reply; see fsm_tx */
+	uint64_t ktx_seen_us;	     /* last packet the kernel saw; 0 if never */
+	uint64_t ktx_tx_pkts;	     /* kernel reply count at the previous poll */
+	uint64_t tx_pkts;	     /* userspace-sent control packets */
+	uint32_t last_detect_lag_us; /* sweep verdict to the loop acting on it */
+	uint32_t kernel_detects;     /* verdicts taken from the sweep */
+	uint64_t tx_fail;	     /* sends refused by sendto(2) */
+	uint64_t rx_pkts;	     /* userspace-received; the kernel counts its own */
+	uint64_t rx_bytes;	     /* exact, from the validated len field */
+	uint8_t echo_on;	     /* SESSION_ECHO from the ADD */
+	uint32_t echo_tx_us;	     /* echo interval from the ADD; 0 = off */
+	uint32_t min_echo_rx_us;     /* advertised Required Min Echo RX */
+	uint8_t min_ttl;	     /* from the ADD; 255 = single-hop */
+	int is_mhop;		     /* RFC 5883: control port 4784 */
+	uint16_t tx_port;	     /* source port of our sends; 0 before the first */
+	uint32_t ifindex;	     /* 0 if unresolved or multihop */
+	uint8_t echo_mac[6];	     /* that interface's MAC, for echo TX */
+	uint8_t echo_mac_valid;
+	/* We ask the peer to stop sending; its own ask is the D bit in r_flags. */
+	int demand;
+	uint8_t demand_announced; /* D bits sent since entering Up */
+	/* RFC 5880 s6.7; the chain arrives in DP_SESSION_AUTH. */
+	uint8_t auth_present; /* the session is meant to authenticate */
+	uint8_t auth_nkeys;
 	struct auth_key auth_keys[BFDDP_AUTH_KEY_COUNT_MAX];
-	int64_t  auth_next_change;    /* soonest a lifetime boundary passes,
-	                               * 0 when none of them ever will */
+	/* soonest lifetime boundary, 0 if none */
+	int64_t auth_next_change;
 
-	/* The key in use for transmission, chosen from the set above and
-	 * refreshed as the periods pass. Zero type means nothing may be
-	 * sent, which for a session that is meant to authenticate means
-	 * sending nothing at all. */
-	uint8_t  auth_type;           /* BFD_AUTH_*, 0 = unauthenticated */
-	uint8_t  auth_keyid;
-	uint8_t  auth_keylen;
-	uint8_t  auth_key[BFDDP_AUTH_KEY_MAX];
-	uint8_t  auth_kpad[64];       /* the key in one SHA1 block, zero
-	                               * padded, which is what the digest
-	                               * takes and what the fast path
-	                               * mirrors */
-	uint8_t  auth_seeded;         /* the kernel's transmit sequence has
-	                               * been handed over; see ktx_mirror */
-	uint32_t auth_tx_seq;         /* ours, incremented per transmission.
-	                               * Random at session start: RFC 5880
-	                               * s6.7.3 wants it unpredictable */
-	uint32_t auth_rx_seq;         /* highest accepted from the peer */
-	int      auth_rx_seen;        /* whether auth_rx_seq means anything
-	                               * yet - the first authenticated packet
-	                               * has nothing to be compared against */
-	uint64_t auth_keys_deadline_us; /* when to stop waiting for the keys of
-	                              * an offloaded SESSION_AUTH session; 0 =
-	                              * not waiting. The keys are a separate
-	                              * message just after the ADD, so this is
-	                              * a deadline, not an ADD-time check. */
-	uint8_t  auth_nokeys_warned;  /* the old-bfdd diagnosis, said once */
-	uint8_t  auth_gap_warned;     /* said once per entry into "must
-	                               * authenticate, nothing to send
-	                               * under". Cleared when a key becomes
-	                               * sendable again, so a later gap is
-	                               * reported as its own event. Without
-	                               * it the refusal is one line per
-	                               * transmit interval for the length of
-	                               * the gap, plus three more per
-	                               * teardown from fsm_announce_down. */
-	uint8_t  iface_warned;        /* once per session, not once per ADD:
-	                               * bfdd re-sends one on every config
-	                               * touch */
-	uint8_t  ktx_uncovered;       /* single-hop session on an interface
-	                               * the fast path is not attached to, so
-	                               * fsm_tx must not stay silent waiting
-	                               * for a bounce nothing will make */
-	uint8_t  peer_mac[6];         /* synced from the map, learned by XDP */
-	int      mac_valid;
-	uint8_t  notify_pending;      /* a state change did not fit the dplane
-	                               * output queue; re-sent from the
-	                               * session's current state once the queue
-	                               * drains, so a flap storm coalesces to
-	                               * the latest state instead of tearing
-	                               * the connection down for all 64 */
-	uint64_t log_win_us;          /* start of this session's 1s log window */
-	uint16_t log_n;               /* transitions logged in the window */
-	uint16_t log_suppressed;      /* transitions suppressed in it */
+	/* Send key, refreshed as periods pass; type 0 with auth_present means
+	 * send nothing.
+	 */
+	uint8_t auth_type; /* BFD_AUTH_*, 0 = unauthenticated */
+	uint8_t auth_keyid;
+	uint8_t auth_keylen;
+	uint8_t auth_key[BFDDP_AUTH_KEY_MAX];
+	/* the key zero-padded to one SHA1 block */
+	uint8_t auth_kpad[64];
+	uint32_t auth_tx_seq; /* without the program; else ktx_seq_mem (s6.7.3) */
+	uint32_t auth_rx_seq; /* highest accepted from the peer */
+	int auth_rx_seen;     /* auth_rx_seq is valid */
+	/* DP_SESSION_AUTH deadline after the ADD; 0 = not waiting */
+	uint64_t auth_keys_deadline_us;
+	uint8_t auth_nokeys_warned; /* said once */
+	/* no-sendable-key logged for this gap */
+	uint8_t auth_gap_warned;
+	uint8_t iface_warned; /* once; bfdd re-sends the ADD on every change */
+	/* single-hop on an interface without the fast path */
+	uint8_t ktx_uncovered;
+	uint8_t peer_mac[6]; /* synced from the map, learned by XDP */
+	int mac_valid;
+	uint8_t notify_pending;	 /* deferred while the dplane queue was full */
+	uint64_t log_win_us;	 /* start of this session's 1s log window */
+	uint16_t log_n;		 /* transitions logged in the window */
+	uint16_t log_suppressed; /* transitions suppressed in it */
 	uint64_t next_echo_tx_us;
-	uint32_t echo_nonce;          /* nonce of the outstanding echo */
-	uint64_t echo_sent_us;        /* 0 = none outstanding */
+	uint32_t echo_nonce;   /* nonce of the outstanding echo */
+	uint64_t echo_sent_us; /* 0 = none outstanding */
 	uint64_t echo_tx_pkts;
-	int      echo_disc_done;
+	int echo_disc_done;
 	uint64_t echo_rx_pkts, echo_lost;
 	uint64_t echo_rtt_last_us, echo_rtt_min_us, echo_rtt_max_us;
 	uint64_t echo_rtt_sum_us, echo_rtt_n;
-	int      echo_alive_k;        /* kernel's advisory verdict */
+	int echo_alive_k;	      /* kernel's advisory verdict */
 	uint64_t echo_last_send_us;   /* for inter-send gap tracking */
 	uint64_t echo_gap_max_us;     /* windowed, reset each report */
 	uint64_t echo_rtt_max_win_us; /* windowed, reset each report */
 };
 
-/* ---------- demand mode (RFC 5880 s6.6) ----------
- *
- * Three predicates, each gating a different thing. The D bit travels one
- * way per direction, so who asked decides what stops - that asymmetry is
- * the whole of demand mode.
- *
- * Here rather than in fsm.c because the kernel mirror must compute the
- * same answers for tx_cfg: the XDP program sees no remote state and
- * cannot, and two spellings of one predicate is how the fast and slow
- * paths drift. They match bfdd's own gates, so a session behaves the
- * same whether or not it is delegated here.
+/* Demand mode (RFC 5880 s6.6), shared by fsm and ktx_mirror; the same gates as
+ * bfdd.
  */
 
 /* RFC 5880 s6.8.6: the D bit goes out only once both ends are Up. */
@@ -267,180 +168,128 @@ static inline int demand_bit_out(const struct session *s)
 	return s->demand && s->state == ST_UP && s->r_state == ST_UP;
 }
 
-/* How many D-marked packets to get out before honouring a peer's own
- * demand. One would do if nothing were ever lost. */
+/* D-marked packets before honouring the peer's demand. */
 #define DEMAND_ANNOUNCE_N 3
 
-/* Configured to demand but not yet said so on the wire.
- *
- * Both conditions arrive together: r_state reaches Up on the peer's
- * first Up-state packet, and if that peer is also demanding then the
- * same packet carries its D bit. Ceasing on the spot would go quiet
- * having never set D, leaving the peer transmitting forever into a
- * session that will never ask it to stop - demand configured at both
- * ends, achieved in one direction.
- *
- * bfdd re-checks at each transmit timer expiry, so it has already sent
- * several D-marked packets by the time it stops. This is how a data
- * plane that can cease within a microsecond keeps that behaviour.
- */
+/* Without it two demanding peers could go quiet with only one having sent D. */
 static inline int demand_announce_due(const struct session *s)
 {
 	return demand_bit_out(s) && s->demand_announced < DEMAND_ANNOUNCE_N;
 }
 
-/* RFC 5880 s6.8.7: periodic transmission ceases while the PEER is
- * demanding - it asked, not us. A Poll sequence, a pending Final and an
- * unsent D are exempt: they are the only things that still have to
- * reach a peer that has stopped listening on a schedule. */
-/* RFC 5880 s6.8.7: a system MUST NOT periodically transmit while
- * bfd.RemoteMinRxInterval is zero. The peer is saying it cannot receive
- * them, which is a different request from demand mode but has the same
- * answer, so the same three exemptions apply: a Poll, a pending Final and
- * an unsent demand announcement still have to reach it.
- *
- * s6.8.1 initialises bfd.RemoteMinRxInterval to 1, not 0, precisely so
- * this rule cannot fire on a session that has heard nothing yet, which
- * would be a session that could never come up. `last_rx_us` is how that
- * initial value is expressed here.
+/* RFC 5880 s6.8.7: no periodic TX while bfd.RemoteMinRxInterval is zero, with
+ * the demand exemptions. A session that has heard nothing is never held
+ * (s6.8.1).
  */
 static inline int zero_rx_tx_held(const struct session *s)
 {
-	return s->last_rx_us && s->r_min_rx == 0 &&
-	       !s->polling && !s->send_final && !demand_announce_due(s);
-}
-
-static inline int demand_tx_held(const struct session *s)
-{
-	return (s->r_flags & BFD_F_DEMAND) && s->state == ST_UP &&
-	       s->r_state == ST_UP && !s->polling && !s->send_final &&
+	return s->last_rx_us && s->r_min_rx == 0 && !s->polling && !s->send_final &&
 	       !demand_announce_due(s);
 }
 
-/* RFC 5880 s6.8.4: the detection timer does not run while WE are
- * demanding - we told the peer to go quiet, so silence is what we asked
- * for and not a fault. Our own Poll re-arms it, which is what bounds the
- * poll: a lost Final then brings the session down instead of leaving it
- * outstanding forever. */
-static inline int demand_detect_held(const struct session *s)
+/* RFC 5880 s6.8.7: no periodic TX while the peer demands. A Poll, a pending
+ * Final and an unsent D are exempt.
+ */
+static inline int demand_tx_held(const struct session *s)
 {
-	return s->demand && s->state == ST_UP && s->r_state == ST_UP &&
-	       !s->polling;
+	return (s->r_flags & BFD_F_DEMAND) && s->state == ST_UP && s->r_state == ST_UP &&
+	       !s->polling && !s->send_final && !demand_announce_due(s);
 }
 
-/* What the sweep is told, which is the same hold WITHOUT the poll
- * exemption, and the two differ on purpose.
- *
- * Re-arming detection during a Poll means measuring against the instant
- * the Poll started, and only the engine knows that instant. The program
- * measures against st->last_seen_ns, the peer's real last arrival, which
- * on a demanding session is a poll interval old by construction: it hands
- * the sweep a session that has been silent for a second against a budget
- * of tens of milliseconds, so it calls the session down, every time, on
- * every poll. Measured at exactly one DETECT-DOWN per poll against a
- * control arm of zero.
- *
- * The engine discards that verdict, because fsm_start_poll moved
- * last_rx_us forward and on_sweep_event drops an event older than it, so
- * nothing observed the session flap. What did happen is that the map's
- * `alive` flipped to 0 and back for every poll, the RX path took its
- * !alive branch and reset the detect basis, and anything else reading the
- * ring saw a DOWN and an ALIVE that never meant anything.
- *
- * So the sweep stays held for the whole poll and the bound moves entirely
- * to fsm_detect, which is unheld while polling and measures from the
- * timestamp it set itself. That is where the bound belonged: the Poll is
- * the engine's, so timing it out is the engine's job. The mesh already
- * demonstrated this, bringing a demanding session down 1.45s after its
- * peer was silenced with the reason recorded as "detect timeout" rather
- * than "detect timeout (sweep)".
+/* RFC 5880 s6.8.4: no detection while we demand. Our own Poll re-arms it, so a
+ * lost Final still takes the session down.
+ */
+static inline int demand_detect_held(const struct session *s)
+{
+	return s->demand && s->state == ST_UP && s->r_state == ST_UP && !s->polling;
+}
+
+/* The sweep's hold, without the Poll exemption: the program measures from the
+ * last real arrival and would fire on every Poll. fsm_detect times the Poll.
  */
 static inline int demand_sweep_held(const struct session *s)
 {
 	return s->demand && s->state == ST_UP && s->r_state == ST_UP;
 }
 
-/* Whether the fast path answers for this session.
- *
- * This is exactly what ktx_mirror pushes as tx_cfg.enable, and fsm_tx
- * has to ask the same question before it goes quiet: userspace stays
- * silent only because the kernel is about to reply, so a session the
- * kernel will not answer for has to keep transmitting from here. Two
- * spellings of it means one of them holds its tongue waiting for a
- * bounce that is never coming, and the session flaps at the peer's
- * detection time.
- *
- * Authenticated sessions are excluded because the program cannot build
- * an authentication section yet; demand-held ones because they are
- * meant to be silent.
+/* RFC 5880 s6.8.9: only while Up, only if the peer's Required Min Echo RX is
+ * nonzero, and no faster than it; never over multiple hops (RFC 5883). 0 when
+ * no echo may be sent.
  */
-/* Which authentication the fast path can carry: all of it. Which
- * sessions keep RX-clocked TX should not depend on which authentication
- * an operator configured - that is the property this engine exists to
- * provide, and it would be a strange one to withdraw from the sessions
- * that asked to be protected.
- *
- * Must agree with the program's xdp_auth_fast.
- */
+static inline uint32_t echo_interval(const struct session *s)
+{
+	if (!s->echo_tx_us || s->is_mhop || s->state != ST_UP || !s->r_min_echo)
+		return 0;
+	return s->echo_tx_us > s->r_min_echo ? s->echo_tx_us : s->r_min_echo;
+}
+
+/* Must agree with the program's xdp_auth_fast. */
 static inline int auth_fast_capable(const struct session *s)
 {
-	/* A session that must authenticate and has nothing to sign with is
-	 * not a session the fast path can answer for: the program builds
-	 * its reply from auth_type, so it would bounce a bare packet on a
-	 * session whose peer must reject it. Userspace declines to send in
-	 * the same state, so the session simply goes quiet until a key
-	 * becomes sendable, which is the honest outcome. */
+	/* Otherwise the program would bounce an unauthenticated reply. */
 	if (s->auth_present && !s->auth_type)
 		return 0;
 
 	return !s->auth_type || s->auth_type == BFD_AUTH_SIMPLE ||
-	       s->auth_type == BFD_AUTH_KEYED_SHA1 ||
-	       s->auth_type == BFD_AUTH_METICULOUS_SHA1;
+	       s->auth_type == BFD_AUTH_KEYED_SHA1 || s->auth_type == BFD_AUTH_METICULOUS_SHA1;
 }
 
+/* The program answers each packet, so at the peer's pace: max(its Desired Min
+ * TX, our Required Min RX). That must not be faster than we may send (RFC 5880
+ * s6.8.7); if it is, userspace keeps our own rate.
+ */
+static inline int ktx_pace_ok(const struct session *s)
+{
+	uint32_t peer = s->r_min_tx > s->min_rx_us ? s->r_min_tx : s->min_rx_us;
+	uint32_t ours = s->applied_tx_us > s->r_min_rx ? s->applied_tx_us : s->r_min_rx;
+
+	return peer >= ours;
+}
+
+/* Exactly what ktx_mirror pushes as tx_cfg.enable. */
 static inline int ktx_answers(const struct session *s)
 {
-	/* zero_rx_tx_held for the same reason as the demand hold: RX-clocked
-	 * TX answers every accepted packet, so leaving it armed transmits at
-	 * exactly the rate the peer has asked this session to stop using.
-	 * Disarming hands the frames to userspace, which honours the same
-	 * three exemptions. */
-	return s->state == ST_UP && auth_fast_capable(s) &&
-	       !demand_tx_held(s) && !zero_rx_tx_held(s);
+	return s->state == ST_UP && auth_fast_capable(s) && !demand_tx_held(s) &&
+	       !zero_rx_tx_held(s) && ktx_pace_ok(s);
 }
 
-/* Whether the program still holds what this session last pushed.
- *
- * Both halves matter. An UPDATE that moves the address pair leaves every
- * tx_cfg field identical, so a value-only comparison says nothing needs
- * doing while the entry now lives under a key nobody will look up.
- *
- * Out here rather than inside ktx_mirror so it can be tested without a
- * loaded program: the mirror is stubbed in the dplane harness, which is
- * why an address move had no coverage of the thing that went wrong.
- */
-static inline int ktx_push_needed(const struct session *s,
-				  const struct tx_cfg *c,
-				  const struct session_key *k)
+/* tx_cfg carries its key, so an address move is a change too. */
+static inline int ktx_push_needed(const struct session *s, const struct tx_cfg *c)
 {
-	return !s->pushed_valid ||
-	       memcmp(c, &s->pushed_cfg, sizeof(*c)) != 0 ||
-	       memcmp(k, &s->pushed_key, sizeof(*k)) != 0;
+	return !s->pushed_valid || memcmp(c, &s->pushed_cfg, sizeof(*c)) != 0;
 }
 
 extern struct session sessions[MAX_SESSIONS];
 
+/* The program's per-slot auth TX counters, mmapped; NULL without it. */
+extern uint64_t *ktx_seq_mem;
+
+/* RFC 5880 s6.7.3: one counter per session for both planes, so neither reuses
+ * a number the other sent.
+ */
+static inline void auth_seq_seed(struct session *s, uint32_t v)
+{
+	s->auth_tx_seq = v;
+	if (ktx_seq_mem)
+		__atomic_store_n(&ktx_seq_mem[s - sessions], v, __ATOMIC_RELAXED);
+}
+
+static inline uint32_t auth_seq_next(struct session *s)
+{
+	if (ktx_seq_mem)
+		return (uint32_t)__atomic_add_fetch(&ktx_seq_mem[s - sessions], 1,
+						    __ATOMIC_RELAXED);
+	return ++s->auth_tx_seq;
+}
+
 struct session *sess_alloc(void);
 int session_auth_evaluate(struct session *s, int64_t now);
-const struct auth_key *session_auth_key_for(const struct session *s,
-					    uint8_t key_id, int64_t now);
+const struct auth_key *session_auth_key_for(const struct session *s, uint8_t key_id, int64_t now);
 struct session *sess_by_lid(uint32_t lid);
 struct session *sess_by_wire(uint32_t disc);
-void sm_addrs(const struct bfddp_session_msg *sm,
-              struct bfd_addr *l, struct bfd_addr *p, int *family);
-struct session *sess_by_addr_pair_local(
-        const struct bfddp_session_msg *sm);
-struct session *sess_by_addr(const struct bfd_addr *peer,
-                             const struct bfd_addr *local);
+void sm_addrs(const struct bfddp_session_msg *sm, struct bfd_addr *l, struct bfd_addr *p,
+	      int *family);
+struct session *sess_by_addr_pair_local(const struct bfddp_session_msg *sm);
+struct session *sess_by_addr(const struct bfd_addr *peer, const struct bfd_addr *local);
 
 #endif /* BFD_ENGINE_SESSION_H */

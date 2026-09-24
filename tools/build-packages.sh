@@ -1,18 +1,12 @@
 #!/bin/bash
-# Build the xdp-bfd .deb (and .rpm where mock is available) for each
-# target in clean containers. Each .deb target installs clang-21 from
-# apt.llvm.org first: stock debian/ubuntu clang is below the floor and
-# builds a BPF object the kernel verifier rejects, so the object would
-# ship broken and only fail at postinst --check.
-#
+# Build the .deb, and the .rpm where mock is available, in clean containers.
 # Usage: tools/build-packages.sh [deb|rpm|all]
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Version from the git tag: strip a leading v, and turn a '-' from
-# git describe into '~' so a pre-release orders before the release.
+# Strip a leading v; '-' becomes '~' so a pre-release sorts first.
 RAW="$(git describe --tags --always --dirty 2>/dev/null || echo 0.0.0)"
 VERSION="$(echo "${RAW#v}" | sed 's/-/~/')"
 echo "building xdp-bfd $VERSION (from $RAW)"
@@ -40,9 +34,7 @@ build_deb() {
             build-essential libbpf-dev debhelper dpkg-dev devscripts \
             ca-certificates wget gnupg lsb-release linux-libc-dev \
             make gcc pkgconf llvm >/dev/null
-        # clang-21 from apt.llvm.org. The repo is set up by hand rather
-        # than with llvm.sh, which needs software-properties-common: that
-        # package is not in the base set on Debian trixie.
+        # By hand: llvm.sh needs software-properties-common, absent on trixie.
         . /etc/os-release
         wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
             | gpg --dearmor > /usr/share/keyrings/llvm.gpg
@@ -52,10 +44,7 @@ build_deb() {
         apt-get install -y -qq --no-install-recommends clang-21 >/dev/null
         mkdir -p /src && tar -x -C /src
         cd /src/xdp-bfd
-        # dch signs the entry with DEBEMAIL, and inside a container that
-        # resolves to root@<container id>, which lintian rejects outright
-        # (bogus-mail-host-in-debian-changelog). Sign as the maintainer the
-        # control file already names.
+        # In a container DEBEMAIL is root@<id>, which lintian rejects.
         export DEBFULLNAME="Abdul Wasey"
         export DEBEMAIL="w453y.me@gmail.com"
         dch --create --package xdp-bfd -v "${VERSION}-1" --distribution unstable \

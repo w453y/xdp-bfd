@@ -1,10 +1,6 @@
 #!/bin/bash
-# Build the xdp-bfd package INSIDE the current distro container, from the
-# checked-out tree. This is the "already in the container" form used by the
-# ci.yml `package` job (which sets container: <image>); the nested-container
-# form for a workstation is tools/build-packages.sh. Kept separate so the
-# verified local driver is untouched; the install and build steps mirror it.
-#
+# Build the package in the current distro container, for ci.yml;
+# tools/build-packages.sh starts its own.
 # Usage: tools/ci-package.sh deb|rpm
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -13,8 +9,7 @@ DIST="$PWD/dist"; mkdir -p "$DIST"
 
 RAW="$(git describe --tags --always --dirty 2>/dev/null || echo 0.0.0)"
 PKGVER="$(echo "${RAW#v}" | sed 's/-/~/')"
-# Debian upstream versions must start with a digit; a tagless describe
-# gives a bare commit hash, so turn that into a dev version.
+# Debian versions must start with a digit; a tagless describe is a bare hash.
 case "$PKGVER" in [0-9]*) ;; *) PKGVER="0.0.0~git${PKGVER}" ;; esac
 echo "building xdp-bfd $PKGVER ($KIND) from $RAW"
 
@@ -25,9 +20,8 @@ if [ "$KIND" = deb ]; then
 		build-essential libbpf-dev debhelper dpkg-dev devscripts \
 		ca-certificates wget gnupg lsb-release linux-libc-dev \
 		make gcc pkgconf llvm lintian >/dev/null
-	# clang-21 from apt.llvm.org: stock debian/ubuntu clang is below the
-	# floor and builds a BPF object the verifier rejects. Repo set up by
-	# hand; llvm.sh needs software-properties-common, absent on trixie.
+	# apt.llvm.org: some targets' clang is below 17, and llvm.sh needs
+	# software-properties-common.
 	. /etc/os-release
 	wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
 		| gpg --dearmor > /usr/share/keyrings/llvm.gpg
@@ -36,10 +30,7 @@ if [ "$KIND" = deb ]; then
 	apt-get update -qq
 	apt-get install -y -qq --no-install-recommends clang-21 >/dev/null
 
-	# dch signs the entry with DEBEMAIL, and inside a container that
-	# resolves to root@<container id>, which lintian rejects outright
-	# (bogus-mail-host-in-debian-changelog). Sign as the maintainer the
-	# control file already names.
+	# In a container DEBEMAIL is root@<id>, which lintian rejects.
 	export DEBFULLNAME="Abdul Wasey"
 	export DEBEMAIL="w453y.me@gmail.com"
 	dch --create --package xdp-bfd -v "${PKGVER}-1" --distribution unstable \

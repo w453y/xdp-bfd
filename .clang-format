@@ -1,0 +1,138 @@
+# SPDX-License-Identifier: GPL-2.0
+# clang-format configuration, taken from FRR with its FRR-only macro
+# lists removed. Intended for clang-format >= 11.
+#
+# For more information, see:
+#
+#   Documentation/process/clang-format.rst
+#   https://clang.llvm.org/docs/ClangFormat.html
+#   https://clang.llvm.org/docs/ClangFormatStyleOptions.html
+#
+---
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+# FRR: Right
+AlignEscapedNewlines: Right
+AlignOperands: Align
+# FRR: true
+AlignTrailingComments: true
+# FRR: true
+AlignConsecutiveMacros: true
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowShortBlocksOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+AlwaysBreakAfterDefinitionReturnType: None
+AlwaysBreakAfterReturnType: None
+AlwaysBreakBeforeMultilineStrings: false
+AlwaysBreakTemplateDeclarations: false
+BinPackArguments: true
+BinPackParameters: true
+BraceWrapping:
+  AfterClass: false
+  AfterControlStatement: false
+  AfterEnum: false
+  AfterFunction: true
+  AfterNamespace: true
+  AfterObjCDeclaration: false
+  AfterStruct: false
+  AfterUnion: false
+  AfterExternBlock: false
+  BeforeCatch: false
+  BeforeElse: false
+  IndentBraces: false
+  SplitEmptyFunction: true
+  SplitEmptyRecord: true
+  SplitEmptyNamespace: true
+BreakBeforeBinaryOperators: false
+BreakBeforeBraces: Custom
+BreakBeforeInheritanceComma: false
+BreakBeforeTernaryOperators: true
+BreakConstructorInitializersBeforeComma: false
+BreakConstructorInitializers: BeforeComma
+BreakAfterJavaFieldAnnotations: false
+BreakStringLiterals: false
+ColumnLimit: 99
+# Linux: CommentPragmas: '^ IWYU pragma:'
+CommentPragmas: '\$(FRR|clippy)'
+CompactNamespaces: false
+ConstructorInitializerAllOnOneLineOrOnePerLine: false
+ConstructorInitializerIndentWidth: 8
+ContinuationIndentWidth: 8
+Cpp11BracedListStyle: false
+DerivePointerAlignment: false
+DisableFormat: false
+ExperimentalAutoDetectBinPacking: false
+FixNamespaceComments: false
+# Some taken from:
+#   git grep -h '^#define [^[:space:]]*frr_(each|with)[^[:space:]]*(' ./ \
+#   | sed "s,^#define \([^[:space:]]*frr_(each|with)[^[:space:]]*\)(.*$,  - '\1'," \
+#   | LC_ALL=C sort -u
+# and
+#   git grep -h '^#define [^[:space:]]*FOREACH[^[:space:]]*(' ./
+#   | sed "s,^#define \([^[:space:]]*FOREACH[^)]*\)(.*,  - '\1',"
+#   | LC_ALL=C sort -u
+IncludeBlocks: Preserve
+IncludeCategories:
+  - Regex:           '^(<|lib)'
+    Priority:        0
+## New: XXX whats it mean?
+IncludeIsMainRegex: '(Test)?$'
+IndentCaseLabels: false
+IndentGotoLabels: false
+IndentPPDirectives: None
+IndentWidth: 8
+IndentWrappedFunctionNames: false
+JavaScriptQuotes: Leave
+JavaScriptWrapImports: true
+KeepEmptyLinesAtTheStartOfBlocks: false
+MacroBlockBegin: ''
+MacroBlockEnd: ''
+## Linux: MaxEmptyLinesToKeep: 1
+MaxEmptyLinesToKeep: 2
+NamespaceIndentation: None
+ObjCBinPackProtocolList: Auto
+ObjCBlockIndentWidth: 8
+ObjCSpaceAfterProperty: true
+ObjCSpaceBeforeProtocolList: true
+
+## Lowest Penalty Value wins. Values are used by clang-format to influence
+## the brak decisions, it's a bit of voodoo magic though.
+## Originally from linux which was "Taken from git's rules"
+PenaltyBreakAssignment: 30
+PenaltyBreakComment: 10
+PenaltyBreakFirstLessLess: 0
+# Don't break a string into multi-string-fragments
+PenaltyBreakString: 1000
+# Allow going past the ColumnLimit to keep function arguments aligned
+# with the open parenthesis.
+PenaltyBreakBeforeFirstCallParameter: 1000
+# Try and stay under ColumnLimit, but not at the cost of incomprehensible code.
+PenaltyExcessCharacter: 30
+PenaltyReturnTypeOnItsOwnLine: 60
+
+PointerAlignment: Right
+ReflowComments: false
+SortIncludes: false
+SortUsingDeclarations: false
+SpaceAfterCStyleCast: false
+SpaceAfterTemplateKeyword: true
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeCtorInitializerColon: true
+SpaceBeforeInheritanceColon: true
+SpaceBeforeParens: ControlStatements
+SpaceBeforeRangeBasedForLoopColon: true
+SpaceInEmptyParentheses: false
+SpacesBeforeTrailingComments: 1
+SpacesInAngles: false
+SpacesInContainerLiterals: false
+SpacesInCStyleCastParentheses: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+Standard: Cpp03
+TabWidth: 8
+UseTab: Always
+...

@@ -1,65 +1,53 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * bfd_shared.h - kernel/userspace shared wire ABI.
- *
- * Included by src/xdp/ (BPF), src/engine/ and src/loader/. The struct
- * layouts here ARE the BPF map value formats: any change must be made
- * here and nowhere else, or the userspace mirrors silently misread the
- * maps.
- */
+/* bfd_shared.h - the map formats shared by the program, engine and loader. */
 #ifndef BFD_SHARED_H
 #define BFD_SHARED_H
 
 #include <linux/types.h>
+#include <linux/bpf.h>
 
-#define BFD_PORT_1HOP    3784
-#define BFD_PORT_MHOP    4784   /* RFC 5883 multihop */
-#define BFD_ECHO_PORT    3785
-#define BFD_SRC_PORT     65472  /* Per-session TX source port = base +
-                                 * slot; 64 slots end at 65535, the top
-                                 * of the RFC 5881 s4 range. Top-down
-                                 * because stock bfdd allocates its own
-                                 * per-session sockets bottom-up from
-                                 * 49152 even in dplane mode and those
-                                 * binds collide with ours. */
-#define BFD_MIN_LEN      24
-#define BFD_VERSION      1
+#define BFD_PORT_1HOP 3784
+#define BFD_PORT_MHOP 4784 /* RFC 5883 multihop */
+#define BFD_ECHO_PORT 3785
+/* Source port = base + slot, up to 65535, away from bfdd's sockets from 49152 up. */
+#define BFD_SRC_PORT	 65472
+#define BFD_MIN_LEN	 24
+#define BFD_VERSION	 1
 #define BFD_MAX_SESSIONS 64
 
-/* Control packet flag bits (RFC 5880 s4.1) */
-#define BFD_F_POLL  0x20
-#define BFD_F_FINAL 0x10
-#define BFD_F_CPI    0x08   /* Control Plane Independent */
-#define BFD_F_AUTH   0x04   /* Authentication Present */
-#define BFD_F_DEMAND 0x02   /* Demand mode */
-#define BFD_F_MP     0x01   /* Multipoint */
+/* RFC 5880 s4.1 */
+#define BFD_F_POLL   0x20
+#define BFD_F_FINAL  0x10
+#define BFD_F_CPI    0x08 /* Control Plane Independent */
+#define BFD_F_AUTH   0x04 /* Authentication Present */
+#define BFD_F_DEMAND 0x02 /* Demand mode */
+#define BFD_F_MP     0x01 /* Multipoint */
 
-/* Session state (RFC 5880 s6.8.1). The ordering IS the wire encoding:
- * the XDP parser stores BFD_STATE(bfd) straight into
- * session_state.remote_state and userspace compares that against these
- * names, so the two agree only as long as this order is the wire order. */
+/* RFC 5880 s6.8.1, in wire order. */
 enum bfd_state { ST_ADMINDOWN, ST_DOWN, ST_INIT, ST_UP };
 
 static inline const char *bfd_state_str(int st)
 {
-        switch (st) {
-        case ST_ADMINDOWN: return "AdminDown";
-        case ST_DOWN:      return "Down";
-        case ST_INIT:      return "Init";
-        case ST_UP:        return "Up";
-        default:           return "?";
-        }
+	switch (st) {
+	case ST_ADMINDOWN:
+		return "AdminDown";
+	case ST_DOWN:
+		return "Down";
+	case ST_INIT:
+		return "Init";
+	case ST_UP:
+		return "Up";
+	default:
+		return "?";
+	}
 }
 
-/* Control packet, the 24-byte mandatory section (RFC 5880 s4.1).
- * One definition for both halves: the XDP parser and the userspace
- * FSM read and write these same bytes, and two descriptions of one
- * wire format is how they drift. */
+/* RFC 5880 s4.1, the 24-byte mandatory section. */
 struct bfd_ctrl_pkt {
-	__u8   vers_diag;
-	__u8   flags;
-	__u8   detect_mult;
-	__u8   len;
+	__u8 vers_diag;
+	__u8 flags;
+	__u8 detect_mult;
+	__u8 len;
 	__be32 my_disc;
 	__be32 your_disc;
 	__be32 min_tx;
@@ -67,156 +55,96 @@ struct bfd_ctrl_pkt {
 	__be32 min_echo_rx;
 } __attribute__((packed));
 
-#define BFD_VERS(h)   (((h)->vers_diag >> 5) & 0x7)
-#define BFD_DIAG(h)   ((h)->vers_diag & 0x1f)
-#define BFD_STATE(h)  (((h)->flags >> 6) & 0x3)
+#define BFD_VERS(h)  (((h)->vers_diag >> 5) & 0x7)
+#define BFD_DIAG(h)  ((h)->vers_diag & 0x1f)
+#define BFD_STATE(h) (((h)->flags >> 6) & 0x3)
 
-/* Stat slots, defined once: the enum, the loader's names and the test
- * harnesses all expand from this list, so a new slot cannot be added to
- * one and missed in another. The BPF side takes only the enum, so no
- * name string lands in the object file.
- *
- * MALFORMED, REJECTED, UNSUPPORTED_FLAGS and SWEEP_INIT_FAIL should stay
- * flat on a healthy system. NOT_SELF is not one of them: FRR sources its
- * own v6 echoes at the peer rather than self-addressed, so those arrive
- * here routinely.
+/* Stat slots, defined once. MALFORMED, REJECTED, UNSUPPORTED_FLAGS and
+ * SWEEP_INIT_FAIL stay flat on a healthy system; NOT_SELF does not, as FRR
+ * sources v6 echoes at the peer. ECHO_TTL is unreachable and keeps the
+ * numbering.
  */
-#define BFD_STAT_LIST(X)                                              \
-	X(SEEN,              "seen")               /* every packet seen */ \
-	X(WELL_FORMED,       "well-formed")        /* parses as BFD */     \
-	X(MALFORMED,         "malformed")          /* header does not */   \
-	X(REJECTED,          "rejected")           /* GTSM, demux, frag */ \
-	X(REFLECTED,         "reflected")          /* echo bounced */      \
-	X(ECHO_RETURNS,      "echo-returns")       /* our echo came back */\
-	X(DECLINED,          "declined")           /* echo, peer unknown */\
-	X(NOT_SELF,          "not-self")           /* echo, not self-addr */\
-	X(ECHO_TTL,          "echo-ttl")           /* unreachable: see below */         \
-	X(UNSUPPORTED_FLAGS, "unsupported-flags")  /* A or M bit */        \
-	X(SWEEP_INIT_FAIL,   "sweep-init-fail")    /* sweeper never armed */ \
-	X(IP_OPTIONS,        "ip-options")         /* any UDP with options */ \
-	X(AUTH_MISMATCH,     "auth-mismatch")      /* A bit vs session */   \
-	X(AUTH_BAD,          "auth-bad")           /* key, digest or seq */ \
-	X(DEADMAN_HOLD,      "deadman-hold")       /* reply withheld: the
-	                                            * engine has stopped
-	                                            * making progress */    \
-	X(UNKNOWN_SESSION,   "unknown-session")    /* well-formed control   \
-	                                            * packet for a pair no   \
-	                                            * session covers,     \
-	                                            * dropped in XDP        */    \
-	X(V6_EXTHDR,         "v6-exthdr")          /* UDP to a BFD port      \
-	                                            * behind a v6 extension  \
-	                                            * header, dropped    */    \
-	X(AUTH_RATELIMITED,  "auth-ratelimited")   /* A-bit packet dropped   \
-	                                            * before the digest: too \
-	                                            * many failures this      \
-	                                            * interval already  */
+#define BFD_STAT_LIST(X)                                                                          \
+	X(SEEN, "seen")				  /* every packet seen */                         \
+	X(WELL_FORMED, "well-formed")		  /* parses as BFD */                             \
+	X(MALFORMED, "malformed")		  /* header does not */                           \
+	X(REJECTED, "rejected")			  /* GTSM, demux, frag */                         \
+	X(REFLECTED, "reflected")		  /* echo bounced */                              \
+	X(ECHO_RETURNS, "echo-returns")		  /* our echo came back */                        \
+	X(DECLINED, "declined")			  /* echo, peer unknown */                        \
+	X(NOT_SELF, "not-self")			  /* echo, not self-addr */                       \
+	X(ECHO_TTL, "echo-ttl")			  /* unreachable, see above */                    \
+	X(UNSUPPORTED_FLAGS, "unsupported-flags") /* M bit */                                     \
+	X(SWEEP_INIT_FAIL, "sweep-init-fail")	  /* sweeper never armed */                       \
+	X(IP_OPTIONS, "ip-options")		  /* BFD port, IP options */                      \
+	X(AUTH_MISMATCH, "auth-mismatch")	  /* A bit vs session */                          \
+	X(AUTH_BAD, "auth-bad")			  /* key, digest or seq */                        \
+	X(DEADMAN_HOLD, "deadman-hold")		  /* reply withheld, engine stalled */            \
+	X(UNKNOWN_SESSION, "unknown-session")	  /* no session for the pair */                   \
+	X(V6_EXTHDR, "v6-exthdr")		  /* BFD behind a v6 ext hdr */                   \
+	X(AUTH_RATELIMITED, "auth-ratelimited")	  /* A-bit drop before digest */
 
-/* Load-time tunables, written by userspace between load and attach and
- * read-only to the program thereafter. Their own map rather than
- * .rodata, where setting one field means rewriting the whole blob, and
- * rather than sweep_map, whose value holds a bpf_timer userspace must
- * not write over. */
+/* Written between load and attach. Their own map: .rodata would need rewriting
+ * whole, and sweep_map holds a bpf_timer.
+ */
 enum bfd_tunable {
-	BFD_TUNE_SWEEP_NS,   /* 0 means use the compiled default */
-	BFD_TUNE_DEADMAN_NS, /* how long the engine may go without a
-	                      * heartbeat before the fast path stops
-	                      * answering for it. 0 disables the gate. */
+	BFD_TUNE_SWEEP_NS, /* 0 = compiled default */
+	/* max heartbeat age before the fast path stops answering; 0 = off */
+	BFD_TUNE_DEADMAN_NS,
 	BFD_TUNE_MAX
 };
 
-/* ECHO_TTL always reads zero: echo.h has its own GTSM check, but parse.h
- * rejects everything that would reach it first. The slot stays because
- * removing it renumbers every stat below it on both planes at once. */
-
-/* The compiled sweep interval. Shared because the engine reports what it
- * overrode and against what. */
 #define BFD_SWEEP_NS_DEFAULT (5ull * 1000 * 1000)
 
-/* How stale the engine's heartbeat may get before the fast path stops
- * answering for it.
- *
- * One second, against a measured distribution. 651347 consecutive loop
- * passes on the 64-session mesh: 98.6% fell in the 1-2ms bucket, 99.99%
- * under 4ms, and the two worst legitimate gaps in the whole run landed in
- * 16-32ms. The only samples past that were deliberate SIGSTOPs, which sat
- * in the 8-16 SECOND bucket. Between the worst thing the engine does to
- * itself and the thing this is here to catch there are four orders of
- * magnitude, so the threshold does not need to be delicate and should not
- * be: a false trip costs real sessions, and 1s is some thirty times the
- * worst gap ever observed while still turning "never noticed" into
- * "noticed within a second plus the peer's own detection time".
- */
+/* 1s: some thirty times the worst loop gap on a 64-session mesh. */
 #define BFD_DEADMAN_NS_DEFAULT (1000ull * 1000 * 1000)
 
-/* How long a demanding session may go without verifying its path.
- *
- * One second, matching the dead-man bound, because it answers the same
- * question: how stale may this engine's claim that a session is Up be
- * allowed to get. Both are floors rather than targets - the effective
- * poll interval is at least the session's detect budget - so a session
- * with slow timers polls at its own rate and a session with fast ones
- * still pays a round trip only once a second instead of continuously.
- */
+/* A floor; the detect budget raises it. */
 #define BFD_DEMAND_POLL_US_DEFAULT 1000000ull
 
 enum bfd_stat {
 #define BFD_STAT_ENUM(n, s) BFD_STAT_##n,
 	BFD_STAT_LIST(BFD_STAT_ENUM)
 #undef BFD_STAT_ENUM
-	BFD_STAT_MAX
+		BFD_STAT_MAX
 };
 
-/* Authentication section (RFC 5880 s6.7). Only the types FRR can
- * actually produce are listed: keyed MD5 (2) and meticulous keyed MD5
- * (3) exist in the RFC and in bfdd's enum, but bfdd maps no keychain
- * algorithm onto them, so nothing ever sends one. */
-#define BFD_AUTH_NONE            0
-#define BFD_AUTH_SIMPLE          1
-#define BFD_AUTH_KEYED_SHA1      4
+/* RFC 5880 s6.7, the types FRR produces; no keychain algorithm maps to keyed MD5. */
+#define BFD_AUTH_NONE		 0
+#define BFD_AUTH_SIMPLE		 1
+#define BFD_AUTH_KEYED_SHA1	 4
 #define BFD_AUTH_METICULOUS_SHA1 5
 
-/* type, length, key id, then the key itself. */
-#define BFD_AUTH_SIMPLE_HDR   3
+/* type, length, key id */
+#define BFD_AUTH_SIMPLE_HDR    3
 #define BFD_AUTH_SIMPLE_MAXKEY 16
 
-/* type, length, key id, reserved, 4-byte sequence, 20-byte digest. */
-#define BFD_AUTH_SHA1_LEN     28
+/* type, length, key id, reserved, sequence, digest */
+#define BFD_AUTH_SHA1_LEN 28
 
-/* Digest failures a session tolerates per detect interval before it
- * rate-limits A-bit packets before the digest. Generous: a key rollover
- * costs at most a handful. */
+/* Digest failures per detect interval before A-bit packets are dropped
+ * unhashed. A rollover costs a handful.
+ */
 #define BFD_AUTH_FAIL_MAX     8
 #define BFD_AUTH_SHA1_SEQ_OFF 4
 #define BFD_AUTH_SHA1_DIG_OFF 8
 
-/* Longest control packet either plane will handle: the mandatory
- * section plus the largest authentication section above. Also the most
- * the shared digest can hash in one block, which is not a coincidence -
- * a keyed-SHA1 packet is 52 bytes. */
+/* Mandatory section plus keyed SHA1: 52 bytes. */
 #define BFD_MAX_LEN (BFD_MIN_LEN + BFD_AUTH_SHA1_LEN)
 
-/* Why a control packet was not accepted (RFC 5880 s6.8.6). */
+/* RFC 5880 s6.8.6. */
 enum bfd_ctrl_verdict {
 	BFD_CTRL_ACCEPT = 0,
-	BFD_CTRL_MALFORMED,     /* header does not parse */
-	BFD_CTRL_UNSUPPORTED,   /* well formed, carries a flag we cannot honour */
+	BFD_CTRL_MALFORMED,	/* header does not parse */
+	BFD_CTRL_UNSUPPORTED,	/* well formed, carries a flag we cannot honour */
 	BFD_CTRL_AUTH_MISMATCH, /* the A bit and the session disagree */
 };
 
-/* The acceptance rule, shared so the kernel fast path and the userspace
- * receive path cannot drift.
- *
- * Every argument is in HOST order and passed explicitly: the two planes
- * byte-swap with different helpers and this header is compiled by both.
- * payload_len is how many bytes actually follow the UDP header - udp->len
- * minus 8 in the kernel, the recvmsg return in userspace - which is what
- * lets the overread guard be written once.
- *
- * Caller counts and decides the disposition; this only classifies.
+/* Shared by both planes, host order. payload_len is what follows the UDP
+ * header. Classifies only.
  */
-static inline int bfd_ctrl_check(__u8 vers_diag, __u8 flags, __u8 mult,
-				 __u8 len, __u32 my_disc, __u32 payload_len,
-				 __u8 auth_expected)
+static inline int bfd_ctrl_check(__u8 vers_diag, __u8 flags, __u8 mult, __u8 len, __u32 my_disc,
+				 __u32 payload_len, __u8 auth_expected)
 {
 	if (((vers_diag >> 5) & 0x7) != BFD_VERSION)
 		return BFD_CTRL_MALFORMED;
@@ -227,10 +155,7 @@ static inline int bfd_ctrl_check(__u8 vers_diag, __u8 flags, __u8 mult,
 	if (flags & BFD_F_MP)
 		return BFD_CTRL_UNSUPPORTED;
 
-	/* RFC 5880 s6.8.6 discards in both directions: an authenticated
-	 * packet on a session with no key, and a bare packet on a session
-	 * that has one. The second half is the one that matters - without
-	 * it, a peer can strip authentication simply by not offering it. */
+	/* Either way, so a peer cannot strip authentication. */
 	if (!!(flags & BFD_F_AUTH) != !!auth_expected)
 		return BFD_CTRL_AUTH_MISMATCH;
 
@@ -246,8 +171,7 @@ struct session_key {
 	struct bfd_addr local;
 };
 
-/* v4-mapped encoder: ::ffff:a.b.c.d. Shared by BPF and userspace so
- * both sides produce byte-identical map keys. */
+/* ::ffff:a.b.c.d, identical in both planes. */
 static inline void key_set_v4(struct bfd_addr *a, __be32 v4)
 {
 	__builtin_memset(a, 0, sizeof(*a));
@@ -256,7 +180,6 @@ static inline void key_set_v4(struct bfd_addr *a, __be32 v4)
 	__builtin_memcpy(&a->b[12], &v4, 4);
 }
 
-/* Native v6: copy the 16-byte address verbatim. */
 static inline void key_set_v6(struct bfd_addr *a, const void *v6)
 {
 	__builtin_memcpy(a->b, v6, 16);
@@ -265,76 +188,51 @@ static inline void key_set_v6(struct bfd_addr *a, const void *v6)
 struct session_state {
 	__u64 last_seen_ns;
 	__u64 rx_pkts;
-	__u64 tx_pkts;        /* kernel XDP_TX replies */
+	__u64 tx_pkts; /* kernel XDP_TX replies */
 	__u32 remote_disc;
 	__u32 local_disc;
 	__u32 min_tx_us;
 	__u32 min_rx_us;
-	__u32 detect_iv_us;   /* effective detect basis: lags advertised
-	                       * decreases until peer paces at new rate */
-	__u8  remote_state;
-	__u8  remote_diag;
-	__u8  detect_mult;
-	__u8  remote_flags;  /* peer's last control packet flags,
-	                      * masked to the six non-state bits */
-	__u64 alive;          /* our sweep's verdict: 1 = hearing peer.
-	                       * 64-bit, not 32: the BPF backend below clang
-	                       * 20 has no 32-bit atomic compare-and-swap and
-	                       * refuses the object with "Unsupported atomic
-	                       * operations, please use 64 bit version". A
-	                       * 64-bit flag lowers the build-clang floor to
-	                       * where distro toolchains sit, at 4 bytes per
-	                       * session. RX set and sweep clear race across
-	                       * CPUs, which is why it is atomic at all. */
-	__u32 final_seq;      /* kernel ack of a Poll sequence: set to
-	                       * cfg->poll_seq on the peer's F */
-	__u8  peer_mac[6];    /* neighbour's source MAC, learned on every RX.
-	                       * Echo TX needs an L2 destination and must not
-	                       * depend on the neighbour table. */
-	__u8  mac_valid;
-	__u8  pad2;
-	__u64 echo_rx_pkts;   /* our own echoes seen returning */
+	/* lags advertised decreases until the peer paces at them */
+	__u32 detect_iv_us;
+	__u8 remote_state;
+	__u8 remote_diag;
+	__u8 detect_mult;
+	__u8 remote_flags; /* last flags, less the state bits */
+	/* sweep verdict. 64-bit: clang < 20 has no 32-bit BPF cmpxchg */
+	__u64 alive;
+	__u32 final_seq;  /* the peer's F acked cfg->poll_seq */
+	__u8 peer_mac[6]; /* learned on RX, for echo TX */
+	__u8 mac_valid;
+	__u8 pad2;
+	__u64 echo_rx_pkts; /* our own echoes seen returning */
 	__u64 echo_last_seen_ns;
 	__u32 echo_last_nonce;
 	__u32 pad3;
-	__u32 echo_alive;     /* advisory echo verdict, kernel-owned */
+	__u32 echo_alive; /* advisory echo verdict, kernel-owned */
 	__u32 pad4;
-	__u32 remote_min_echo_us; /* peer's advertised Required Min Echo RX.
-	                           * Reported up to bfdd so it can run the
-	                           * RFC 5880 s6.8.9 echo negotiation. */
-	__u32 auth_tx_seq;    /* RFC 5880 s6.7.3. Kernel-owned while the
-	                       * fast path answers, because the sequence
-	                       * belongs to whoever emits the packet and
-	                       * two writers would hand the peer a number
-	                       * that goes backwards. Userspace seeds it and
-	                       * reads it back when it takes over. */
-	__u32 auth_rx_seq;    /* highest sequence accepted from the peer */
-	__u32 auth_rx_seen;   /* whether auth_rx_seq means anything yet */
-	__u32 auth_fail_n;    /* Digest failures in the current interval.
-	                       * Kernel-owned, like the sequence numbers. */
+	/* for bfdd's echo negotiation (s6.8.9) */
+	__u32 remote_min_echo_us;
+	__u32 auth_rx_seq;  /* highest sequence accepted from the peer */
+	__u32 auth_rx_seen; /* auth_rx_seq is valid */
+	__u32 auth_fail_n;  /* digest failures this interval; kernel-owned */
 	__u32 pad5;
-	__u64 auth_fail_ts;   /* When the current interval began, ns. */
+	__u64 auth_fail_ts; /* start of the current interval, ns */
 };
 
-/* Event pushed to userspace on liveness transitions. */
+/* Liveness transitions for userspace. */
 struct bfd_event {
-	__u64 ts_ns;          /* when we noticed             */
-	__u64 last_seen_ns;   /* last packet before verdict  */
+	__u64 ts_ns;	    /* when we noticed             */
+	__u64 last_seen_ns; /* last packet before verdict  */
 	struct session_key key;
 	__u32 remote_disc;
-	__u8  event;          /* 0 = DETECT-DOWN, 1 = ALIVE  */
+	__u8 event; /* 0 = DETECT-DOWN, 1 = ALIVE  */
 };
 
-/* What to say when we speak: written by userspace FSM. */
-/* Most keys the program will hold for one session.
- *
- * A power of two so the index found by searching can be masked back into
- * range, which is what lets the verifier see the array access is safe. A
- * rollover needs two; the rest is room for a chain configured without
- * lifetimes, where every key is acceptable at once. */
+/* A power of two, so a searched index can be masked. */
 #define BFD_AUTH_ACCEPT_MAX 16
 
-/* One acceptable key, in the shape the digest wants it. */
+/* Shaped for the digest. */
 struct xdp_auth_key {
 	__u8 type;
 	__u8 key_id;
@@ -343,80 +241,45 @@ struct xdp_auth_key {
 	__u8 kpad[64];
 };
 
+/* Written by the engine in place under lock (BPF_F_LOCK); the program copies
+ * it out under the same lock, so a reply never mixes two versions or sessions.
+ */
 struct tx_cfg {
-	__u32 enable;        /* 1 = kernel replies to each RX (Up only) */
+	struct bpf_spin_lock lock;
+	/* the entry's own key, checked after the copy */
+	struct session_key key;
+	__u32 enable; /* reply to each RX; Up only */
 	__u32 my_disc;
 	__u32 your_disc;
 	__u32 min_tx_us;
 	__u32 min_rx_us;
-	__u16 src_port;      /* kernel echo TX source port; 0 = BFD_SRC_PORT */
-	__u8  state;
-	__u8  diag;
-	__u8  mult;
-	__u8  poll;          /* userspace-initiated Poll sequence active:
-	                      * echo sets P until final_seq == poll_seq */
-	__u8  demand;        /* set the D bit on kernel replies */
-	__u8  demand_hold;   /* demand steady state: the peer was asked to go
-	                      * quiet, so the sweep must not call its silence
-	                      * a fault. Both are precomputed by the engine -
-	                      * the kernel cannot see the remote state these
-	                      * predicates need (RFC 5880 s6.8.6). */
-	__u8  pad[1];
-	__u32 poll_seq;      /* increments per Poll sequence; kernel acks
-	                      * the peer's F via session_state.final_seq
-	                      * (tx_cfg stays userspace-owned) */
-	__u32 echo_iv_us;    /* echo interval; 0 = echo off. Static per
-	                      * session, so the mirror dirty-check still
-	                      * elides pushes. */
-	__u32 min_echo_rx_us; /* advertised Required Min Echo RX. 0 means we
-	                       * cannot receive echo (RFC 5880 s4.1), so it is
-	                       * set only when echo is enabled. */
-	__u32 min_ttl;       /* lowest acceptable TTL / hop_limit for this
-	                      * session. bfdd sends 255 for single-hop and
-	                      * the configured minimum-ttl for multihop, so
-	                      * one comparison covers both. 0 means unset
-	                      * and is treated as 255. */
-	__u8  auth_type;     /* BFD_AUTH_* of the key this session currently
-	                      * TRANSMITS under, 0 when it has none it may
-	                      * send with right now. Says what to build, not
-	                      * what to accept. */
-	__u8  auth_keyid;
-	__u8  auth_keylen;
-	__u8  auth_present;  /* the session is meant to authenticate at all.
-	                      *
-	                      * Separate from auth_type because they differ
-	                      * exactly when it matters. A key chain whose
-	                      * send lifetimes have a gap, or whose keys have
-	                      * arrived before DP_SESSION_AUTH does, leaves a
-	                      * session that must authenticate with nothing
-	                      * to sign with: auth_type is 0 and auth_present
-	                      * is 1.
-	                      *
-	                      * Whether the A bit belongs on a received packet
-	                      * is this, never auth_type. Keying it off the
-	                      * send key makes the program refuse exactly the
-	                      * packets the accept set exists to take, and it
-	                      * refuses them in the driver, so userspace never
-	                      * sees what it would have accepted. The engine
-	                      * spells the same rule in rx_auth_ok. */
-	__u8  auth_kpad[64]; /* the key in one HMAC block, zero padded.
-	                      * Padded by the engine rather than in the
-	                      * program: filling a block from a runtime
-	                      * length is a loop the verifier walks one
-	                      * iteration at a time, and the digest wants it
-	                      * in this shape regardless. */
+	__u16 src_port; /* userspace sends from it too; 0 = BFD_SRC_PORT */
+	__u8 state;
+	__u8 diag;
+	__u8 mult;
+	/* our Poll is active: set P until final_seq == poll_seq */
+	__u8 poll;
+	__u8 demand; /* D bit on replies */
+	/* the peer's silence is requested; the engine sees the remote state */
+	__u8 demand_hold;
+	__u8 mhop;	      /* 4784 (RFC 5883), else 3784 */
+	__u8 slot;	      /* the session's slot, indexing auth_seq */
+	__u32 poll_seq;	      /* acked through session_state.final_seq */
+	__u32 echo_iv_us;     /* echo interval; 0 = echo off */
+	__u32 min_echo_rx_us; /* 0 unless echo is on */
+	/* lowest TTL or hop limit accepted; 0 = 255 */
+	__u32 min_ttl;
+	__u8 auth_type; /* current send key; 0 if none is sendable */
+	__u8 auth_keyid;
+	__u8 auth_keylen;
+	/* authenticates at all, even with no sendable key; A bits are checked against this */
+	__u8 auth_present;
+	/* padded by the engine; the program cannot pad a runtime length */
+	__u8 auth_kpad[64];
 
-	/* Every key a received packet may currently be signed with.
-	 *
-	 * A key chain rolls over with an overlap on purpose: the peer goes
-	 * on using the old key for a while after we have moved to the new
-	 * one, so a receiver holding only the key it transmits under
-	 * refuses exactly the packets the overlap exists to keep. The
-	 * engine evaluates the lifetimes and leaves the set that applies
-	 * now, so the program only has to match on the key id the packet
-	 * names. */
-	__u8  auth_nkeys;
-	__u8  auth_nkeys_pad[3];
+	/* every key a packet may be signed with now */
+	__u8 auth_nkeys;
+	__u8 auth_nkeys_pad[3];
 	struct xdp_auth_key auth_accept[BFD_AUTH_ACCEPT_MAX];
 };
 

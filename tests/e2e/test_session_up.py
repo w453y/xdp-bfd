@@ -1,16 +1,21 @@
-"""Fixture self-test: two static engines reach Up over the veth pair.
-
-Both run pure userspace. No --kernel-tx on either side: two RX-clocked
-engines facing each other is 04-symmetric-deployment's ping-pong premise
-and belongs in a deliberate experiment, not in the baseline fixture.
-"""
+"""Fixture self-test: two static engines reach Up over the veth pair."""
 
 import time
 
 import pytest
 
-from conftest import (NS_A, NS_B, STATS, STATS_B, DOWN_WAIT, sh, ns_pids,
-                      start_engine, dump, wait_both_up)
+from conftest import (
+    NS_A,
+    NS_B,
+    STATS,
+    STATS_B,
+    DOWN_WAIT,
+    sh,
+    ns_pids,
+    start_engine,
+    dump,
+    wait_both_up,
+)
 
 
 @pytest.mark.parametrize("family", [4, 6])
@@ -22,8 +27,7 @@ def test_two_static_engines_reach_up(rig, binary, family):
 
 @pytest.mark.parametrize("family", [4, 6])
 def test_session_goes_down_when_peer_dies(rig, binary, family):
-    """Negative arm. Without it the Up assertion could pass on a snapshot
-    that is never actually refreshed."""
+    """Otherwise Up could pass on a snapshot that never refreshes."""
     start_engine(binary, family, ns=NS_A, stats=STATS)
     start_engine(binary, family, ns=NS_B, stats=STATS_B)
     wait_both_up()
@@ -39,11 +43,8 @@ def test_session_goes_down_when_peer_dies(rig, binary, family):
     pytest.fail("A still reports 1 up %.0fs after killing B" % DOWN_WAIT)
 
 
-# Authentication end to end. Stock bfdd cannot offload an authenticated
-# session to a data plane it did not write, so check-frr will never reach
-# this: two static engines facing each other are the only place the
-# transmit sequence, the accept set and the replay window are exercised
-# outside the mesh. --auth exists for exactly this.
+# Stock bfdd will not offload an authenticated session, so check-frr cannot
+# cover this.
 AUTH_KEY = "sup3rs3cr3tk3y"
 
 
@@ -58,12 +59,17 @@ def test_two_static_engines_reach_up_authenticated(rig, binary, family, auth):
 
 @pytest.mark.parametrize("auth", ["keyed-sha1", "meticulous-sha1"])
 def test_mismatched_key_never_comes_up(rig, binary, auth):
-    """The negative arm, without which the rows above would pass even if
-    the digest were never checked."""
-    start_engine(binary, 4, ns=NS_A, stats=STATS,
-                 extra=["--auth", "%s:5:%s" % (auth, AUTH_KEY)])
-    start_engine(binary, 4, ns=NS_B, stats=STATS_B,
-                 extra=["--auth", "%s:5:a-different-key" % auth])
+    """Otherwise the rows above pass with the digest unchecked."""
+    start_engine(
+        binary, 4, ns=NS_A, stats=STATS, extra=["--auth", "%s:5:%s" % (auth, AUTH_KEY)]
+    )
+    start_engine(
+        binary,
+        4,
+        ns=NS_B,
+        stats=STATS_B,
+        extra=["--auth", "%s:5:a-different-key" % auth],
+    )
 
     end = time.time() + 6
     while time.time() < end:
@@ -73,10 +79,10 @@ def test_mismatched_key_never_comes_up(rig, binary, auth):
 
 
 def test_one_side_unauthenticated_never_comes_up(rig, binary):
-    """A peer must not be able to strip authentication by not offering
-    it: the A bit and the session have to agree in both directions."""
-    start_engine(binary, 4, ns=NS_A, stats=STATS,
-                 extra=["--auth", "keyed-sha1:5:%s" % AUTH_KEY])
+    """The A bit and the session must agree both ways."""
+    start_engine(
+        binary, 4, ns=NS_A, stats=STATS, extra=["--auth", "keyed-sha1:5:%s" % AUTH_KEY]
+    )
     start_engine(binary, 4, ns=NS_B, stats=STATS_B)
 
     end = time.time() + 6

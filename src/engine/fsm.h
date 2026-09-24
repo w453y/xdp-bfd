@@ -9,7 +9,6 @@
 
 #include "session.h"
 
-/* ---------- BFD wire format ---------- */
 
 #define F_P BFD_F_POLL
 #define F_F BFD_F_FINAL
@@ -17,18 +16,21 @@
 
 extern int tx_sock;
 extern int tx6_sock;
+/* the fallback sockets' ports */
+extern uint16_t tx_sock_port, tx6_sock_port;
 
-void state_transition(struct session *s, int newstate, int diag,
-                      uint64_t t, const char *why);
+uint16_t tx_bind(int fd, int family, const struct bfd_addr *local, uint16_t port);
+
+void state_transition(struct session *s, int newstate, int diag, uint64_t t, const char *why);
 void fsm_rx(struct session *s, const struct bfd_ctrl_pkt *p, uint64_t t);
 void fsm_detect(struct session *s, uint64_t t);
 void fsm_tx(struct session *s, uint64_t t);
 void fsm_start_poll(struct session *s, uint64_t t);
 extern uint64_t demand_poll_us;
 
-/* Test seam for the transmit refusal path; see fsm.c. NULL in production. */
-extern ssize_t (*fsm_send_hook)(int fd, const void *buf, size_t len,
-				const struct sockaddr *dst, socklen_t dlen);
+/* Test seam; NULL in production. */
+extern ssize_t (*fsm_send_hook)(int fd, const void *buf, size_t len, const struct sockaddr *dst,
+				socklen_t dlen);
 void fsm_announce_down(struct session *s);
 
 #endif /* BFD_ENGINE_FSM_H */

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-/* ktx.c - kernel-TX mirror: XDP attach, BPF map fds, tx_cfg push.
- *
- * tx_cfg has a single writer (us). The kernel acks a Poll sequence
- * through session_state.final_seq rather than touching tx_cfg.
+/* ktx.c - mirror sessions into the program's maps and read them back. tx_cfg
+ * has one writer, us; the kernel acks a Poll through session_state.final_seq.
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -11,20 +9,10 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <errno.h>
-#include <net/if.h>
-#include <sys/ioctl.h>
-#include <sys/mman.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <linux/if_packet.h>
-#include <linux/if_ether.h>
-#include <linux/if_link.h>
 #include <bpf/libbpf.h>
-#include <bpf/btf.h>
 #include <bpf/bpf.h>
 
 #include "bfd_shared.h"
-#include "objpath.h"
 #include "util.h"
 #include "log.h"
 #include "session.h"
@@ -33,92 +21,23 @@
 #include "fsm.h"
 #include "echo_tx.h"
 
-/* The sweep publishes its detection verdicts here; see on_sweep_event. */
 static struct ring_buffer *sweep_rb;
 
-int use_ktx = 0;
-const char *ktx_obj_path;   /* --bpf-obj, or NULL for the default search */
-/* Attach mode. Native is the default and is what every measured
- * result was taken with; generic (skb) mode exists so the engine can
- * run on veth and other drivers with no native XDP. Generic mode runs
- * after skb allocation, so it does NOT carry the softirq-timing
- * properties this project measures - use it for functional testing,
- * never for a timing claim. */
-unsigned int ktx_xdp_flags = XDP_FLAGS_DRV_MODE;
-/* --sweep-us, in nanoseconds; 0 leaves the compiled default. */
-__u64 ktx_sweep_ns;
-/* --deadman-us, in nanoseconds; 0 switches the gate off entirely. */
-__u64 ktx_deadman_ns = BFD_DEADMAN_NS_DEFAULT;
-/* The heartbeat cell, mapped into our address space so saying "still
- * here" is a store and not a syscall. NULL if the mapping failed, which
- * leaves the cell at zero and the gate reading healthy forever - the same
- * fail-open the program takes before the first pass. */
-static __u64 *ktx_hb;
-/* One entry per attached interface. The link fd is held for the life of
- * the process: closing it detaches the program, which is the whole point,
- * so we never close one deliberately. link_fd -1 means that interface fell
- * back to the flags-based attach and its program will outlive us. */
-#define KTX_MAX_IFACES 8
-struct ktx_iface {
-	int ifindex;
-	int link_fd;
-	const char *mode;
-};
-static struct ktx_iface ktx_ifaces[KTX_MAX_IFACES];
-static int ktx_niface;
-/* The interface named by --kernel-tx. Others are attached on demand as
- * sessions arrive; ktx_covers() is the question worth asking, not this. */
-int ktx_ifindex;
-static struct bpf_program *ktx_prog;
-
-/* One batch fetch of bfd_sessions per main-loop pass, refreshed by
- * ktx_poll_all() before the per-session tick runs. Each session used
- * to do its own bpf_map_lookup_elem: at 62 sessions and a 200us tick
- * that was ~310k syscalls a second and 67% of the engine's syscall
- * time. The data is no less fresh - the batch is taken in the same
- * pass the sessions read it. */
-static struct session_key   poll_keys[MAX_SESSIONS];
+int use_ktx;
+/* bfd_sessions, batch-fetched once per pass. */
+static struct session_key poll_keys[MAX_SESSIONS];
 static struct session_state poll_vals[MAX_SESSIONS];
 static __u32 poll_n;
-/* Set when the batch syscall is unavailable. Without it every session
- * would silently stop syncing from the map while the engine looked
- * healthy, which is the failure mode the per-session kernel-TX gate
- * already taught us to distrust. */
 static int poll_batch_unsupported;
 
-/* Which way ktx_poll_map is reading the session map.
- *
- * The fallback is correct but it is the syscall storm the batch lookup
- * exists to avoid, and the only witness was one log line at the moment it
- * happened. On a kernel without batch support that line scrolls away and
- * the condition persists for the life of the process, so a later timing
- * anomaly has nothing to point at. The stats snapshot is the artifact this
- * project already collects when something looks wrong. */
+/* For the stats dump. */
 const char *ktx_poll_mode(void)
 {
 	return poll_batch_unsupported ? "single" : "batch";
 }
 
-/* The sweep's verdict, taken rather than re-derived.
- *
- * The program computes a detection verdict every sweep and publishes it;
- * until now nothing read it, and fsm_detect worked the same answer out
- * again from last_rx_us on its own schedule. Two derivations of one fact
- * is how they come to disagree - the peer's detect multiplier not being
- * carried back was exactly that, and it made the engine time out against
- * a budget the sweep knew was longer.
- *
- * What this does not do is make the reaction independent of the loop. The
- * ring is drained here, so a starved loop still applies the verdict late
- * and tells bfdd late. What it does is separate the two: the event carries
- * the kernel's timestamp, so detection latency is reported as the sweep
- * measured it and the loop's lateness is visible on its own as
- * last_detect_lag_us, which is the distinction investigations/
- * starved-detection could not draw.
- *
- * fsm_detect stays. Sessions the fast path does not carry - userspace-only,
- * an uncovered interface, no kernel TX at all - never produce an event and
- * are still detected there.
+/* A detection verdict from the sweep, stamped with the kernel's time.
+ * fsm_detect still covers sessions the fast path does not carry.
  */
 static int on_sweep_event(void *ctx, void *data, size_t len)
 {
@@ -128,33 +47,34 @@ static int on_sweep_event(void *ctx, void *data, size_t len)
 
 	(void)ctx;
 	if (len < sizeof(*ev) || ev->event != 0)
-		return 0;   /* ALIVE is carried by the map already */
+		return 0; /* ALIVE is in the map already */
 
 	s = sess_by_addr(&ev->key.peer, &ev->key.local);
 	if (!s || !s->used)
 		return 0;
 	if (s->state != ST_UP && s->state != ST_INIT)
-		return 0;   /* already down, or never came up */
+		return 0; /* already down, or never up */
 
-	/* The verdict may have been overtaken. A packet that arrived after
-	 * the sweep looked sets alive again in the map and is synced into
-	 * last_rx_us, so a session that has been heard from since is not
-	 * down however old the queued event is. */
+	/* A packet arrived after the sweep looked. */
 	decided_us = ev->last_seen_ns / 1000;
 	if (s->last_rx_us > decided_us)
 		return 0;
 
 	now = now_us();
 	decided_us = ev->ts_ns / 1000;
-	s->last_detect_lag_us = now > decided_us ? (uint32_t)(now - decided_us)
-						 : 0;
+	s->last_detect_lag_us = now > decided_us ? (uint32_t)(now - decided_us) : 0;
 	s->kernel_detects++;
 
-	/* The kernel's timestamp, not ours: state_transition bills the
-	 * silence against it, and billing it against now would charge
-	 * detection for however late the loop was. */
 	state_transition(s, ST_DOWN, 1, decided_us, "detect timeout (sweep)");
 	return 0;
+}
+
+void ktx_events_init(int map_fd)
+{
+	if (map_fd >= 0)
+		sweep_rb = ring_buffer__new(map_fd, on_sweep_event, NULL, NULL);
+	if (!sweep_rb)
+		log_err("kernel-tx: no sweep event ring, detection falls back to the loop\n");
 }
 
 int ktx_events_fd(void)
@@ -168,23 +88,6 @@ void ktx_drain_events(void)
 		ring_buffer__consume(sweep_rb);
 }
 
-/* Still here.
- *
- * A plain store into the mapped cell: the program only ever compares it
- * against its own clock, and a __u64 store is single-copy atomic on every
- * target this runs on, so a reader either sees the old reading or the new
- * one and both are equally true. Nothing to order it against - there is
- * no second field whose meaning depends on this one.
- *
- * Microseconds in, nanoseconds out. The engine keeps CLOCK_MONOTONIC in
- * microseconds throughout and bpf_ktime_get_ns reads the same clock in
- * nanoseconds, so this is the whole of the conversion.
- */
-void ktx_heartbeat(uint64_t now)
-{
-	if (ktx_hb)
-		*ktx_hb = now * 1000ull;
-}
 
 void ktx_poll_all(void)
 {
@@ -194,17 +97,16 @@ void ktx_poll_all(void)
 
 	__u32 count = MAX_SESSIONS;
 	void *in = NULL, *out = NULL;
+
 	LIBBPF_OPTS(bpf_map_batch_opts, bopts);
 
 	if (poll_batch_unsupported)
 		return;
-	if (bpf_map_lookup_batch(sess_fd, &in, &out, poll_keys, poll_vals,
-				 &count, &bopts) && errno != ENOENT) {
+	if (bpf_map_lookup_batch(sess_fd, &in, &out, poll_keys, poll_vals, &count, &bopts) &&
+	    errno != ENOENT) {
 		if (errno == EINVAL || errno == EOPNOTSUPP) {
 			poll_batch_unsupported = 1;
-			log_err(
-				"kernel-tx: batch map lookup unavailable (%s), "
-				"falling back to one lookup per session\n",
+			log_err("kernel-tx: batch map lookup unavailable (%s), falling back to one lookup per session\n",
 				strerror(errno));
 		}
 		return;
@@ -212,9 +114,6 @@ void ktx_poll_all(void)
 	poll_n = count;
 }
 
-/* The batch is unordered, so find this session's entry in it. A linear
- * scan of at most MAX_SESSIONS keys costs far less than the syscall it
- * replaces, and matches how the session table is searched elsewhere. */
 static const struct session_state *poll_find(const struct session *s)
 {
 	for (__u32 i = 0; i < poll_n; i++)
@@ -223,372 +122,30 @@ static const struct session_state *poll_find(const struct session *s)
 			return &poll_vals[i];
 	return NULL;
 }
-static int cfg_fd = -1;
-int sess_fd = -1, echo_peers_fd = -1;
-int echo_disc_fd = -1;
-int stats_fd = -1;      /* the only map fd ktx did not keep; the stats
-                         * dump needs it */
-static int flags_fd = -1;
-static struct bpf_object *bpf_obj;
 
-/* ---------- BPF plumbing ---------- */
-
-/* Do the two halves agree on what the maps contain?
- *
- * tests/unit/abi_check.c pins every shared struct at compile time, and
- * cannot see the failure that actually happens: the engine and the program
- * are separate artifacts, built at separate times, and only paired at
- * runtime by a path. An engine built against a newer bfd_shared.h loading
- * yesterday's bfd_xdp.o - an installed copy, a stale --bpf-obj, a build
- * tree half-rebuilt - gets no complaint from anyone. The verifier has no
- * opinion, the map accepts the key, and the two sides then read the same
- * bytes as different structs. Fields shear silently; nothing logs.
- *
- * So compare, rather than declare. The object carries BTF, which is the
- * program's own record of the layouts it was compiled against, and every
- * struct below is one both halves write through a map. A version integer
- * would work too and would have to be remembered; a size that is simply
- * read off both sides cannot be forgotten to bump. Today's two edits are
- * the argument: session_state grew by 8 bytes and BFD_STAT_MAX went from
- * 14 to 15, and both would have sheared in exactly this way.
- *
- * Before load, not after. A refusal should cost nothing and leave nothing
- * attached to unpick.
- *
- * BTF missing is not a refusal. It means the object was built without -g,
- * which the Makefile never does but a packager might, and turning that
- * into "will not start" trades a silent risk for a certain outage. Say so
- * and carry on.
+/* prog_flags bit 1: a multihop session exists, so the parser defers the TTL
+ * check.
  */
-static int ktx_abi_check(struct bpf_object *o, const char *path)
-{
-	static const struct {
-		const char *name;
-		size_t sz;
-	} want[] = {
-		{ "session_key",    sizeof(struct session_key) },
-		{ "session_state",  sizeof(struct session_state) },
-		{ "tx_cfg",         sizeof(struct tx_cfg) },
-		{ "bfd_event",      sizeof(struct bfd_event) },
-		{ "bfd_ctrl_pkt",   sizeof(struct bfd_ctrl_pkt) },
-	};
-	/* The enums, which have no struct to measure. Each is a map sized
-	 * directly by the enum, so the map's own max_entries is the
-	 * program's copy of the count - and a renumbering that leaves the
-	 * total alone is not a shear, because these are indices into the
-	 * same table on both sides. */
-	static const struct {
-		const char *map;
-		__u32 n;
-	} counts[] = {
-		{ "bfd_stats", BFD_STAT_MAX },
-		{ "tunables",  BFD_TUNE_MAX },
-	};
-	struct btf *btf = bpf_object__btf(o);
-	int bad = 0;
-
-	if (!btf) {
-		log_err("kernel-tx: %s carries no BTF, ABI not checked\n",
-			path);
-	} else {
-		for (unsigned i = 0; i < sizeof(want) / sizeof(want[0]); i++) {
-			__s32 id = btf__find_by_name_kind(btf, want[i].name,
-							  BTF_KIND_STRUCT);
-			__s64 got;
-
-			/* Absent, in an object that has BTF, is itself the
-			 * answer: maps.h carries a witness whose whole job
-			 * is to keep these five recorded, so an object
-			 * missing one was built before that existed. Not
-			 * the same as the no-BTF case above, which is an
-			 * object that can tell us nothing at all. */
-			if (id < 0) {
-				log_err(
-					"kernel-tx: %s has no BTF record of struct %s, so it predates this check\n",
-					path, want[i].name);
-				bad = 1;
-				continue;
-			}
-			got = btf__resolve_size(btf, id);
-			if (got < 0) {
-				log_err(
-					"kernel-tx: %s has an unresolvable struct %s (%lld)\n",
-					path, want[i].name, (long long)got);
-				bad = 1;
-			} else if (got != (__s64)want[i].sz) {
-				log_err(
-					"kernel-tx: %s was built with %s at %lld bytes, this engine has %zu\n",
-					path, want[i].name, (long long)got,
-					want[i].sz);
-				bad = 1;
-			}
-		}
-	}
-
-	for (unsigned i = 0; i < sizeof(counts) / sizeof(counts[0]); i++) {
-		struct bpf_map *m = bpf_object__find_map_by_name(o,
-								counts[i].map);
-		__u32 got;
-
-		if (!m) {
-			log_err("kernel-tx: %s has no map %s\n", path,
-				counts[i].map);
-			bad = 1;
-			continue;
-		}
-		got = bpf_map__max_entries(m);
-		if (got != counts[i].n) {
-			log_err(
-				"kernel-tx: %s sizes %s for %u entries, this engine expects %u\n",
-				path, counts[i].map, got, counts[i].n);
-			bad = 1;
-		}
-	}
-
-	if (bad)
-		log_err(
-			"kernel-tx: refusing to load %s - rebuild both halves from the same tree\n",
-			path);
-	return bad ? -1 : 0;
-}
-
-int ktx_load(void)
-{
-	if (bpf_obj)
-		return 0;
-
-	const char *obj = bfd_obj_path(ktx_obj_path);
-
-	bpf_obj = bpf_object__open_file(obj, NULL);
-	if (!bpf_obj || ktx_abi_check(bpf_obj, obj) ||
-	    bpf_object__load(bpf_obj)) {
-		log_err("%s load failed\n", obj);
-		/* Opened and then refused still has to be closed. The engine
-		 * exits on this path today, so nothing leaked for long, but
-		 * ktx_load returning -1 is not by itself a promise that it
-		 * will not be called again. */
-		if (bpf_obj)
-			bpf_object__close(bpf_obj);
-		bpf_obj = NULL;
-		return -1;
-	}
-	/* Tunables go in after load and before attach, so the first packet
-	 * cannot arm the sweeper on the default and then be corrected. */
-	if (ktx_sweep_ns) {
-		int tune_fd = bpf_object__find_map_fd_by_name(bpf_obj,
-							      "tunables");
-		__u32 k = BFD_TUNE_SWEEP_NS;
-
-		if (tune_fd < 0 ||
-		    bpf_map_update_elem(tune_fd, &k, &ktx_sweep_ns, 0)) {
-			log_err(
-				"kernel-tx: sweep interval NOT applied, "
-				"running the compiled default\n");
-			ktx_sweep_ns = 0;
-		}
-	}
-
-	/* Map the heartbeat cell, BEFORE the bound goes into the map.
-	 *
-	 * Either half failing disarms the gate, and doing them in this order
-	 * is what makes the map agree with that. Written the other way
-	 * round, a failed mmap left the bound sitting in the map with
-	 * ktx_deadman_ns zeroed and the log saying disarmed: true in effect,
-	 * but only because a heartbeat nobody ever writes reads as zero and
-	 * the program treats that as healthy. The gate was then disarmed by
-	 * a fail-open rule rather than by being switched off, which is a
-	 * thin thing to rest on and reads as a contradiction to anyone
-	 * dumping the map.
-	 *
-	 * Both still land before attach: the first packet can arrive the
-	 * instant the program is on the interface. */
-	if (ktx_deadman_ns) {
-		int hb_fd = bpf_object__find_map_fd_by_name(bpf_obj,
-							    "heartbeat");
-		void *m = MAP_FAILED;
-
-		if (hb_fd >= 0)
-			m = mmap(NULL, sysconf(_SC_PAGESIZE),
-				 PROT_READ | PROT_WRITE, MAP_SHARED, hb_fd, 0);
-		if (m == MAP_FAILED) {
-			log_err(
-				"kernel-tx: heartbeat not mapped (%s), "
-				"dead-man gate disarmed\n", strerror(errno));
-			ktx_deadman_ns = 0;
-		} else {
-			ktx_hb = m;
-			/* Beat once now. Between here and the first loop
-			 * pass the engine is still bringing sessions up,
-			 * and that is the one stretch where the cell being
-			 * zero and the cell being fresh look the same. */
-			ktx_heartbeat(now_us());
-		}
-	}
-
-	/* The bound itself, now that there is a heartbeat to judge against
-	 * it. Failing to write it disarms the gate rather than leaving it at
-	 * the program's default of zero and pretending otherwise, so what
-	 * the engine reports is what is actually in force. */
-	if (ktx_deadman_ns) {
-		int tune_fd = bpf_object__find_map_fd_by_name(bpf_obj,
-							      "tunables");
-		__u32 k = BFD_TUNE_DEADMAN_NS;
-
-		if (tune_fd < 0 ||
-		    bpf_map_update_elem(tune_fd, &k, &ktx_deadman_ns, 0)) {
-			log_err(
-				"kernel-tx: dead-man bound NOT applied, the "
-				"fast path will answer for a wedged engine\n");
-			ktx_deadman_ns = 0;
-		}
-	}
-
-	ktx_prog = bpf_object__find_program_by_name(bpf_obj, "bfd_observer");
-	if (!ktx_prog) {
-		log_err("bfd_observer not found in %s\n", obj);
-		return -1;
-	}
-
-	/* The maps come from the object, not from any one link, which is
-	 * what lets every attached interface share one set. */
-	cfg_fd  = bpf_object__find_map_fd_by_name(bpf_obj, "tx_config");
-	sess_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_sessions");
-	echo_peers_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_peers");
-	echo_disc_fd = bpf_object__find_map_fd_by_name(bpf_obj, "echo_disc");
-	flags_fd = bpf_object__find_map_fd_by_name(bpf_obj, "prog_flags");
-	stats_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_stats");
-
-	/* The sweep publishes its verdict here. Failing to open it is not
-	 * fatal: fsm_detect still derives the same answer, just without the
-	 * kernel timestamp that separates detection from loop latency. */
-	{
-		int ev_fd = bpf_object__find_map_fd_by_name(bpf_obj,
-							    "bfd_events");
-
-		if (ev_fd >= 0)
-			sweep_rb = ring_buffer__new(ev_fd, on_sweep_event,
-						    NULL, NULL);
-		if (!sweep_rb)
-			log_err("kernel-tx: no sweep event ring, detection falls back to the loop\n");
-	}
-
-	if (ktx_deadman_ns)
-		log_info("kernel-tx: dead-man gate at %lluus\n",
-		       (unsigned long long)(ktx_deadman_ns / 1000));
-	else
-		log_info("kernel-tx: dead-man gate off, the fast path will "
-			 "answer for a wedged engine\n");
-
-	if (ktx_sweep_ns)
-		log_info("kernel-tx: sweep interval %lluus (default %lluus)\n",
-		       (unsigned long long)(ktx_sweep_ns / 1000),
-		       (unsigned long long)(BFD_SWEEP_NS_DEFAULT / 1000));
-
-	return 0;
-}
-
-int ktx_covers(int ifindex)
-{
-	for (int i = 0; i < ktx_niface; i++)
-		if (ktx_ifaces[i].ifindex == ifindex)
-			return 1;
-	return 0;
-}
-
-/* Attach the one loaded program to one more interface. Idempotent, so
- * the caller does not have to track what is already covered. */
-int ktx_attach_if(int ifindex, const char *ifname)
-{
-	if (ktx_covers(ifindex))
-		return 0;
-	if (ktx_load())
-		return -1;
-	if (ktx_niface == KTX_MAX_IFACES) {
-		log_err(
-			"kernel-tx: %s not attached, already on %d interfaces\n",
-			ifname, ktx_niface);
-		return -1;
-	}
-
-	unsigned int flags = ktx_xdp_flags;
-	const char *mode = (flags & XDP_FLAGS_SKB_MODE) ? "generic" : "native";
-
-	/* Attach through a bpf_link so the kernel detaches the program when
-	 * this process dies, including on SIGKILL. Otherwise the fast path
-	 * keeps answering from a frozen tx_config and the peer sees a
-	 * session nothing is driving.
-	 *
-	 * The mode is per interface, not per process: a veth or a driver
-	 * without native XDP refuses drv mode, and an on-demand attach
-	 * cannot choose the interface it is handed.
-	 */
-	LIBBPF_OPTS(bpf_link_create_opts, lopts, .flags = flags);
-	int fd = bpf_link_create(bpf_program__fd(ktx_prog), ifindex,
-				 BPF_XDP, &lopts);
-
-	if (fd < 0 && !(flags & XDP_FLAGS_SKB_MODE)) {
-		flags = XDP_FLAGS_SKB_MODE;
-		mode = "generic";
-		lopts.flags = flags;
-		fd = bpf_link_create(bpf_program__fd(ktx_prog), ifindex,
-				     BPF_XDP, &lopts);
-	}
-	if (fd < 0) {
-		if (bpf_xdp_attach(ifindex, bpf_program__fd(ktx_prog),
-				   flags, NULL)) {
-			log_err("%s XDP attach failed on %s\n", mode,
-				ifname);
-			return -1;
-		}
-		log_err(
-			"kernel-tx: bpf_link unavailable (%s), attached with "
-			"flags - the program will OUTLIVE this process\n",
-			strerror(-fd));
-	}
-
-	ktx_ifaces[ktx_niface].ifindex = ifindex;
-	ktx_ifaces[ktx_niface].link_fd = fd;
-	ktx_ifaces[ktx_niface].mode    = mode;
-	ktx_niface++;
-
-	log_info("kernel-tx: XDP attached to %s (%s mode, %s)\n", ifname, mode,
-	       fd >= 0 ? "link" : "flags");
-	return 0;
-}
-
-int ktx_attach(const char *ifname)
-{
-	int ifindex = if_nametoindex(ifname);
-	if (!ifindex) { perror("ifname"); return -1; }
-
-	if (ktx_attach_if(ifindex, ifname))
-		return -1;
-	ktx_ifindex = ifindex;
-	return 0;
-}
-
-/* prog_flags bit 1 tells the XDP parser that at least one multihop
- * session exists, so it must defer the TTL verdict instead of dropping
- * everything below 255 outright. Clearing it again restores the cheap
- * early filter for single-hop-only deployments. */
 void ktx_update_mhop_flag(void)
 {
-	if (flags_fd < 0)
+	if (ktx_flags_fd < 0)
 		return;
 
 	int mhop = 0;
+
 	for (int i = 0; i < MAX_SESSIONS; i++)
-		if (sessions[i].used && sessions[i].min_ttl &&
-		    sessions[i].min_ttl < 255) {
+		if (sessions[i].used && sessions[i].min_ttl && sessions[i].min_ttl < 255) {
 			mhop = 1;
 			break;
 		}
 
 	__u32 zero = 0, fl = 0;
-	bpf_map_lookup_elem(flags_fd, &zero, &fl);
+
+	bpf_map_lookup_elem(ktx_flags_fd, &zero, &fl);
 	__u32 want = mhop ? (fl | 2u) : (fl & ~2u);
+
 	if (want != fl)
-		bpf_map_update_elem(flags_fd, &zero, &want, 0);
+		bpf_map_update_elem(ktx_flags_fd, &zero, &want, 0);
 }
 
 void ktx_mirror(struct session *s)
@@ -600,71 +157,26 @@ void ktx_mirror(struct session *s)
 
 	ktx_cfg_for(s, (int64_t)time(NULL), &c, &k);
 
-	if (!ktx_push_needed(s, &c, &k))
+	if (!ktx_push_needed(s, &c))
 		return;
 
-	/* Hand the transmit sequence over before the program is told to
-	 * answer, never after. The kernel owns it from that moment - two
-	 * writers would hand the peer a sequence that goes backwards, and
-	 * a meticulous peer rejects everything after that until the
-	 * session resets. Ordering is what makes the SEQUENCE safe rather
-	 * than a lock: enable is still 0 in the map, so nothing is
-	 * transmitting from the fast path while the value is written.
-	 *
-	 * Read-modify-write because the rest of session_state is the
-	 * kernel's and must survive. The ordering above does not extend to
-	 * that rest, and the honest description is a race: the observer
-	 * path runs whether or not enable is set, so between this lookup
-	 * and this update another CPU can advance rx_pkts, last_seen_ns,
-	 * alive, peer_mac, final_seq or detect_iv_us, and the write-back
-	 * puts the old values there again.
-	 *
-	 * Left as it is, deliberately. The window is two syscalls wide and
-	 * this runs once per session per seed. Reverting `alive` costs one
-	 * ring event that on_sweep_event discards; reverting final_seq
-	 * costs one Poll ack, re-acked by the peer's next F. Removing the
-	 * race means moving the three sequence fields into a map of their
-	 * own, which changes the shared ABI, and that is not a trade worth
-	 * making for this. */
-	if (c.enable && s->auth_type && !s->auth_seeded) {
-		struct session_key sk = {};
-		struct session_state ms;
-
-		sk.peer = s->peer;
-		sk.local = s->local;
-		if (!bpf_map_lookup_elem(sess_fd, &sk, &ms)) {
-			ms.auth_tx_seq = s->auth_tx_seq;
-			ms.auth_rx_seq = s->auth_rx_seq;
-			ms.auth_rx_seen = s->auth_rx_seen;
-			if (!bpf_map_update_elem(sess_fd, &sk, &ms, 0))
-				s->auth_seeded = 1;
-		}
-	}
-	/* Only a push that landed may be cached. Recording it after a
-	 * failed update would leave the engine believing the program has a
-	 * configuration it never received, and every later mirror would
-	 * compare equal and skip. */
-	if (bpf_map_update_elem(cfg_fd, &k, &c, 0)) {
-		log_err("ktx: lid=%u tx_config push failed: %s\n",
-			s->lid, strerror(errno));
+	/* Cache it only if the update landed. */
+	if (bpf_map_update_elem(ktx_cfg_fd, &k, &c, BPF_F_LOCK)) {
+		log_err("ktx: lid=%u tx_config push failed: %s\n", s->lid, strerror(errno));
 		s->pushed_valid = 0;
 		return;
 	}
+	if (disc_fd >= 0 && c.my_disc) {
+		__u8 one = 1;
+
+		bpf_map_update_elem(disc_fd, &c.my_disc, &one, 0);
+	}
 	s->pushed_cfg = c;
-	s->pushed_key = k;
 	s->pushed_valid = 1;
 }
 
-/* echo_peers is keyed on the peer address alone: that is all the
- * reflector has when a self-addressed echo arrives. Sessions sharing a
- * peer therefore share one entry, so no single session may delete it.
- *
- * Membership is re-derived from the session table rather than
- * refcounted - a refcount that drifts by one silently enables or
- * disables echo with no witness, and rescanning 64 slots on a config
- * event costs nothing.
- *
- * `skip` is the session being torn down, whose own state must not count.
+/* Keyed on peer alone, so sessions share entries; recomputed, not refcounted.
+ * skip is the session being torn down.
  */
 void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip)
 {
@@ -689,18 +201,16 @@ void echo_peer_refresh(const struct bfd_addr *peer, struct session *skip)
 		bpf_map_delete_elem(echo_peers_fd, peer);
 }
 
-/* Clear the kernel state for an address pair. Split from ktx_clear so
- * an address change can drop the OLD key while the session lives on
- * under the new one. */
-void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local,
-		   uint32_t wire_disc)
+/* Separate from ktx_clear so an address change can drop the old key. */
+void ktx_clear_key(const struct bfd_addr *peer, const struct bfd_addr *local, uint32_t wire_disc)
 {
 	if (!use_ktx)
 		return;
 	struct session_key k = {};
-	k.peer  = *peer;
+
+	k.peer = *peer;
 	k.local = *local;
-	bpf_map_delete_elem(cfg_fd, &k);
+	bpf_map_delete_elem(ktx_cfg_fd, &k);
 	bpf_map_delete_elem(sess_fd, &k);
 	if (echo_disc_fd >= 0 && wire_disc)
 		bpf_map_delete_elem(echo_disc_fd, &wire_disc);
@@ -711,21 +221,16 @@ void ktx_clear(struct session *s)
 	if (!use_ktx)
 		return;
 	ktx_clear_key(&s->peer, &s->local, s->wire_disc);
+	/* Not in ktx_clear_key: the discriminator outlives an address change. */
+	if (disc_fd >= 0 && s->wire_disc)
+		bpf_map_delete_elem(disc_fd, &s->wire_disc);
 	echo_peer_refresh(&s->peer, s);
 	s->min_ttl = 0;
 	ktx_update_mhop_flag();
 }
 
 
-/* The kernel's packet counters for one session, 0 when there are none.
- *
- * Here rather than in dplane.c, which is the only reason that file
- * included libbpf at all: one lookup pulled the whole library into the
- * bfddp parser, so dp_run had to link -lbpf and then hand-stub
- * bpf_map_lookup_elem to shadow the real symbol, dp_fuzz needed its own
- * copy of the ktx stub group, and a contributor without libbpf-dev could
- * run neither. Map access belongs on this side of the wall.
- */
+/* 0 if unavailable. */
 void ktx_session_counters(const struct session *s, uint64_t *rx, uint64_t *tx)
 {
 	struct session_key k = {};
@@ -746,13 +251,15 @@ void ktx_session_counters(const struct session *s, uint64_t *rx, uint64_t *tx)
 
 void ktx_poll_map(struct session *s, uint64_t t)
 {
-	if (!use_ktx || s->state != ST_UP)
-		return;
 	struct session_state ms;
+
+	if (!use_ktx)
+		return;
+
 	if (poll_batch_unsupported) {
 		struct session_key k = {};
 
-		k.peer  = s->peer;
+		k.peer = s->peer;
 		k.local = s->local;
 		if (bpf_map_lookup_elem(sess_fd, &k, &ms))
 			return;
@@ -763,78 +270,43 @@ void ktx_poll_map(struct session *s, uint64_t t)
 			return;
 		ms = *msp;
 	}
+	s->ktx_seen_us = ms.last_seen_ns / 1000;
+	if (s->state != ST_UP)
+		return;
 	if (ms.last_seen_ns / 1000 > s->last_rx_us)
 		s->last_rx_us = ms.last_seen_ns / 1000;
-	/* When the fast path last transmitted, from the count of replies
-	 * moving rather than from a timestamp the program stores.
-	 *
-	 * A timestamp was the obvious shape and does not fit: the verifier
-	 * charges one 512-byte budget across the whole call chain, and the
-	 * TX path has no room to either carry `now` down to the store or
-	 * call bpf_ktime_get_ns again there - both come back as "combined
-	 * stack size of 3 calls is 528. Too large". tx_pkts is already
-	 * maintained on exactly the path that transmits, so the fact is
-	 * already published; only the reading of it was missing.
-	 *
-	 * Stamped with last_rx_us, not the local clock. The reply is built
-	 * from the frame that triggered it, in the same softirq, so the
-	 * arrival the kernel timestamped IS the transmit instant - which
-	 * makes this identical to the arrival time it replaces for as long
-	 * as every accepted packet is answered, and different only when the
-	 * program declines to answer. That is the whole point of the change,
-	 * and it means no behaviour moves until something starts declining.
-	 *
-	 * Resolution is one poll pass, since a reply between two polls is
-	 * seen at the second. Against a `pace` of a peer's advertised
-	 * interval - tens of milliseconds - a pass of one to two is noise.
+	/* The program cannot store a TX time, but a reply leaves in the softirq
+	 * of the packet that caused it.
 	 */
 	if (ms.tx_pkts != s->ktx_tx_pkts) {
 		s->ktx_tx_pkts = ms.tx_pkts;
 		s->last_ktx_us = s->last_rx_us;
 	}
-	/* Once the fast path is armed userspace stops seeing packets, so
-	 * fsm_rx's last look at the peer's state is the bring-up packet
-	 * carrying Init and r_state would sit there for the life of the
-	 * session. Anything asking about the peer between packets needs
-	 * this - both demand gates require the remote to be Up. */
+	/* Once armed, userspace sees no packets; the demand gates need the
+	 * peer's state.
+	 */
 	if (ms.last_seen_ns)
 		s->r_state = ms.remote_state;
 	if (ms.detect_iv_us)
 		s->detect_iv_us = ms.detect_iv_us;
-	/* Sequence numbers belong to whichever plane is handling the
-	 * session, and are only ever read back from the one that is.
-	 *
-	 * The transmit sequence always comes back: the fast path has been
-	 * emitting under this key, so ours is behind, and the first packet
-	 * userspace sends after taking over must not repeat one the peer
-	 * has already seen.
-	 *
-	 * The receive window only comes back while the fast path is still
-	 * answering. Once it is not, userspace owns that window - and it
-	 * has to, because the resync in fsm_detect clears it after the peer
-	 * goes quiet, and pulling the kernel's stale copy back in on the
-	 * very next pass would undo that every time. A peer that restarted
-	 * would then never be believed again.
+	/* The RX window comes back while the fast path answers, since
+	 * userspace then sees no packets.
 	 */
-	if (s->auth_type) {
-		if (ms.auth_tx_seq > s->auth_tx_seq)
-			s->auth_tx_seq = ms.auth_tx_seq;
-		if (ktx_answers(s) && ms.auth_rx_seen) {
-			s->auth_rx_seq = ms.auth_rx_seq;
-			s->auth_rx_seen = 1;
-		}
+	if (s->auth_present && ktx_answers(s) && ms.auth_rx_seen) {
+		s->auth_rx_seq = ms.auth_rx_seq;
+		s->auth_rx_seen = 1;
 	}
 	if (ms.mac_valid) {
 		memcpy(s->peer_mac, ms.peer_mac, 6);
 		s->mac_valid = 1;
 	}
-	/* Our echo returned. The arrival stamp is the kernel's, taken in
-	 * softirq at RX, so this is wire RTT and not poll latency. */
-	if (s->echo_sent_us && ms.echo_last_nonce == s->echo_nonce &&
-	    ms.echo_last_seen_ns) {
+	/* Kernel RX stamp, so this is wire RTT. */
+	if (s->echo_sent_us && ms.echo_last_nonce == s->echo_nonce && ms.echo_last_seen_ns) {
 		uint64_t arr = ms.echo_last_seen_ns / 1000;
+
 		if (arr > s->echo_sent_us) {
 			uint64_t rtt = arr - s->echo_sent_us;
+
 			s->echo_rtt_last_us = rtt;
 			if (!s->echo_rtt_min_us || rtt < s->echo_rtt_min_us)
 				s->echo_rtt_min_us = rtt;
@@ -846,30 +318,22 @@ void ktx_poll_map(struct session *s, uint64_t t)
 			s->echo_rtt_n++;
 		}
 		s->echo_rx_pkts++;
-		s->echo_sent_us = 0;   /* no longer outstanding */
+		s->echo_sent_us = 0;
 	}
 	s->echo_alive_k = ms.echo_alive;
 	if (s->polling && ms.final_seq == s->poll_seq) {
-		/* Kernel acked the peer's F for this Poll sequence via
-		 * final_seq; end the poll and mirror poll=0 down. tx_cfg
-		 * has a single writer (us), so the old read-back dance
-		 * and the pushed_cfg fixup are gone. */
+		/* The peer's F ended this Poll. */
 		s->polling = 0;
 		s->applied_tx_us = s->min_tx_us;
 		ktx_mirror(s);
 	}
-	/* The peer's detect multiplier belongs here with the intervals.
-	 * fsm_detect sizes the detection budget from r_mult, and once the
-	 * fast path is armed fsm_rx never runs again, so leaving it behind
-	 * means the engine keeps timing against whatever the peer was using
-	 * when the session handed over. A peer that raises it is then
-	 * declared down by the engine on a budget the kernel sweep, which
-	 * reads detect_mult straight from the map, knows is not up yet. */
-	if (ms.min_tx_us && (ms.min_tx_us != s->r_min_tx ||
-			     ms.min_rx_us != s->r_min_rx ||
-			     ms.remote_min_echo_us != s->r_min_echo ||
-			     (ms.detect_mult && ms.detect_mult != s->r_mult) ||
-			     ms.remote_flags != s->r_flags)) {
+	/* fsm_rx no longer runs once armed, and fsm_detect sizes its budget
+	 * from r_mult.
+	 */
+	if (ms.min_tx_us &&
+	    (ms.min_tx_us != s->r_min_tx || ms.min_rx_us != s->r_min_rx ||
+	     ms.remote_min_echo_us != s->r_min_echo ||
+	     (ms.detect_mult && ms.detect_mult != s->r_mult) || ms.remote_flags != s->r_flags)) {
 		s->r_min_tx = ms.min_tx_us;
 		s->r_min_rx = ms.min_rx_us;
 		s->r_min_echo = ms.remote_min_echo_us;

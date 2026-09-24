@@ -1,24 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of the xdp_run test, split by subject.
- * Compiled as one unit via tests/unit/xdp_run.c, which carries the
- * includes, the shared globals and main; include order there is the
- * dependency order (harness first, sweep last). */
+/* Part of xdp_run.c. */
 
-/* A session that must authenticate but has no key it may SEND under.
- *
- * A key chain whose send lifetimes have a gap puts a session here, and so
- * does a DP_ADD_SESSION carrying SESSION_AUTH that arrives before its
- * DP_SESSION_AUTH. The peer goes on transmitting under a key that is still
- * within its own accept period, so those packets carry the A bit and the
- * accept set can verify them. Refusing them is refusing exactly what the
- * overlap exists to take.
- *
- * The program judged this by auth_type, which is the SEND key, so it saw a
- * session with no authentication, called the A bit unacceptable and dropped
- * the packet in the driver - where userspace, which has always read this
- * from auth_present, could not see what it would have accepted. The session
- * then timed out with the peer transmitting correctly throughout.
- */
+/* Must authenticate with no send key, as in a lifetime gap: the accept set still verifies. */
 static void case_auth_present_without_send_key(void)
 {
 	const char *name = "auth-accepted-with-no-send-key";
@@ -31,8 +14,6 @@ static void case_auth_present_without_send_key(void)
 	map_reset();
 	arm_session_auth(BFD_AUTH_KEYED_SHA1, 7, "topsecret");
 
-	/* Exactly the state above: the accept set is untouched, the send key
-	 * is gone, and the session still has to authenticate. */
 	if (bpf_map_lookup_elem(cfg_fd, &k, &cfg)) {
 		printf("FAIL %-40s no cfg\n", name);
 		fails++;
@@ -42,31 +23,23 @@ static void case_auth_present_without_send_key(void)
 	cfg.auth_keyid = 0;
 	cfg.auth_keylen = 0;
 	cfg.auth_present = 1;
-	bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY);
+	cfg_put(cfg_fd, &k, &cfg);
 
 	mism = stat_get(BFD_STAT_AUTH_MISMATCH);
 	build_sha1_auth(&f, "topsecret", 7, 100, BFD_AUTH_KEYED_SHA1);
 	v = run_frame(&f, NULL, NULL);
 
-	/* PASS, not TX: with no send key the fast path must not answer
-	 * either, or it bounces a bare packet the peer must reject. The
-	 * packet still has to reach userspace. */
+	/* Not TX: a bare reply is one the peer must reject. */
 	if (v != XDP_PASS || stat_get(BFD_STAT_AUTH_MISMATCH) != mism) {
-		printf("FAIL %-40s want PASS no-mismatch, got %s mismatch+%llu\n",
-		       name, v < 0 ? "syscall-error" : verdict_str(v),
+		printf("FAIL %-40s want PASS no-mismatch, got %s mismatch+%llu\n", name,
+		       v < 0 ? "syscall-error" : verdict_str(v),
 		       stat_get(BFD_STAT_AUTH_MISMATCH) - mism);
 		fails++;
 	} else {
 		printf("ok   %-40s accepted, not an A-bit mismatch\n", name);
 	}
 
-	/* And the digest is still checked, which the arm above cannot show:
-	 * a packet accepted without verification also reaches userspace, so
-	 * PASS alone is equally consistent with having skipped the digest.
-	 * That is not hypothetical. Gating verification on the send key did
-	 * exactly that, and fixing only the A-bit rule would have turned
-	 * "refuses what it should take" into "takes it unverified", which is
-	 * the worse of the two by a long way. */
+	/* PASS alone is also consistent with skipping verification. */
 	name = "auth-verified-with-no-send-key";
 	{
 		unsigned long long bad = stat_get(BFD_STAT_AUTH_BAD);
@@ -75,8 +48,8 @@ static void case_auth_present_without_send_key(void)
 		f.b[f.len - 1] ^= 0xff;
 		v = run_frame(&f, NULL, NULL);
 		if (v != XDP_DROP || stat_get(BFD_STAT_AUTH_BAD) != bad + 1) {
-			printf("FAIL %-40s want DROP auth-bad+1, got %s auth-bad+%llu\n",
-			       name, v < 0 ? "syscall-error" : verdict_str(v),
+			printf("FAIL %-40s want DROP auth-bad+1, got %s auth-bad+%llu\n", name,
+			       v < 0 ? "syscall-error" : verdict_str(v),
 			       stat_get(BFD_STAT_AUTH_BAD) - bad);
 			fails++;
 		} else {
@@ -86,9 +59,9 @@ static void case_auth_present_without_send_key(void)
 	map_reset();
 }
 
-static void case_auth_reject(const char *name, __u8 type, const char *key,
-			     __u8 keyid, __u32 seq, int corrupt_digest,
-			     __u32 pre_seq, int want_accept)
+/* Damaged one way each: refused without touching the session. */
+static void case_auth_reject(const char *name, __u8 type, const char *key, __u8 keyid, __u32 seq,
+			     int corrupt_digest, __u32 pre_seq, int want_accept)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
 	struct session_state st;
@@ -145,27 +118,24 @@ static void case_auth_reject(const char *name, __u8 type, const char *key,
 		printf("FAIL %-40s\n", name);
 		fails++;
 	} else {
-		printf("ok   %-40s %s\n", name,
-		       want_accept ? "accepted" : "DROP, no state write");
+		printf("ok   %-40s %s\n", name, want_accept ? "accepted" : "DROP, no state write");
 	}
 	map_reset();
 }
 
-/* The shared HMAC-SHA1 through the kernel, on the vectors hmac_run
- * checks on the host. The BPF build inlines differently and answers to
- * the verifier, so agreeing with the host is not something to assume. */
+/* The vectors hmac_run checks on the host. */
 struct hmac_scratch_u {
-	__u8  kpad[SHA1_BLOCK_LEN];
-	__u8  mblk[SHA1_BLOCK_LEN];
-	__u8  out[SHA1_DIGEST_LEN];
+	__u8 kpad[SHA1_BLOCK_LEN];
+	__u8 mblk[SHA1_BLOCK_LEN];
+	__u8 out[SHA1_DIGEST_LEN];
 	__u32 msglen;
 	__u32 ok;
 };
 
 static void case_hmac(const struct hmac_vec *v)
 {
-	struct hmac_scratch_u sc = {0};
-	unsigned char in[64] = {0}, out[64] = {0};
+	struct hmac_scratch_u sc = { 0 };
+	unsigned char in[64] = { 0 }, out[64] = { 0 };
 	__u32 zero = 0;
 
 	if (hmac_prog_fd < 0) {
@@ -183,10 +153,8 @@ static void case_hmac(const struct hmac_vec *v)
 		return;
 	}
 
-	LIBBPF_OPTS(bpf_test_run_opts, topts,
-		    .data_in = in, .data_size_in = sizeof(in),
-		    .data_out = out, .data_size_out = sizeof(out),
-		    .repeat = 1);
+	LIBBPF_OPTS(bpf_test_run_opts, topts, .data_in = in, .data_size_in = sizeof(in),
+		    .data_out = out, .data_size_out = sizeof(out), .repeat = 1);
 	if (bpf_prog_test_run_opts(hmac_prog_fd, &topts) ||
 	    bpf_map_lookup_elem(hmac_map_fd, &zero, &sc)) {
 		printf("FAIL %-40s test_run\n", v->name);
@@ -194,8 +162,7 @@ static void case_hmac(const struct hmac_vec *v)
 		return;
 	}
 	if (!sc.ok) {
-		printf("FAIL %-40s kernel refused key %u msg %u\n",
-		       v->name, v->keylen, v->msglen);
+		printf("FAIL %-40s kernel refused key %u msg %u\n", v->name, v->keylen, v->msglen);
 		fails++;
 		return;
 	}
@@ -214,11 +181,7 @@ static void case_hmac(const struct hmac_vec *v)
 	printf("ok   %-40s key %2u msg %2u\n", v->name, v->keylen, v->msglen);
 }
 
-/* Bound the forced HMAC. Feed a session more corrupt-digest packets
- * than BFD_AUTH_FAIL_MAX inside one detect interval: the first
- * BFD_AUTH_FAIL_MAX reach the digest and fail (auth-bad), the rest are
- * dropped before it (auth-ratelimited). The interval is pinned wide so the
- * test cannot straddle a window turnover. */
+/* Past BFD_AUTH_FAIL_MAX bad digests in an interval, the rest drop before hashing. */
 static void case_auth_ratelimit(void)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
@@ -230,10 +193,11 @@ static void case_auth_ratelimit(void)
 	map_reset();
 	arm_session_auth(BFD_AUTH_KEYED_SHA1, 7, "topsecret");
 
-	/* Pin the window to a second so a dozen test-run syscalls stay
-	 * inside one interval. */
+	/* One interval covers every syscall here. */
 	if (bpf_map_lookup_elem(sess_fd, &k, &st)) {
-		printf("FAIL auth-ratelimit (no state)\n"); fails++; return;
+		printf("FAIL auth-ratelimit (no state)\n");
+		fails++;
+		return;
 	}
 	st.detect_iv_us = 1000000;
 	bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY);
@@ -243,7 +207,7 @@ static void case_auth_ratelimit(void)
 
 	for (int i = 0; i < BFD_AUTH_FAIL_MAX + 4; i++) {
 		build_sha1_auth(&f, "topsecret", 7, 100 + i, BFD_AUTH_KEYED_SHA1);
-		f.b[f.len - 1] ^= 0xff;                 /* corrupt the digest */
+		f.b[f.len - 1] ^= 0xff; /* corrupt the digest */
 		v = run_frame(&f, NULL, NULL);
 		if (v != XDP_DROP) {
 			printf("     packet %d verdict %s, want DROP\n", i,
@@ -262,8 +226,119 @@ static void case_auth_ratelimit(void)
 		printf("     auth-ratelimited +%llu, want +4\n", r1 - r0);
 		bad = 1;
 	}
-	if (bad) { printf("FAIL auth-ratelimit-bounds-digest\n"); fails++; }
-	else printf("ok   %-40s %d digests then rate-limited\n",
-		    "auth-ratelimit-bounds-digest", BFD_AUTH_FAIL_MAX);
+	if (bad) {
+		printf("FAIL auth-ratelimit-bounds-digest\n");
+		fails++;
+	} else
+		printf("ok   %-40s %d digests then rate-limited\n", "auth-ratelimit-bounds-digest",
+		       BFD_AUTH_FAIL_MAX);
 	map_reset();
+}
+
+/* The kernel draws its TX sequence from the counter it shares with the engine,
+ * so a number either plane used is never used again.
+ */
+static __u32 reply_seq(const unsigned char *out)
+{
+	const unsigned char *a = out + 14 + 20 + 8 + BFD_MIN_LEN + BFD_AUTH_SHA1_SEQ_OFF;
+
+	return (__u32)a[0] << 24 | (__u32)a[1] << 16 | (__u32)a[2] << 8 | a[3];
+}
+
+static void case_auth_seq_shared(void)
+{
+	unsigned char out[FRAME_MAX];
+	unsigned int out_len = 0;
+	struct frame f;
+	__u32 slot = 0;
+	__u64 v = 1000;
+	int bad = 0;
+
+	if (seq_fd < 0) {
+		printf("     no auth_seq map\n");
+		printf("FAIL %-40s\n", "auth-seq-shared-counter");
+		fails++;
+		return;
+	}
+	map_reset();
+	arm_session_auth(BFD_AUTH_METICULOUS_SHA1, 7, "topsecret");
+	bpf_map_update_elem(seq_fd, &slot, &v, BPF_ANY);
+
+	build_sha1_auth(&f, "topsecret", 7, 1, BFD_AUTH_METICULOUS_SHA1);
+	if (run_frame(&f, out, &out_len) != XDP_TX || reply_seq(out) != 1001) {
+		printf("     first reply carries %u, want 1001\n", reply_seq(out));
+		bad = 1;
+	}
+
+	/* The engine takes the next number, as userspace would to send. */
+	bpf_map_lookup_elem(seq_fd, &slot, &v);
+	v++;
+	bpf_map_update_elem(seq_fd, &slot, &v, BPF_ANY);
+
+	build_sha1_auth(&f, "topsecret", 7, 2, BFD_AUTH_METICULOUS_SHA1);
+	if (run_frame(&f, out, &out_len) != XDP_TX || reply_seq(out) != 1003) {
+		printf("     second reply carries %u, want 1003 after the engine took 1002\n",
+		       reply_seq(out));
+		bad = 1;
+	}
+	map_reset();
+	if (bad) {
+		printf("FAIL %-40s\n", "auth-seq-shared-counter");
+		fails++;
+	} else {
+		printf("ok   %-40s one counter, no reuse\n", "auth-seq-shared-counter");
+	}
+}
+
+/* A session whose own port was taken replies from another, and still draws
+ * from its slot's counter.
+ */
+static void case_auth_seq_by_slot(void)
+{
+	const char *name = "auth-seq-by-slot-not-port";
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	unsigned char out[FRAME_MAX];
+	unsigned int out_len = 0;
+	struct tx_cfg cfg;
+	struct frame f;
+	__u32 slot = 5;
+	__u64 v = 500;
+	int bad = 0;
+
+	map_reset();
+	arm_session_auth(BFD_AUTH_METICULOUS_SHA1, 7, "topsecret");
+	if (seq_fd < 0 || bpf_map_lookup_elem(cfg_fd, &k, &cfg)) {
+		printf("FAIL %-40s no cfg or auth_seq\n", name);
+		fails++;
+		return;
+	}
+	cfg.slot = (__u8)slot;
+	cfg.src_port = BFD_SRC_PORT - 2;
+	cfg_put(cfg_fd, &k, &cfg);
+	bpf_map_update_elem(seq_fd, &slot, &v, BPF_ANY);
+
+	build_sha1_auth(&f, "topsecret", 7, 1, BFD_AUTH_METICULOUS_SHA1);
+	if (run_frame(&f, out, &out_len) != XDP_TX) {
+		printf("     no reply\n");
+		bad = 1;
+	} else {
+		const struct udphdr *ou = (const void *)(out + 14 + 20);
+
+		if (reply_seq(out) != 501) {
+			printf("     reply carries %u, want 501 from slot 5\n", reply_seq(out));
+			bad = 1;
+		}
+		if (ntohs(ou->source) != BFD_SRC_PORT - 2) {
+			printf("     reply from port %u, want %u\n", ntohs(ou->source),
+			       BFD_SRC_PORT - 2);
+			bad = 1;
+		}
+	}
+	map_reset();
+	if (bad) {
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s slot 5's counter, from the session's port\n", name);
+	}
 }

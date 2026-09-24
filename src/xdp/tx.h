@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* tx.h - RX-clocked TX: rewrite the received frame into our control
- * packet and bounce it with XDP_TX. The peer's transmit clock becomes
- * ours, executed in softirq.
- *
- * Ordering constraint: the v6 UDP checksum fold runs BEFORE
- * bpf_xdp_adjust_tail, which invalidates the pointers it reads.
+/* tx.h - RX-clocked TX: rewrite the received frame into our control packet and
+ * bounce it with XDP_TX. The v6 checksum fold must run before
+ * bpf_xdp_adjust_tail, which invalidates its pointers.
  */
 #ifndef BFD_XDP_TX_H
 #define BFD_XDP_TX_H
@@ -13,176 +10,134 @@
 #include "tunables.h"
 #include "auth.h"
 
-static __always_inline int rx_clocked_tx(struct xdp_md *ctx,
-                struct ethhdr *eth, struct iphdr *iph,
-                struct ipv6hdr *ip6, struct udphdr *udp,
-                struct bfd_ctrl_pkt *bfd, struct tx_cfg *cfg,
-                struct session_state *st, struct auth_scratch *sc,
-                void *data, void *data_end)
+static __always_inline int rx_clocked_tx(struct xdp_md *ctx, struct ethhdr *eth, struct iphdr *iph,
+					 struct ipv6hdr *ip6, struct udphdr *udp,
+					 struct bfd_ctrl_pkt *bfd, struct tx_cfg *cfg,
+					 struct session_state *st, struct auth_scratch *sc,
+					 void *data, void *data_end)
 {
-        	__u8 send_final = (bfd->flags & BFD_F_POLL) ? BFD_F_FINAL : 0;
-        	__u32 auth_sum = 0;
+	__u8 send_final = (bfd->flags & BFD_F_POLL) ? BFD_F_FINAL : 0;
+	__u32 auth_sum = 0;
 
-        	/* L2 swap */
-        	__u8 tmp[6];
-        	__builtin_memcpy(tmp, eth->h_dest, 6);
-        	__builtin_memcpy(eth->h_dest, eth->h_source, 6);
-        	__builtin_memcpy(eth->h_source, tmp, 6);
+	__u8 tmp[6];
 
-        	/* L3 swap (checksum unaffected by swapping halves) */
-        	if (iph) {
-        		__be32 tip = iph->saddr;
-        		iph->saddr = iph->daddr;
-        		iph->daddr = tip;
-        	} else if (ip6) {
-        		struct in6_addr t6 = ip6->saddr;
-        		ip6->saddr = ip6->daddr;
-        		ip6->daddr = t6;
-        	}
+	__builtin_memcpy(tmp, eth->h_dest, 6);
+	__builtin_memcpy(eth->h_dest, eth->h_source, 6);
+	__builtin_memcpy(eth->h_source, tmp, 6);
 
-        	/* Multihop: this frame arrived below 255 and is being reused as
-        	 * our reply, so it would leave already decremented and lose more
-        	 * on the return path - the peer would then measure it against
-        	 * its own minimum and reject us while we accept it, giving a
-        	 * session that comes up one way only. RFC 5883 wants multihop
-        	 * sent at 255 so the receiver can count hops, which is what the
-        	 * userspace path already does. Single-hop frames arrive at 255
-        	 * and skip this entirely. */
-        	if (iph && iph->ttl != 255) {
-        		/* No incremental checksum fixup: the v4 header check is
-        		 * zeroed and folded again in full below, once the
-        		 * length is final, so patching it here is work whose
-        		 * result is overwritten. */
-        		iph->ttl = 255;
-        	} else if (ip6 && ip6->hop_limit != 255) {
-        		ip6->hop_limit = 255;   /* no checksum in v6 */
-        	}
+	/* Swapping halves leaves the checksum alone. */
+	if (iph) {
+		__be32 tip = iph->saddr;
 
-        	__be16 in_dport = udp->dest;
+		iph->saddr = iph->daddr;
+		iph->daddr = tip;
+	} else if (ip6) {
+		struct in6_addr t6 = ip6->saddr;
 
-        	/* L4: our source port, and back to the port this frame
-        	 * arrived on so multihop replies reach 4784. No UDP
-        	 * checksum (legal in v4). */
-        	udp->source = cfg->src_port ? bpf_htons(cfg->src_port)
-        				    : bpf_htons(BFD_SRC_PORT);
-        	udp->dest   = in_dport;
-        	udp->check  = 0;
+		ip6->saddr = ip6->daddr;
+		ip6->daddr = t6;
+	}
 
-        	/* BFD payload from config. P while a Poll sequence is
-        	 * active, F when answering the peer's P; never both. */
-        	bfd->vers_diag   = (1 << 5) | (cfg->diag & 0x1f);
-        	bfd->flags       = ((cfg->state & 0x3) << 6) | send_final;
-        	if (!send_final && cfg->poll &&
-            st->final_seq != cfg->poll_seq)
-        		bfd->flags |= BFD_F_POLL;
-        	/* D rides alongside P or F rather than excluding them: only
-        	 * P and F are mutually exclusive (s6.5). The engine has
-        	 * already checked both ends are Up, which is the whole of
-        	 * s6.8.6's condition. */
-        	if (cfg->demand)
-        		bfd->flags |= BFD_F_DEMAND;
-        	bfd->detect_mult = cfg->mult;
-        	bfd->len         = BFD_MIN_LEN;
-        	if (cfg->auth_type) {
-        		__u32 alen = xdp_auth_len(cfg);
+	/* RFC 5883: send at 255, not at the TTL this arrived with. */
+	if (iph && iph->ttl != 255) {
+		/* The v4 checksum is recomputed below. */
+		iph->ttl = 255;
+	} else if (ip6 && ip6->hop_limit != 255) {
+		ip6->hop_limit = 255; /* no checksum in v6 */
+	}
 
-        		if (!alen)
-        			return XDP_DROP;
-        		bfd->flags |= BFD_F_AUTH;
-        		bfd->len    = (__u8)alen;
-        	}
-        	bfd->my_disc     = bpf_htonl(cfg->my_disc);
-        	bfd->your_disc   = bpf_htonl(cfg->your_disc);
-        	bfd->min_tx      = bpf_htonl(cfg->min_tx_us);
-        	bfd->min_rx      = bpf_htonl(cfg->min_rx_us);
-        	bfd->min_echo_rx = bpf_htonl(cfg->min_echo_rx_us);
+	__be16 in_dport = udp->dest;
 
-        	/* Sign what we just built, before the checksum covers it and
-        	 * before the frame is trimmed. A session whose digest cannot
-        	 * be produced sends nothing: a reply carrying the A bit and
-        	 * an empty section authenticates as garbage, and the peer
-        	 * would drop it anyway after doing the work. */
-        	if (cfg->auth_type &&
-        	    (!sc || !xdp_auth_build(ctx, iph ? BFD_OFF_V4 : BFD_OFF_V6,
-        	                            bfd, cfg, st, sc, &auth_sum)))
-        		return XDP_DROP;
+	/* Back to the arrival port, so multihop replies reach 4784. No UDP
+	 * checksum, legal in v4.
+	 */
+	udp->source = cfg->src_port ? bpf_htons(cfg->src_port) : bpf_htons(BFD_SRC_PORT);
+	udp->dest = in_dport;
+	udp->check = 0;
 
-        	/* Echo exactly a 24-byte control packet: a longer peer
-        	 * frame (auth section, trailer) must not go back out with
-        	 * trailing bytes. tot_len changes, so recompute the IP
-        	 * checksum; UDP csum is already 0. On adjust_tail failure
-        	 * drop: the frame is half-rewritten by now, and liveness
-        	 * was already refreshed above. */
-        	int want = (int)(sizeof(*eth) +
-        	                 (iph ? sizeof(*iph) : sizeof(*ip6)) +
-        	                 sizeof(*udp) + bfd->len);
-        	int excess = (int)((long)data_end - (long)data) - want;
+	/* P while our Poll is active, F answering the peer's P; never both. */
+	bfd->vers_diag = (1 << 5) | (cfg->diag & 0x1f);
+	bfd->flags = ((cfg->state & 0x3) << 6) | send_final;
+	if (!send_final && cfg->poll && st->final_seq != cfg->poll_seq)
+		bfd->flags |= BFD_F_POLL;
+	/* D may go with P or F (s6.5); the engine checked both ends are Up. */
+	if (cfg->demand)
+		bfd->flags |= BFD_F_DEMAND;
+	bfd->detect_mult = cfg->mult;
+	bfd->len = BFD_MIN_LEN;
+	if (cfg->auth_type) {
+		__u32 alen = xdp_auth_len(cfg);
 
-        	/* Unconditional, not only when there is a tail to trim.
-        	 *
-        	 * The received envelope is whatever the sender wrote, and
-        	 * nothing upstream requires it to describe the frame. A 66
-        	 * byte frame claiming a UDP length of 208 has no excess to
-        	 * trim, so the rewrite was skipped and the reply went back
-        	 * out still claiming 208 - a frame this engine built, with a
-        	 * length its own receive path would refuse.
-        	 *
-        	 * What goes out is ours: a 24 byte control packet in an
-        	 * envelope that says so. */
-        	udp->len = bpf_htons(sizeof(*udp) + bfd->len);
-        	if (iph) {
-        		iph->tot_len = bpf_htons(sizeof(*iph) +
-        		                         sizeof(*udp) + bfd->len);
-        		iph->check = 0;
-        		__u32 csum = 0;
-        		__u16 *w = (__u16 *)iph;
-        		for (int i = 0; i < 10; i++)
-        			csum += w[i];
-        		csum = (csum & 0xffff) + (csum >> 16);
-        		csum = (csum & 0xffff) + (csum >> 16);
-        		iph->check = ~csum & 0xffff;
-        	} else if (ip6) {
-        		ip6->payload_len = bpf_htons(sizeof(*udp) + bfd->len);
-        	}
+		if (!alen)
+			return XDP_DROP;
+		bfd->flags |= BFD_F_AUTH;
+		bfd->len = (__u8)alen;
+	}
+	bfd->my_disc = bpf_htonl(cfg->my_disc);
+	bfd->your_disc = bpf_htonl(cfg->your_disc);
+	bfd->min_tx = bpf_htonl(cfg->min_tx_us);
+	bfd->min_rx = bpf_htonl(cfg->min_rx_us);
+	bfd->min_echo_rx = bpf_htonl(cfg->min_echo_rx_us);
 
-        	/* v6: mandatory UDP checksum over pseudo-header + UDP header
-        	 * + the 24-byte payload. Swaps are csum-neutral but the
-        	 * payload rewrite is not, so recompute in full. Fixed 34-word
-        	 * fold, pointers bounds-proven above. Runs before adjust_tail
-        	 * (which invalidates pointers); the fold never reads past
-        	 * payload byte 24, which survives the trim. */
-        	if (ip6) {
-        		__u32 csum = 0;
-        		__u16 *w = (__u16 *)&ip6->saddr;
-        		for (int i = 0; i < 16; i++)   /* saddr + daddr */
-        			csum += w[i];
-        		csum += udp->len;              /* pseudo length */
-        		csum += bpf_htons(IPPROTO_UDP);
-        		w = (__u16 *)udp;              /* UDP hdr, check == 0 */
-        		for (int i = 0; i < 4; i++)
-        			csum += w[i];
-        		/* The payload. With authentication its length varies
-        		 * and it may even be an odd number of bytes, so the sum
-        		 * comes back from the builder, which had it assembled
-        		 * in a fixed-size block already. */
-        		if (cfg->auth_type) {
-        			csum += auth_sum;
-        		} else {
-        			w = (__u16 *)bfd;
-        			for (int i = 0; i < BFD_MIN_LEN / 2; i++)
-        				csum += w[i];
-        		}
-        		csum = (csum & 0xffff) + (csum >> 16);
-        		csum = (csum & 0xffff) + (csum >> 16);
-        		__u16 c = ~csum & 0xffff;
-        		udp->check = c ? c : 0xffff;   /* RFC 768: 0 -> 0xffff */
-        	}
+	/* Sign before checksumming and trimming; without a digest send nothing. */
+	if (cfg->auth_type &&
+	    (!sc || !xdp_auth_build(ctx, iph ? BFD_OFF_V4 : BFD_OFF_V6, bfd, cfg, sc, &auth_sum)))
+		return XDP_DROP;
 
-        	if (excess > 0 && bpf_xdp_adjust_tail(ctx, -excess))
-        		return XDP_DROP;
+	/* On adjust_tail failure drop: the frame is half-rewritten. */
+	int want = (int)(sizeof(*eth) + (iph ? sizeof(*iph) : sizeof(*ip6)) + sizeof(*udp) +
+			 bfd->len);
+	int excess = (int)((long)data_end - (long)data) - want;
 
-        	st->tx_pkts++;
-        	return XDP_TX;
+	/* The received envelope may not describe the frame. */
+	udp->len = bpf_htons(sizeof(*udp) + bfd->len);
+	if (iph) {
+		iph->tot_len = bpf_htons(sizeof(*iph) + sizeof(*udp) + bfd->len);
+		iph->check = 0;
+		__u32 csum = 0;
+		__u16 *w = (__u16 *)iph;
+
+		for (int i = 0; i < 10; i++)
+			csum += w[i];
+		csum = (csum & 0xffff) + (csum >> 16);
+		csum = (csum & 0xffff) + (csum >> 16);
+		iph->check = ~csum & 0xffff;
+	} else if (ip6) {
+		ip6->payload_len = bpf_htons(sizeof(*udp) + bfd->len);
+	}
+
+	/* v6: the UDP checksum is mandatory. The fold reads nothing the trim removes. */
+	if (ip6) {
+		__u32 csum = 0;
+		__u16 *w = (__u16 *)&ip6->saddr;
+
+		for (int i = 0; i < 16; i++) /* saddr + daddr */
+			csum += w[i];
+		csum += udp->len; /* pseudo length */
+		csum += bpf_htons(IPPROTO_UDP);
+		w = (__u16 *)udp; /* UDP hdr, check == 0 */
+		for (int i = 0; i < 4; i++)
+			csum += w[i];
+		/* With auth the payload length varies; xdp_auth_build returns its sum. */
+		if (cfg->auth_type) {
+			csum += auth_sum;
+		} else {
+			w = (__u16 *)bfd;
+			for (int i = 0; i < BFD_MIN_LEN / 2; i++)
+				csum += w[i];
+		}
+		csum = (csum & 0xffff) + (csum >> 16);
+		csum = (csum & 0xffff) + (csum >> 16);
+		__u16 c = ~csum & 0xffff;
+
+		udp->check = c ? c : 0xffff; /* RFC 768: 0 -> 0xffff */
+	}
+
+	if (excess > 0 && bpf_xdp_adjust_tail(ctx, -excess))
+		return XDP_DROP;
+
+	st->tx_pkts++;
+	return XDP_TX;
 }
 
 #endif /* BFD_XDP_TX_H */

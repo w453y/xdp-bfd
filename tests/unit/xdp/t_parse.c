@@ -1,18 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Part of the xdp_run test, split by subject.
- * Compiled as one unit via tests/unit/xdp_run.c, which carries the
- * includes, the shared globals and main; include order there is the
- * dependency order (harness first, sweep last). */
+/* Part of xdp_run.c. */
 
-/* Deferred GTSM (087c9af). A packet below 255 is acceptable only if it
- * names a configured session whose min_ttl admits it. Four arms: above
- * the minimum, exactly at it (pttl < mt is strict), below it, and the
- * null-cfg arm that must drop even with the multihop flag set - which is
- * why the gate sits ABOVE the promiscuous PASS rather than after it.
- *
- * No leak case is written: the session key is address-only, so a
- * single-hop and a multihop session on one pair are the same tx_config
- * entry and there is no per-port state to leak. */
+/* Deferred GTSM: below 255 only for a configured session whose min_ttl admits it. */
 static void case_deferred_gtsm(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -23,39 +12,29 @@ static void case_deferred_gtsm(void)
 	arm_session_ttl(32);
 
 	build_v4(&f, 64, BFD_PORT_MHOP, &p, 0);
-	expect("deferred-gtsm-low-ttl-accepted", run_frame(&f, NULL, NULL),
-	       XDP_TX);
+	expect("deferred-gtsm-low-ttl-accepted", run_frame(&f, NULL, NULL), XDP_TX);
 
 	build_v4(&f, 32, BFD_PORT_MHOP, &p, 0);
-	expect("deferred-gtsm-exact-min-accepted", run_frame(&f, NULL, NULL),
-	       XDP_TX);
+	expect("deferred-gtsm-exact-min-accepted", run_frame(&f, NULL, NULL), XDP_TX);
 
 	build_v4(&f, 16, BFD_PORT_MHOP, &p, 0);
-	expect("deferred-gtsm-below-min-drops", run_frame(&f, NULL, NULL),
-	       XDP_DROP);
+	expect("deferred-gtsm-below-min-drops", run_frame(&f, NULL, NULL), XDP_DROP);
 
-	/* Nothing configured, multihop flag set: parse_l3 deferred the
-	 * verdict, so only the cfg check can catch this one. */
+	/* Deferred by parse_l3, so only the cfg check catches it. */
 	map_reset();
 	set_flags(FLAG_MHOP);
 	build_v4(&f, 64, BFD_PORT_MHOP, &p, 0);
-	expect("deferred-gtsm-unconfigured-drops", run_frame(&f, NULL, NULL),
-	       XDP_DROP);
+	expect("deferred-gtsm-unconfigured-drops", run_frame(&f, NULL, NULL), XDP_DROP);
 	map_reset();
 
-	/* Negative arm for the flag itself. With FLAG_MHOP clear, parse_l3
-	 * rejects a sub-255 packet before the deferred gate is reached, so
-	 * the first case's frame must DROP. Without this, a set_flags that
-	 * silently wrote nothing would leave both DROP arms vacuous. */
+	/* With FLAG_MHOP clear, parse_l3 drops it early; guards set_flags. */
 	map_reset();
 	set_flags(0);
 	arm_session_ttl(32);
 	build_v4(&f, 64, BFD_PORT_MHOP, &p, 0);
-	expect("deferred-gtsm-flag-clear-drops", run_frame(&f, NULL, NULL),
-	       XDP_DROP);
+	expect("deferred-gtsm-flag-clear-drops", run_frame(&f, NULL, NULL), XDP_DROP);
 }
 
-/* ---------- cases ---------- */
 
 /* Nothing to do with BFD. The program must not claim it. */
 static void case_not_bfd(void)
@@ -67,9 +46,7 @@ static void case_not_bfd(void)
 	expect("non-bfd-port-passes", run_frame(&f, NULL, NULL), XDP_PASS);
 }
 
-/* RFC 5881 s5: a single-hop control packet must arrive at TTL 255. The
- * reject must be XDP_DROP specifically, not XDP_PASS: a reject that
- * passes leaks the packet to the userspace socket. */
+/* RFC 5881 s5: TTL 255, dropped rather than passed to the socket. */
 static void case_gtsm_v4(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -79,10 +56,7 @@ static void case_gtsm_v4(void)
 	expect("gtsm-v4-low-ttl-drops", run_frame(&f, NULL, NULL), XDP_DROP);
 }
 
-/* v6 counterpart of case_gtsm_v4, plus the v6 arm of the deferred gate.
- * parse.h reads the multihop flag at two sites, one per family, and only
- * the v4 side had a case. The v6-only IPV6_MINHOPCOUNT defect the netns
- * rig found is the reason this asymmetry is worth closing. */
+/* v6 counterpart of case_gtsm_v4, plus the v6 arm of the deferred gate. */
 static void case_gtsm_v6(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -99,23 +73,22 @@ static void case_gtsm_v6(void)
 	expect("deferred-gtsm-v6-accepted", run_frame(&f, NULL, NULL), XDP_TX);
 
 	build_v6(&f, 16, BFD_PORT_MHOP, &p, 0);
-	expect("deferred-gtsm-v6-below-min-drops", run_frame(&f, NULL, NULL),
-	       XDP_DROP);
+	expect("deferred-gtsm-v6-below-min-drops", run_frame(&f, NULL, NULL), XDP_DROP);
 
 	/* Negative arm for the flag on the v6 path specifically. */
 	set_flags(0);
 	build_v6(&f, 64, BFD_PORT_MHOP, &p, 0);
-	expect("deferred-gtsm-v6-flag-clear-drops", run_frame(&f, NULL, NULL),
-	       XDP_DROP);
+	expect("deferred-gtsm-v6-flag-clear-drops", run_frame(&f, NULL, NULL), XDP_DROP);
 	map_reset_v6();
 	set_flags(0);
 }
 
+/* Kernel half of detect_vectors.h; the gap is synthesised through last_seen_ns. */
 static void dv_row_xdp(const struct dv_case *c)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
 	struct bfd_ctrl_pkt p = ctrl_up();
-	struct session_state st = {0};
+	struct session_state st = { 0 };
 	struct frame f;
 	int bad = 0;
 
@@ -128,14 +101,13 @@ static void dv_row_xdp(const struct dv_case *c)
 		if (!read_state(&k, &st))
 			return;
 		if (i == 0) {
-			/* No prior interval: the first packet must take the
-			 * !detect_iv_us branch, as in the engine driver. */
+			/* No prior interval, as in the engine driver. */
 			st.detect_iv_us = 0;
 			st.last_seen_ns = 0;
-			st.alive        = 0;
+			st.alive = 0;
 		} else {
 			st.last_seen_ns = mono_ns() - (__u64)s->gap_us * 1000ull;
-			st.alive        = 1;
+			st.alive = 1;
 		}
 		if (bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
 			printf("     state write failed: %s\n", strerror(errno));
@@ -150,8 +122,8 @@ static void dv_row_xdp(const struct dv_case *c)
 		if (!read_state(&k, &st))
 			return;
 		if (st.detect_iv_us != s->want_iv_us) {
-			printf("     step %d: detect_iv_us %u, want %u\n",
-			       i, st.detect_iv_us, s->want_iv_us);
+			printf("     step %d: detect_iv_us %u, want %u\n", i, st.detect_iv_us,
+			       s->want_iv_us);
 			bad = 1;
 		}
 	}
@@ -174,29 +146,26 @@ static void case_detect_vectors(void)
 	}
 }
 
-/* bfd_ctrl_check's reject conditions, one case each, both families.
- *
- * Two assertions per case, not one. The verdict must be XDP_DROP
- * specifically, since a reject that returns XDP_PASS leaks the packet to
- * the userspace socket. And rx_pkts must not move, because a rejected
- * packet must not refresh liveness - a peer sending garbage would
- * otherwise hold the session up forever. */
-static void case_malformed(int v6, const char *name,
-			   void (*mutate)(struct bfd_ctrl_pkt *), int want_v,
-			   int slot)
+/* One case per bfd_ctrl_check reject, both families: dropped, rx_pkts unmoved. */
+static void case_malformed(int v6, const char *name, void (*mutate)(struct bfd_ctrl_pkt *),
+			   int want_v, int slot)
 {
-	struct session_key k = v6 ? key_v6("fd00::2", "fd00::1")
-			  : key_v4("10.0.0.2", "10.0.0.1");
+	struct session_key k = v6 ? key_v6("fd00::2", "fd00::1") : key_v4("10.0.0.2", "10.0.0.1");
 	struct bfd_ctrl_pkt p = ctrl_up();
-	struct session_state after = {0};
+	struct session_state after = { 0 };
 	char full[80];
 	struct frame f;
 	int v, bad = 0;
 
 	snprintf(full, sizeof(full), "%s-%s", name, v6 ? "v6" : "v4");
 
-	if (v6) { map_reset_v6(); arm_session_v6(); }
-	else    { map_reset();    arm_session();    }
+	if (v6) {
+		map_reset_v6();
+		arm_session_v6();
+	} else {
+		map_reset();
+		arm_session();
+	}
 
 	mutate(&p);
 	if (v6)
@@ -212,8 +181,7 @@ static void case_malformed(int v6, const char *name,
 		bad = 1;
 	}
 	if (v != want_v) {
-		printf("     verdict %s, want %s\n",
-		       v < 0 ? "syscall-error" : verdict_str(v),
+		printf("     verdict %s, want %s\n", v < 0 ? "syscall-error" : verdict_str(v),
 		       verdict_str(want_v));
 		bad = 1;
 	}
@@ -227,65 +195,75 @@ static void case_malformed(int v6, const char *name,
 		printf("FAIL %-40s\n", full);
 		fails++;
 	} else {
-		printf("ok   %-40s %s, no state write\n", full,
-		       verdict_str(want_v));
+		printf("ok   %-40s %s, no state write\n", full, verdict_str(want_v));
 	}
 
-	if (v6) map_reset_v6(); else map_reset();
+	if (v6)
+		map_reset_v6();
+	else
+		map_reset();
 }
 
-static void mut_version(struct bfd_ctrl_pkt *p)  { p->vers_diag = (2 << 5); }
+static void mut_version(struct bfd_ctrl_pkt *p)
+{
+	p->vers_diag = (2 << 5);
+}
 
-static void mut_len_short(struct bfd_ctrl_pkt *p){ p->len = 23; }
+static void mut_len_short(struct bfd_ctrl_pkt *p)
+{
+	p->len = 23;
+}
 
-static void mut_len_long(struct bfd_ctrl_pkt *p) { p->len = 200; }
+static void mut_len_long(struct bfd_ctrl_pkt *p)
+{
+	p->len = 200;
+}
 
-static void mut_mult_zero(struct bfd_ctrl_pkt *p){ p->detect_mult = 0; }
+static void mut_mult_zero(struct bfd_ctrl_pkt *p)
+{
+	p->detect_mult = 0;
+}
 
-static void mut_disc_zero(struct bfd_ctrl_pkt *p){ p->my_disc = 0; }
+static void mut_disc_zero(struct bfd_ctrl_pkt *p)
+{
+	p->my_disc = 0;
+}
 
-static void mut_auth(struct bfd_ctrl_pkt *p)     { p->flags |= BFD_F_AUTH; }
+static void mut_auth(struct bfd_ctrl_pkt *p)
+{
+	p->flags |= BFD_F_AUTH;
+}
 
-static void mut_mp(struct bfd_ctrl_pkt *p)       { p->flags |= BFD_F_MP; }
+static void mut_mp(struct bfd_ctrl_pkt *p)
+{
+	p->flags |= BFD_F_MP;
+}
 
 static void run_malformed_matrix(void)
 {
 	for (int v6 = 0; v6 < 2; v6++) {
-		case_malformed(v6, "malformed-version",   mut_version, XDP_DROP,
-			       BFD_STAT_MALFORMED);
+		case_malformed(v6, "malformed-version", mut_version, XDP_DROP, BFD_STAT_MALFORMED);
 		case_malformed(v6, "malformed-len-short", mut_len_short, XDP_DROP,
 			       BFD_STAT_MALFORMED);
-		case_malformed(v6, "malformed-len-long",  mut_len_long, XDP_DROP,
+		case_malformed(v6, "malformed-len-long", mut_len_long, XDP_DROP,
 			       BFD_STAT_MALFORMED);
 		case_malformed(v6, "malformed-mult-zero", mut_mult_zero, XDP_DROP,
 			       BFD_STAT_MALFORMED);
 		case_malformed(v6, "malformed-disc-zero", mut_disc_zero, XDP_DROP,
 			       BFD_STAT_MALFORMED);
-		/* Still dropped, but attributed to the session rather than
-		 * to the flag: the A bit is only unacceptable because this
-		 * session has no key. RFC 5880 s6.8.6. */
-		case_malformed(v6, "auth-bit-no-key",     mut_auth, XDP_DROP,
-			       BFD_STAT_AUTH_MISMATCH);
-		case_malformed(v6, "unsupported-mp",      mut_mp, XDP_DROP,
-			       BFD_STAT_UNSUPPORTED_FLAGS);
+		/* Counted against the session, which has no key (RFC 5880 s6.8.6). */
+		case_malformed(v6, "auth-bit-no-key", mut_auth, XDP_DROP, BFD_STAT_AUTH_MISMATCH);
+		case_malformed(v6, "unsupported-mp", mut_mp, XDP_DROP, BFD_STAT_UNSUPPORTED_FLAGS);
 	}
 }
 
-/* Demux, RFC 5880 s6.8.6. your_disc must name our session, or be zero
- * with the peer in Down or AdminDown (it lost state, or is restarting).
- *
- * The reject must not refresh liveness: that is how spoofed traffic keeps
- * a dead session up, and it is why each arm checks rx_pkts as well as the
- * verdict. tests/netns_userspace.py found the userspace path falling back
- * to the address pair on any miss; these arms pin the kernel side of the
- * same rule. */
-static void case_demux(int v6, const char *name, uint32_t ydisc,
-		       uint8_t peer_state, int want_v, uint64_t want_rx)
+/* RFC 5880 s6.8.6: rejects must not refresh liveness, so each arm checks rx_pkts. */
+static void case_demux(int v6, const char *name, uint32_t ydisc, uint8_t peer_state, int want_v,
+		       uint64_t want_rx)
 {
-	struct session_key k = v6 ? key_v6("fd00::2", "fd00::1")
-			  : key_v4("10.0.0.2", "10.0.0.1");
+	struct session_key k = v6 ? key_v6("fd00::2", "fd00::1") : key_v4("10.0.0.2", "10.0.0.1");
 	struct bfd_ctrl_pkt p = ctrl_up();
-	struct session_state after = {0};
+	struct session_state after = { 0 };
 	unsigned long long before;
 	char full[80];
 	struct frame f;
@@ -293,8 +271,13 @@ static void case_demux(int v6, const char *name, uint32_t ydisc,
 
 	snprintf(full, sizeof(full), "%s-%s", name, v6 ? "v6" : "v4");
 
-	if (v6) { map_reset_v6(); arm_session_v6(); }
-	else    { map_reset();    arm_session();    }
+	if (v6) {
+		map_reset_v6();
+		arm_session_v6();
+	} else {
+		map_reset();
+		arm_session();
+	}
 
 	p.your_disc = htonl(ydisc);
 	p.flags = (peer_state << 6);
@@ -308,8 +291,7 @@ static void case_demux(int v6, const char *name, uint32_t ydisc,
 	v = run_frame(&f, NULL, NULL);
 
 	if (v != want_v) {
-		printf("     verdict %s, want %s\n",
-		       v < 0 ? "syscall-error" : verdict_str(v),
+		printf("     verdict %s, want %s\n", v < 0 ? "syscall-error" : verdict_str(v),
 		       verdict_str(want_v));
 		bad = 1;
 	}
@@ -318,8 +300,7 @@ static void case_demux(int v6, const char *name, uint32_t ydisc,
 		bad = 1;
 	}
 	if (read_state(&k, &after) && after.rx_pkts != want_rx) {
-		printf("     rx_pkts is %llu, want %llu\n",
-		       (unsigned long long)after.rx_pkts,
+		printf("     rx_pkts is %llu, want %llu\n", (unsigned long long)after.rx_pkts,
 		       (unsigned long long)want_rx);
 		bad = 1;
 	}
@@ -332,7 +313,68 @@ static void case_demux(int v6, const char *name, uint32_t ydisc,
 		       (unsigned long long)want_rx);
 	}
 
-	if (v6) map_reset_v6(); else map_reset();
+	if (v6)
+		map_reset_v6();
+	else
+		map_reset();
+}
+
+/* RFC 5880 s6.3: the peer's address moved, so the pair misses. A nonzero Your
+ * Discriminator naming one of ours goes up to userspace, which demuxes on it;
+ * anything else is still an unknown session.
+ */
+static void case_demux_moved(int v6, const char *name, uint32_t ydisc, int want_v)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	__u32 disc = 0x22222222;
+	__u8 one = 1;
+	unsigned long long before;
+	char full[64];
+	struct frame f;
+	int v;
+
+	snprintf(full, sizeof(full), "%s-%s", name, v6 ? "v6" : "v4");
+	if (v6) {
+		map_reset_v6();
+		arm_session_v6();
+	} else {
+		map_reset();
+		arm_session();
+	}
+	if (disc_fd >= 0)
+		bpf_map_update_elem(disc_fd, &disc, &one, BPF_ANY);
+
+	p.your_disc = htonl(ydisc);
+	if (v6) {
+		build_v6(&f, 255, BFD_PORT_1HOP, &p, 0);
+		inet_pton(AF_INET6, "fd00::9", f.b + sizeof(struct ethhdr) + 8);
+	} else {
+		struct iphdr *ip = (void *)(f.b + sizeof(struct ethhdr));
+
+		build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+		ip->saddr = inet_addr("10.0.0.9");
+		ip->check = 0;
+		ip->check = csum16(ip, sizeof(*ip), 0);
+	}
+
+	before = stat_get(BFD_STAT_UNKNOWN_SESSION);
+	v = run_frame(&f, NULL, NULL);
+	if (v != want_v) {
+		printf("FAIL %-40s verdict %s, want %s\n", full,
+		       v < 0 ? "syscall-error" : verdict_str(v), verdict_str(want_v));
+		fails++;
+	} else if (want_v == XDP_DROP && stat_get(BFD_STAT_UNKNOWN_SESSION) != before + 1) {
+		printf("FAIL %-40s unknown-session did not move\n", full);
+		fails++;
+	} else {
+		printf("ok   %-40s %s\n", full, verdict_str(want_v));
+	}
+	if (disc_fd >= 0)
+		bpf_map_delete_elem(disc_fd, &disc);
+	if (v6)
+		map_reset_v6();
+	else
+		map_reset();
 }
 
 static void run_demux_matrix(void)
@@ -340,30 +382,24 @@ static void run_demux_matrix(void)
 	for (int v6 = 0; v6 < 2; v6++) {
 		/* names our session: accepted, and bounced since it is Up */
 		case_demux(v6, "demux-match", 0x22222222, ST_UP, XDP_TX, 1);
-		/* names something else: rejected even though the address
-		 * pair is in the map - no fallback on a miss */
-		case_demux(v6, "demux-wrong-disc", 0x99999999, ST_UP,
-			   XDP_DROP, 0);
-		/* zero with the peer Down: the restart case, accepted.
-		 * No bounce: rx_clocked_tx needs rstate >= Init. */
+		/* no fallback to the address pair on a miss */
+		case_demux(v6, "demux-wrong-disc", 0x99999999, ST_UP, XDP_DROP, 0);
+		/* the restart case; no bounce below Init */
 		case_demux(v6, "demux-zero-peer-down", 0, ST_DOWN, XDP_PASS, 1);
 		/* zero with the peer Up: not the restart case, rejected */
 		case_demux(v6, "demux-zero-peer-up", 0, ST_UP, XDP_DROP, 0);
+		case_demux_moved(v6, "demux-moved-names-ours", 0x22222222, XDP_PASS);
+		case_demux_moved(v6, "demux-moved-names-none", 0x99999999, XDP_DROP);
+		case_demux_moved(v6, "demux-moved-zero", 0, XDP_DROP);
 	}
 }
 
-/* The other half of RFC 5880 s6.8.6, and the half that matters: a
- * session with a key must reject a packet that arrives without one.
- * Without this rule a peer downgrades the session simply by omitting
- * authentication, which is the whole attack authentication exists to
- * stop - and it would look like an ordinary healthy session.
- */
+/* RFC 5880 s6.8.6: omitting authentication must not downgrade a keyed session. */
 static void case_auth_required(int v6)
 {
-	struct session_key k = v6 ? key_v6("fd00::2", "fd00::1")
-				  : key_v4("10.0.0.2", "10.0.0.1");
+	struct session_key k = v6 ? key_v6("fd00::2", "fd00::1") : key_v4("10.0.0.2", "10.0.0.1");
 	struct bfd_ctrl_pkt p = ctrl_up();
-	struct tx_cfg cfg = {0};
+	struct tx_cfg cfg = { 0 };
 	struct frame f;
 	unsigned long long before;
 	const char *name = v6 ? "auth-required-v6" : "auth-required-v4";
@@ -383,7 +419,7 @@ static void case_auth_required(int v6)
 	}
 	cfg.auth_type = BFD_AUTH_KEYED_SHA1;
 	cfg.auth_present = 1;
-	bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY);
+	cfg_put(cfg_fd, &k, &cfg);
 
 	before = stat_get(BFD_STAT_AUTH_MISMATCH);
 	if (v6)
@@ -393,8 +429,7 @@ static void case_auth_required(int v6)
 	v = run_frame(&f, NULL, NULL);
 
 	if (v != XDP_DROP) {
-		printf("     verdict %s, want DROP\n",
-		       v < 0 ? "syscall-error" : verdict_str(v));
+		printf("     verdict %s, want DROP\n", v < 0 ? "syscall-error" : verdict_str(v));
 		printf("FAIL %-40s\n", name);
 		fails++;
 	} else if (stat_get(BFD_STAT_AUTH_MISMATCH) != before + 1) {
@@ -407,22 +442,13 @@ static void case_auth_required(int v6)
 	map_reset();
 }
 
-/* IPv4 fragmentation.
- *
- * The rule in parse.h is narrower than "drop fragments": only a FIRST
- * fragment (offset 0, MF set) aimed at a BFD port is dropped. A non-first
- * fragment PASSes, because at that point the bytes where the UDP header
- * would be are payload, so the port comparison would be meaningless - the
- * offset is checked first for exactly that reason.
- *
- * IPv6 needs no equivalent: a fragment header makes nexthdr != UDP and the
- * frame falls out of dispatch before any of this. */
-static void case_frag(const char *name, uint16_t frag_off, uint16_t dport,
-		      int want_v, uint64_t want_rx)
+/* Only a first fragment to a BFD port is dropped; later ones have no UDP header. */
+static void case_frag(const char *name, uint16_t frag_off, uint16_t dport, int want_v,
+		      uint64_t want_rx)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
 	struct bfd_ctrl_pkt p = ctrl_up();
-	struct session_state after = {0};
+	struct session_state after = { 0 };
 	unsigned long long before;
 	struct frame f;
 	int v, bad = 0;
@@ -432,6 +458,7 @@ static void case_frag(const char *name, uint16_t frag_off, uint16_t dport,
 	build_v4(&f, 255, dport, &p, 0);
 
 	struct iphdr *ip = (void *)(f.b + sizeof(struct ethhdr));
+
 	ip->frag_off = htons(frag_off);
 	ip->check = 0;
 	ip->check = csum16(ip, sizeof(*ip), 0);
@@ -440,8 +467,7 @@ static void case_frag(const char *name, uint16_t frag_off, uint16_t dport,
 	v = run_frame(&f, NULL, NULL);
 
 	if (v != want_v) {
-		printf("     verdict %s, want %s\n",
-		       v < 0 ? "syscall-error" : verdict_str(v),
+		printf("     verdict %s, want %s\n", v < 0 ? "syscall-error" : verdict_str(v),
 		       verdict_str(want_v));
 		bad = 1;
 	}
@@ -450,8 +476,7 @@ static void case_frag(const char *name, uint16_t frag_off, uint16_t dport,
 		bad = 1;
 	}
 	if (read_state(&k, &after) && after.rx_pkts != want_rx) {
-		printf("     rx_pkts is %llu, want %llu\n",
-		       (unsigned long long)after.rx_pkts,
+		printf("     rx_pkts is %llu, want %llu\n", (unsigned long long)after.rx_pkts,
 		       (unsigned long long)want_rx);
 		bad = 1;
 	}
@@ -478,24 +503,7 @@ static void run_frag_matrix(void)
 	case_frag("frag-df-not-a-fragment", 0x4000, BFD_PORT_1HOP, XDP_TX, 1);
 }
 
-/* An envelope that does not describe the frame.
- *
- * bfd_ctrl_check takes the payload length from udp->len, which is whatever
- * the sender wrote, and nothing compared it against what actually arrived.
- * A 66 byte frame claiming a UDP length of 208 was accepted: no overread,
- * because every field read afterwards is inside the 24 bytes already
- * bounds-checked, but it refreshed liveness and could acknowledge a Poll
- * on a packet that is not what it says it is.
- *
- * Worse on the way out. The bounce trimmed and rewrote the lengths only
- * when there was a tail to trim, so a frame with nothing spare went back
- * out still claiming 208 - built by this engine, with a length its own
- * receive path would now refuse.
- *
- * MALFORMED, and now dropped, like any broken BFD
- * header on ports only our socket consumes. It still must not refresh
- * liveness, and must not leave on the wire under our name.
- */
+/* Dropped as malformed, without refreshing liveness. */
 static void case_bad_envelope(const char *name, int which)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
@@ -513,9 +521,9 @@ static void case_bad_envelope(const char *name, int which)
 	struct udphdr *udp = (void *)(ip + 1);
 
 	if (which == 0)
-		udp->len = htons(208);          /* more UDP than arrived */
+		udp->len = htons(208); /* more UDP than arrived */
 	else
-		ip->tot_len = htons(400);       /* more IP than arrived */
+		ip->tot_len = htons(400); /* more IP than arrived */
 
 	ip->check = 0;
 	ip->check = csum16(ip, sizeof(*ip), 0);
@@ -524,8 +532,7 @@ static void case_bad_envelope(const char *name, int which)
 	v = run_frame(&f, NULL, NULL);
 
 	if (v != XDP_DROP) {
-		printf("     verdict %s, want DROP\n",
-		       v < 0 ? "syscall-error" : verdict_str(v));
+		printf("     verdict %s, want DROP\n", v < 0 ? "syscall-error" : verdict_str(v));
 		bad = 1;
 	}
 	if (stat_get(BFD_STAT_MALFORMED) != before + 1) {
@@ -547,24 +554,8 @@ static void case_bad_envelope(const char *name, int which)
 	map_reset();
 }
 
-/* IP options.
- *
- * A BFD control packet never carries them, and with them the UDP header is
- * at an offset the fixed-offset reads in the parser would get wrong, so one
- * aimed at a BFD port is dropped rather than passed: passing it would skip
- * GTSM and demux and leak it to the userspace socket unvalidated.
- *
- * The rule is about BFD, so it is gated on the port like every other rule
- * here. An optioned packet going anywhere else is not ours and reaches the
- * stack untouched, which the other-port arm pins.
- *
- * The frame is built properly, with the options actually present between
- * the IP header and the UDP header rather than declared in `ihl` and not
- * there. The earlier version of this case set `ihl` alone, which the parser
- * could not have distinguished from a lie and which no real sender emits.
- */
-static void case_ip_options(const char *name, uint16_t dport, int want,
-			    int want_counter)
+/* Dropped for a BFD port, passed otherwise. */
+static void case_ip_options(const char *name, uint16_t dport, int want, int want_counter)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
 	unsigned long long before;
@@ -580,10 +571,7 @@ static void case_ip_options(const char *name, uint16_t dport, int want,
 	unsigned char *opt = (unsigned char *)(ip + 1);
 	unsigned int moved = sizeof(struct udphdr) + sizeof(p);
 
-	/* Open four bytes after the IP header and fill them with a real
-	 * option: NOP, NOP, NOP, End of Option List. Everything after
-	 * shifts, which is what makes this an optioned packet rather than
-	 * a claim of one. */
+	/* NOP, NOP, NOP, EOL; everything after shifts. */
 	memmove(opt + 4, opt, moved);
 	opt[0] = 1;
 	opt[1] = 1;
@@ -600,8 +588,7 @@ static void case_ip_options(const char *name, uint16_t dport, int want,
 	v = run_frame(&f, NULL, NULL);
 
 	if (v != want) {
-		printf("     verdict %s, want %s\n",
-		       v < 0 ? "syscall-error" : verdict_str(v),
+		printf("     verdict %s, want %s\n", v < 0 ? "syscall-error" : verdict_str(v),
 		       verdict_str(want));
 		bad = 1;
 	}
@@ -620,14 +607,7 @@ static void case_ip_options(const char *name, uint16_t dport, int want,
 	map_reset();
 }
 
-/* An `ihl` that claims options the frame does not carry.
- *
- * The parser reads the port where the header says the payload starts, and
- * so does the stack, so both look at the same wrong bytes and neither
- * delivers it to a BFD socket. Passing it is therefore not a bypass, and
- * dropping it would mean dropping on a declared length alone, which is how
- * unrelated traffic got caught before.
- */
+/* Passed: the parser and the stack read the same wrong bytes. */
 static void case_ip_options_lying(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -640,7 +620,7 @@ static void case_ip_options_lying(void)
 
 	struct iphdr *ip = (void *)(f.b + sizeof(struct ethhdr));
 
-	ip->ihl = 6;   /* the UDP header is still at twenty bytes */
+	ip->ihl = 6; /* the UDP header is still at twenty bytes */
 	ip->check = 0;
 	ip->check = csum16(ip, 6 * 4, 0);
 
@@ -649,12 +629,7 @@ static void case_ip_options_lying(void)
 	map_reset();
 }
 
-/* Traffic that is not BFD, at the TTLs real traffic arrives with.
- *
- * Every BFD rejection rule is about BFD. Before they were gated on the
- * port, a DNS reply at TTL 57 was dropped in the driver whenever no
- * multihop session existed, which is most deployments.
- */
+/* The BFD rules are gated on the port. */
 static void case_not_bfd_ttl(uint8_t ttl)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -683,11 +658,7 @@ static void case_not_bfd_v6_hlim(uint8_t hlim)
 	map_reset();
 }
 
-/* A well-formed control packet at TTL 255 for an
- * address pair with no tx_config entry is dropped in XDP and counted, not
- * passed to the socket. Our socket is the only consumer of the BFD ports,
- * so passing it is the widest flood path to recvmsg. The promiscuous flag
- * keeps XDP_PASS for the standalone observer, which does not count it. */
+/* Dropped and counted; the promiscuous flag passes it uncounted. */
 static void case_unknown_session(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -700,12 +671,11 @@ static void case_unknown_session(void)
 	expect("unknown-session-v4-drops", run_frame(&f, NULL, NULL), XDP_DROP);
 	u1 = stat_get(BFD_STAT_UNKNOWN_SESSION);
 	if (u1 - u0 != 1) {
-		printf("FAIL %-40s unknown-session+%llu, want +1\n",
-		       "unknown-session-v4-counter", u1 - u0);
+		printf("FAIL %-40s unknown-session+%llu, want +1\n", "unknown-session-v4-counter",
+		       u1 - u0);
 		fails++;
 	} else
-		printf("ok   %-40s unknown-session+1\n",
-		       "unknown-session-v4-counter");
+		printf("ok   %-40s unknown-session+1\n", "unknown-session-v4-counter");
 
 	map_reset_v6();
 	u0 = stat_get(BFD_STAT_UNKNOWN_SESSION);
@@ -713,20 +683,18 @@ static void case_unknown_session(void)
 	expect("unknown-session-v6-drops", run_frame(&f, NULL, NULL), XDP_DROP);
 	u1 = stat_get(BFD_STAT_UNKNOWN_SESSION);
 	if (u1 - u0 != 1) {
-		printf("FAIL %-40s unknown-session+%llu, want +1\n",
-		       "unknown-session-v6-counter", u1 - u0);
+		printf("FAIL %-40s unknown-session+%llu, want +1\n", "unknown-session-v6-counter",
+		       u1 - u0);
 		fails++;
 	} else
-		printf("ok   %-40s unknown-session+1\n",
-		       "unknown-session-v6-counter");
+		printf("ok   %-40s unknown-session+1\n", "unknown-session-v6-counter");
 
 	/* Promiscuous observer still passes it, and does not count it. */
 	map_reset();
 	set_flags(FLAG_PROMISC);
 	u0 = stat_get(BFD_STAT_UNKNOWN_SESSION);
 	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
-	expect("unknown-session-promisc-passes", run_frame(&f, NULL, NULL),
-	       XDP_PASS);
+	expect("unknown-session-promisc-passes", run_frame(&f, NULL, NULL), XDP_PASS);
 	u1 = stat_get(BFD_STAT_UNKNOWN_SESSION);
 	if (u1 - u0 != 0) {
 		printf("FAIL %-40s unknown-session+%llu under promisc, want +0\n",
@@ -738,9 +706,7 @@ static void case_unknown_session(void)
 	map_reset();
 }
 
-/* UDP behind one v6 extension header aimed at a
- * BFD port is dropped and counted; the same behind a non-BFD port, and a
- * plain ICMPv6 packet (neighbour discovery), still pass. */
+/* Dropped for a BFD port; a non-BFD port and ICMPv6 (ND) pass. */
 static void case_v6_exthdr(void)
 {
 	struct bfd_ctrl_pkt p = ctrl_up();
@@ -752,12 +718,10 @@ static void case_v6_exthdr(void)
 	/* hop-by-hop then UDP to a BFD port: dropped and counted. */
 	e0 = stat_get(BFD_STAT_V6_EXTHDR);
 	build_v6_exthdr(&f, IPPROTO_HOPOPTS, IPPROTO_UDP, BFD_PORT_1HOP, &p);
-	expect("v6-exthdr-hopopts-bfd-drops", run_frame(&f, NULL, NULL),
-	       XDP_DROP);
+	expect("v6-exthdr-hopopts-bfd-drops", run_frame(&f, NULL, NULL), XDP_DROP);
 	e1 = stat_get(BFD_STAT_V6_EXTHDR);
 	if (e1 - e0 != 1) {
-		printf("FAIL %-40s v6-exthdr+%llu, want +1\n",
-		       "v6-exthdr-counter", e1 - e0);
+		printf("FAIL %-40s v6-exthdr+%llu, want +1\n", "v6-exthdr-counter", e1 - e0);
 		fails++;
 	} else
 		printf("ok   %-40s v6-exthdr+1\n", "v6-exthdr-counter");
@@ -768,16 +732,35 @@ static void case_v6_exthdr(void)
 	expect("v6-exthdr-nonbfd-passes", run_frame(&f, NULL, NULL), XDP_PASS);
 	e1 = stat_get(BFD_STAT_V6_EXTHDR);
 	if (e1 != e0) {
-		printf("FAIL %-40s counted a non-BFD-port pass\n",
-		       "v6-exthdr-nonbfd-counter");
+		printf("FAIL %-40s counted a non-BFD-port pass\n", "v6-exthdr-nonbfd-counter");
 		fails++;
 	} else
 		printf("ok   %-40s not counted\n", "v6-exthdr-nonbfd-counter");
 
-	/* plain ICMPv6 (nexthdr 58, not an extension header): passes. This
-	 * is neighbour discovery, and this drop must never touch it. */
+	/* ICMPv6 is not an extension header: ND must pass. */
 	build_v6_exthdr(&f, IPPROTO_ICMPV6, 0, BFD_PORT_1HOP, &p);
 	expect("v6-icmp6-nd-passes", run_frame(&f, NULL, NULL), XDP_PASS);
 
 	map_reset_v6();
+}
+
+/* The port names the session type: a multihop session only on 4784, a
+ * single-hop one only on 3784, whatever the TTL.
+ */
+static void case_port_names_session_type(void)
+{
+	struct bfd_ctrl_pkt p = ctrl_up();
+	struct frame f;
+
+	map_reset();
+	set_flags(FLAG_MHOP);
+	arm_session_ttl(32);
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+	expect("mhop-session-on-3784-drops", run_frame(&f, NULL, NULL), XDP_DROP);
+
+	map_reset();
+	arm_session();
+	build_v4(&f, 255, BFD_PORT_MHOP, &p, 0);
+	expect("1hop-session-on-4784-drops", run_frame(&f, NULL, NULL), XDP_DROP);
+	map_reset();
 }

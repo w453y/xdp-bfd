@@ -1,22 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * xdp_run.c - run the XDP program in the kernel with no NIC and no testbed.
- *
- * BPF_PROG_TEST_RUN hands the program a synthetic frame and returns the
- * verdict plus the (possibly rewritten) frame, so it can be tested as
- * what it is: a pure function of (frame bytes, map state) to (verdict,
- * frame bytes, map state). tests/testbed/inject_matrix.py reaches the same
- * program only through the wire and cannot set map state directly.
- *
- * Needs root. Run from the repo root so the default object path resolves.
- *
- *     make test-xdp
+/* xdp_run.c - the XDP program under BPF_PROG_TEST_RUN: (frame, maps) to
+ * (verdict, frame, maps). Root, from the repo root.
  */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <pthread.h>
+#include <sched.h>
 #include <arpa/inet.h>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
@@ -36,10 +28,8 @@ static struct bpf_object *obj;
 static int prog_fd = -1;
 static int fails;
 
-/* ---------- frame building ---------- */
 
-/* Enough for an Ethernet + IPv4 + UDP + BFD control packet with room for
- * the trailing bytes some cases append. */
+/* Room for the trailing bytes some cases append. */
 #define FRAME_MAX 256
 
 struct frame {
@@ -52,18 +42,23 @@ static int cfg_fd = -1, sess_fd = -1, stats_fd = -1;
 static int tune_fd = -1, hb_fd = -1;
 static int flags_fd = -1;
 static int echo_peers_fd = -1, echo_disc_fd = -1;
+static int seq_fd = -1;
+static int disc_fd = -1;
 static struct bpf_object *sweep_obj;
 static int sweep_prog_fd = -1, sweep_sess_fd = -1, sweep_cfg_fd = -1;
 static int hmac_prog_fd = -1, hmac_map_fd = -1;
-#define FLAG_PROMISC	1u
-#define FLAG_MHOP	2u
+#define FLAG_PROMISC 1u
+#define FLAG_MHOP    2u
+/* Varied to show the replay window uses the packet's Detect Mult. */
 static __u8 arm_local_mult = 3;
+/* Second key in the accept set, as a rollover leaves; 0 means none. */
 static __u8 arm_extra_keyid;
 static const char *arm_extra_key = "";
 
 #include "xdp/harness.c"
 #include "xdp/t_parse.c"
 #include "xdp/t_tx.c"
+#include "xdp/t_race.c"
 #include "xdp/t_echo.c"
 #include "xdp/t_auth.c"
 #include "xdp/t_sweep.c"
@@ -79,15 +74,15 @@ int main(void)
 		return 1;
 	}
 
-	struct bpf_program *pr =
-		bpf_object__find_program_by_name(obj, "bfd_observer");
+	struct bpf_program *pr = bpf_object__find_program_by_name(obj, "bfd_observer");
+
 	if (!pr) {
 		fprintf(stderr, "bfd_observer not found in %s\n", path);
 		return 1;
 	}
 	prog_fd = bpf_program__fd(pr);
 
-	cfg_fd  = bpf_object__find_map_fd_by_name(obj, "tx_config");
+	cfg_fd = bpf_object__find_map_fd_by_name(obj, "tx_config");
 	sess_fd = bpf_object__find_map_fd_by_name(obj, "bfd_sessions");
 	stats_fd = bpf_object__find_map_fd_by_name(obj, "bfd_stats");
 	tune_fd = bpf_object__find_map_fd_by_name(obj, "tunables");
@@ -95,6 +90,8 @@ int main(void)
 	flags_fd = bpf_object__find_map_fd_by_name(obj, "prog_flags");
 	echo_peers_fd = bpf_object__find_map_fd_by_name(obj, "echo_peers");
 	echo_disc_fd = bpf_object__find_map_fd_by_name(obj, "echo_disc");
+	seq_fd = bpf_object__find_map_fd_by_name(obj, "auth_seq");
+	disc_fd = bpf_object__find_map_fd_by_name(obj, "our_discs");
 	if (cfg_fd < 0 || sess_fd < 0) {
 		fprintf(stderr, "maps not found in %s\n", path);
 		return 1;
@@ -102,21 +99,17 @@ int main(void)
 
 	sweep_obj = bpf_object__open_file("tests/unit/bfd_xdp_test.o", NULL);
 	if (sweep_obj && !bpf_object__load(sweep_obj)) {
-		struct bpf_program *sp =
-			bpf_object__find_program_by_name(sweep_obj, "sweep_once");
+		struct bpf_program *sp = bpf_object__find_program_by_name(sweep_obj, "sweep_once");
 
 		if (sp) {
 			sweep_prog_fd = bpf_program__fd(sp);
-			sweep_sess_fd = bpf_object__find_map_fd_by_name(sweep_obj,
-								"bfd_sessions");
-			sweep_cfg_fd = bpf_object__find_map_fd_by_name(sweep_obj,
-							       "tx_config");
-			sp = bpf_object__find_program_by_name(sweep_obj,
-							      "hmac_once");
+			sweep_sess_fd = bpf_object__find_map_fd_by_name(sweep_obj, "bfd_sessions");
+			sweep_cfg_fd = bpf_object__find_map_fd_by_name(sweep_obj, "tx_config");
+			sp = bpf_object__find_program_by_name(sweep_obj, "hmac_once");
 			if (sp) {
 				hmac_prog_fd = bpf_program__fd(sp);
-				hmac_map_fd = bpf_object__find_map_fd_by_name(
-						sweep_obj, "hmac_scratch");
+				hmac_map_fd = bpf_object__find_map_fd_by_name(sweep_obj,
+									      "hmac_scratch");
 			}
 		}
 	} else {
@@ -128,11 +121,15 @@ int main(void)
 	case_detect_vectors();
 	case_gtsm_v6();
 	case_deferred_gtsm();
+	case_port_names_session_type();
 	case_unknown_session();
 	case_v6_exthdr();
 	case_auth_ratelimit();
+	case_auth_seq_shared();
+	case_auth_seq_by_slot();
 	case_bounce_v4();
 	case_bounce_v4_frame();
+	case_cfg_update_race();
 	case_bounce_v6_frame();
 	case_trim(0, 8);
 	case_trim(1, 8);

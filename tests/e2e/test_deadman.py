@@ -60,8 +60,11 @@ def run_arm(rootpath, deadman):
             # While A is stopped, so nothing recovers first.
             return only_session(NS_B, STATS_B)
         finally:
+            # sudo, with no tty, stops itself when its child stops; left
+            # stopped it never reaps the engine.
             for pid in pids:
-                sh("sudo kill -CONT %d" % pid, check=False)
+                ppid = sh("ps -o ppid= -p %d" % pid, check=False).strip()
+                sh("sudo kill -CONT %d %s" % (pid, ppid), check=False)
     finally:
         teardown()
 

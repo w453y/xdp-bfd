@@ -12,6 +12,100 @@
 
 struct session sessions[MAX_SESSIONS];
 
+/* Lookup caches over the table, one per key, WAYS entries per bucket holding
+ * slot + 1. A cache: every hit is checked against the session, and a miss
+ * falls back to the scan, so a stale or missing entry costs time, never an
+ * answer. sess_reindex keeps them warm.
+ */
+#define IX_BITS 10
+#define IX_WAYS 4
+#define IX_SIZE (1u << IX_BITS)
+
+enum { IX_LID, IX_WIRE, IX_ADDR, IX_N };
+
+static uint16_t ix[IX_N][IX_SIZE][IX_WAYS];
+
+static uint32_t ix_u32(uint32_t v)
+{
+	return (v * 0x9e3779b1u) >> (32 - IX_BITS);
+}
+
+static uint32_t ix_pair(const struct bfd_addr *peer, const struct bfd_addr *local)
+{
+	uint32_t h = 2166136261u;
+
+	for (int i = 0; i < 16; i++)
+		h = (h ^ peer->b[i]) * 16777619u;
+	for (int i = 0; i < 16; i++)
+		h = (h ^ local->b[i]) * 16777619u;
+	return ix_u32(h);
+}
+
+static int ix_match(int k, const struct session *s, uint32_t v, const struct bfd_addr *peer,
+		    const struct bfd_addr *local)
+{
+	if (!s->used)
+		return 0;
+	switch (k) {
+	case IX_LID:
+		return s->lid == v;
+	case IX_WIRE:
+		return s->wire_disc == v;
+	default:
+		return !memcmp(&s->peer, peer, 16) && !memcmp(&s->local, local, 16);
+	}
+}
+
+static void ix_put(int k, uint32_t h, const struct session *s)
+{
+	uint16_t *b = ix[k][h];
+	uint16_t slot = (uint16_t)(s - sessions + 1);
+	int free = -1;
+
+	for (int w = 0; w < IX_WAYS; w++) {
+		if (b[w] == slot)
+			return;
+		if (free < 0 && (!b[w] || !sessions[b[w] - 1].used))
+			free = w;
+	}
+	if (free < 0) {
+		/* Full of live entries: the oldest makes room. */
+		memmove(b, b + 1, (IX_WAYS - 1) * sizeof(*b));
+		free = IX_WAYS - 1;
+	}
+	b[free] = slot;
+}
+
+static struct session *ix_get(int k, uint32_t v, const struct bfd_addr *peer,
+			      const struct bfd_addr *local)
+{
+	uint32_t h = k == IX_ADDR ? ix_pair(peer, local) : ix_u32(v);
+
+	for (int w = 0; w < IX_WAYS; w++) {
+		uint16_t e = ix[k][h][w];
+
+		if (e && ix_match(k, &sessions[e - 1], v, peer, local))
+			return &sessions[e - 1];
+	}
+	for (int i = 0; i < MAX_SESSIONS; i++)
+		if (ix_match(k, &sessions[i], v, peer, local)) {
+			ix_put(k, h, &sessions[i]);
+			return &sessions[i];
+		}
+	return NULL;
+}
+
+void sess_reindex(const struct session *s)
+{
+	if (!s->used)
+		return;
+	if (s->lid)
+		ix_put(IX_LID, ix_u32(s->lid), s);
+	if (s->wire_disc)
+		ix_put(IX_WIRE, ix_u32(s->wire_disc), s);
+	ix_put(IX_ADDR, ix_pair(&s->peer, &s->local), s);
+}
+
 struct session *sess_alloc(void)
 {
 	for (int i = 0; i < MAX_SESSIONS; i++)
@@ -25,22 +119,12 @@ struct session *sess_alloc(void)
 
 struct session *sess_by_lid(uint32_t lid)
 {
-	if (!lid)
-		return NULL;
-	for (int i = 0; i < MAX_SESSIONS; i++)
-		if (sessions[i].used && sessions[i].lid == lid)
-			return &sessions[i];
-	return NULL;
+	return lid ? ix_get(IX_LID, lid, NULL, NULL) : NULL;
 }
 
 struct session *sess_by_wire(uint32_t disc)
 {
-	if (!disc)
-		return NULL;
-	for (int i = 0; i < MAX_SESSIONS; i++)
-		if (sessions[i].used && sessions[i].wire_disc == disc)
-			return &sessions[i];
-	return NULL;
+	return disc ? ix_get(IX_WIRE, disc, NULL, NULL) : NULL;
 }
 
 void sm_addrs(const struct bfddp_session_msg *sm, struct bfd_addr *l, struct bfd_addr *p,
@@ -67,20 +151,12 @@ struct session *sess_by_addr_pair_local(const struct bfddp_session_msg *sm)
 	int fam;
 
 	sm_addrs(sm, &l, &p, &fam);
-	for (int i = 0; i < MAX_SESSIONS; i++)
-		if (sessions[i].used && !memcmp(&sessions[i].local, &l, 16) &&
-		    !memcmp(&sessions[i].peer, &p, 16))
-			return &sessions[i];
-	return NULL;
+	return sess_by_addr(&p, &l);
 }
 
 struct session *sess_by_addr(const struct bfd_addr *peer, const struct bfd_addr *local)
 {
-	for (int i = 0; i < MAX_SESSIONS; i++)
-		if (sessions[i].used && !memcmp(&sessions[i].peer, peer, 16) &&
-		    !memcmp(&sessions[i].local, local, 16))
-			return &sessions[i];
-	return NULL;
+	return ix_get(IX_ADDR, 0, peer, local);
 }
 
 static void auth_note_boundary(int64_t at, int64_t now, int64_t *soonest)

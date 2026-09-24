@@ -28,6 +28,8 @@ int use_ktx;
 static struct session_key poll_keys[MAX_SESSIONS];
 static struct session_state poll_vals[MAX_SESSIONS];
 static __u32 poll_n;
+/* Each session's entry in the batch, + 1, so the pass is not quadratic. */
+static uint16_t poll_of[MAX_SESSIONS];
 static int poll_batch_unsupported;
 
 /* For the stats dump. */
@@ -92,6 +94,7 @@ void ktx_drain_events(void)
 void ktx_poll_all(void)
 {
 	poll_n = 0;
+	memset(poll_of, 0, sizeof(poll_of));
 	if (!use_ktx || sess_fd < 0)
 		return;
 
@@ -112,15 +115,23 @@ void ktx_poll_all(void)
 		return;
 	}
 	poll_n = count;
+	for (__u32 i = 0; i < poll_n; i++) {
+		struct session *s = sess_by_addr(&poll_keys[i].peer, &poll_keys[i].local);
+
+		if (s)
+			poll_of[s - sessions] = (uint16_t)(i + 1);
+	}
 }
 
+/* NULL until the program has seen the session. */
 static const struct session_state *poll_find(const struct session *s)
 {
-	for (__u32 i = 0; i < poll_n; i++)
-		if (!memcmp(&poll_keys[i].peer, &s->peer, sizeof(s->peer)) &&
-		    !memcmp(&poll_keys[i].local, &s->local, sizeof(s->local)))
-			return &poll_vals[i];
-	return NULL;
+	uint16_t e = poll_of[s - sessions];
+
+	if (!e || memcmp(&poll_keys[e - 1].peer, &s->peer, sizeof(s->peer)) ||
+	    memcmp(&poll_keys[e - 1].local, &s->local, sizeof(s->local)))
+		return NULL;
+	return &poll_vals[e - 1];
 }
 
 /* prog_flags bit 1: a multihop session exists, so the parser defers the TTL

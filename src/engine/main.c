@@ -9,6 +9,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <poll.h>
+#include <sys/resource.h>
 #include <sys/timerfd.h>
 #include <sys/utsname.h>
 
@@ -106,6 +107,25 @@ static void auth_rollover_tick(void)
 		/* Refresh the accept set even if the send key did not move. */
 		ktx_mirror(s);
 	}
+}
+
+/* A TX socket per session besides the shared ones; the usual soft limit is
+ * 1024.
+ */
+static void nofile_raise(void)
+{
+	struct rlimit r;
+
+	if (getrlimit(RLIMIT_NOFILE, &r))
+		return;
+	if (r.rlim_cur < r.rlim_max) {
+		r.rlim_cur = r.rlim_max;
+		setrlimit(RLIMIT_NOFILE, &r);
+		getrlimit(RLIMIT_NOFILE, &r);
+	}
+	if (r.rlim_cur < MAX_SESSIONS + 64)
+		log_err("open files limited to %llu; sessions past that send from the fallback socket\n",
+			(unsigned long long)r.rlim_cur);
 }
 
 /* dp-hold orphans stay silent. */
@@ -254,6 +274,7 @@ int main(int argc, char **argv)
 	if (!opts_complete(&o, argv[0]))
 		return 1;
 
+	nofile_raise();
 	if (rx_open_all() || tick_open(o.tick_us))
 		return 1;
 	tx_open_fallback();

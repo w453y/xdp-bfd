@@ -10,10 +10,10 @@
 #define BFD_PORT_MHOP 4784 /* RFC 5883 multihop */
 #define BFD_ECHO_PORT 3785
 /* Source port = base + slot, up to 65535, away from bfdd's sockets from 49152 up. */
-#define BFD_SRC_PORT	 65472
+#define BFD_SRC_PORT	 (65536 - BFD_MAX_SESSIONS)
 #define BFD_MIN_LEN	 24
 #define BFD_VERSION	 1
-#define BFD_MAX_SESSIONS 64
+#define BFD_MAX_SESSIONS 1024
 
 /* RFC 5880 s4.1 */
 #define BFD_F_POLL   0x20
@@ -263,7 +263,7 @@ struct tx_cfg {
 	/* the peer's silence is requested; the engine sees the remote state */
 	__u8 demand_hold;
 	__u8 mhop;	      /* 4784 (RFC 5883), else 3784 */
-	__u8 slot;	      /* the session's slot, indexing auth_seq */
+	__u16 slot;	      /* the session's slot, indexing auth_seq */
 	__u32 poll_seq;	      /* acked through session_state.final_seq */
 	__u32 echo_iv_us;     /* echo interval; 0 = echo off */
 	__u32 min_echo_rx_us; /* 0 unless echo is on */

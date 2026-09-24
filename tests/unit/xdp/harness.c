@@ -250,6 +250,13 @@ static struct session_key key_v4(const char *peer, const char *local)
 	return k;
 }
 
+/* As ktx_mirror writes it: in place, with the key the program checks. */
+static int cfg_put(int fd, const struct session_key *k, struct tx_cfg *cfg)
+{
+	cfg->key = *k;
+	return bpf_map_update_elem(fd, k, cfg, BPF_F_LOCK);
+}
+
 /* FLAG_PROMISC, FLAG_MHOP; map_reset clears them. */
 
 static void set_flags(__u32 v)
@@ -294,8 +301,7 @@ static void arm_session(void)
 
 	st.remote_state = ST_UP;
 
-	if (bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY) ||
-	    bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
+	if (cfg_put(cfg_fd, &k, &cfg) || bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
 		fprintf(stderr, "  map update failed: %s\n", strerror(errno));
 		fails++;
 	}
@@ -320,8 +326,7 @@ static void arm_session_rx(__u32 min_rx_us)
 	st.remote_state = ST_UP;
 	st.alive = 1;
 
-	if (bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY) ||
-	    bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
+	if (cfg_put(cfg_fd, &k, &cfg) || bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
 		fprintf(stderr, "  detect map update failed: %s\n", strerror(errno));
 		fails++;
 	}
@@ -346,8 +351,7 @@ static void arm_session_ttl(__u32 min_ttl)
 
 	st.remote_state = ST_UP;
 
-	if (bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY) ||
-	    bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
+	if (cfg_put(cfg_fd, &k, &cfg) || bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
 		fprintf(stderr, "  mhop map update failed: %s\n", strerror(errno));
 		fails++;
 	}
@@ -389,8 +393,7 @@ static void arm_session_v6(void)
 
 	st.remote_state = ST_UP;
 
-	if (bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY) ||
-	    bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
+	if (cfg_put(cfg_fd, &k, &cfg) || bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
 		fprintf(stderr, "  v6 map update failed: %s\n", strerror(errno));
 		fails++;
 	}
@@ -415,8 +418,7 @@ static void arm_session_v6_ttl(__u32 min_ttl)
 
 	st.remote_state = ST_UP;
 
-	if (bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY) ||
-	    bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
+	if (cfg_put(cfg_fd, &k, &cfg) || bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
 		fprintf(stderr, "  v6 mhop map update failed: %s\n", strerror(errno));
 		fails++;
 	}
@@ -482,9 +484,13 @@ static int sweep_put(const struct session_key *k, const struct session_state *st
 		printf("     sweep session put failed: %s\n", strerror(errno));
 		return 0;
 	}
-	if (cfg && bpf_map_update_elem(sweep_cfg_fd, k, cfg, BPF_ANY)) {
-		printf("     sweep cfg put failed: %s\n", strerror(errno));
-		return 0;
+	if (cfg) {
+		struct tx_cfg c = *cfg;
+
+		if (cfg_put(sweep_cfg_fd, k, &c)) {
+			printf("     sweep cfg put failed: %s\n", strerror(errno));
+			return 0;
+		}
 	}
 	return 1;
 }
@@ -540,8 +546,7 @@ static void arm_session_auth(__u8 type, __u8 keyid, const char *key)
 	st.remote_state = ST_UP;
 	st.detect_mult = arm_local_mult;
 
-	if (bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY) ||
-	    bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
+	if (cfg_put(cfg_fd, &k, &cfg) || bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
 		fprintf(stderr, "  auth map update failed: %s\n", strerror(errno));
 		fails++;
 	}

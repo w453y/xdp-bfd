@@ -157,17 +157,16 @@ void ktx_mirror(struct session *s)
 
 	ktx_cfg_for(s, (int64_t)time(NULL), &c, &k);
 
-	if (!ktx_push_needed(s, &c, &k))
+	if (!ktx_push_needed(s, &c))
 		return;
 
 	/* Cache it only if the update landed. */
-	if (bpf_map_update_elem(ktx_cfg_fd, &k, &c, 0)) {
+	if (bpf_map_update_elem(ktx_cfg_fd, &k, &c, BPF_F_LOCK)) {
 		log_err("ktx: lid=%u tx_config push failed: %s\n", s->lid, strerror(errno));
 		s->pushed_valid = 0;
 		return;
 	}
 	s->pushed_cfg = c;
-	s->pushed_key = k;
 	s->pushed_valid = 1;
 }
 

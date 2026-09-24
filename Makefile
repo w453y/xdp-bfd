@@ -82,7 +82,7 @@ tests/unit/bfd_xdp_test.o: tests/unit/bfd_xdp_test.c $(SHARED_HDRS) \
 TEST_HDRS := $(wildcard tests/unit/*.h)
 
 tests/unit/xdp_run: tests/unit/xdp_run.c $(wildcard tests/unit/xdp/*.c) $(SHARED_HDRS) $(TEST_HDRS)
-	$(CC) $(CFLAGS) $(XDP_CFLAGS) -Itests/unit $< -o $@ -lbpf
+	$(CC) $(CFLAGS) $(XDP_CFLAGS) -Itests/unit $< -o $@ -lbpf -pthread
 
 # No root, no BPF.
 tests/unit/fsm_run: tests/unit/fsm_run.c $(wildcard tests/unit/fsm/*.c) \

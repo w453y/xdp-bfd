@@ -99,7 +99,7 @@ static void case_demand_bit_out(uint8_t cfg_demand, uint8_t in_flags, uint8_t wa
 		return;
 	}
 	cfg.demand = cfg_demand;
-	bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY);
+	cfg_put(cfg_fd, &k, &cfg);
 
 	p.flags |= in_flags;
 	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
@@ -346,8 +346,7 @@ static void case_poll_final(uint8_t in_flags, uint32_t cfg_poll, uint32_t poll_s
 
 	st.remote_state = ST_UP;
 
-	if (bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY) ||
-	    bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
+	if (cfg_put(cfg_fd, &k, &cfg) || bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY)) {
 		printf("FAIL %-40s map setup: %s\n", name, strerror(errno));
 		fails++;
 		return;

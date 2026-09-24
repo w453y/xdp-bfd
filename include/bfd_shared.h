@@ -4,6 +4,7 @@
 #define BFD_SHARED_H
 
 #include <linux/types.h>
+#include <linux/bpf.h>
 
 #define BFD_PORT_1HOP 3784
 #define BFD_PORT_MHOP 4784 /* RFC 5883 multihop */
@@ -240,8 +241,13 @@ struct xdp_auth_key {
 	__u8 kpad[64];
 };
 
-/* Written by the engine. */
+/* Written by the engine in place under lock (BPF_F_LOCK); the program copies
+ * it out under the same lock, so a reply never mixes two versions or sessions.
+ */
 struct tx_cfg {
+	struct bpf_spin_lock lock;
+	/* the entry's own key, checked after the copy */
+	struct session_key key;
 	__u32 enable; /* reply to each RX; Up only */
 	__u32 my_disc;
 	__u32 your_disc;

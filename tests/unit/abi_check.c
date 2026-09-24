@@ -98,33 +98,34 @@ _Static_assert(offsetof(struct xdp_auth_key, key_id) == 1, "offsetof(struct xdp_
 _Static_assert(offsetof(struct xdp_auth_key, keylen) == 2, "offsetof(struct xdp_auth_key, keylen)");
 _Static_assert(offsetof(struct xdp_auth_key, kpad) == 4, "offsetof(struct xdp_auth_key, kpad)");
 
-_Static_assert(sizeof(struct tx_cfg) == 1208, "sizeof(struct tx_cfg)");
-_Static_assert(offsetof(struct tx_cfg, enable) == 0, "offsetof(struct tx_cfg, enable)");
-_Static_assert(offsetof(struct tx_cfg, my_disc) == 4, "offsetof(struct tx_cfg, my_disc)");
-_Static_assert(offsetof(struct tx_cfg, your_disc) == 8, "offsetof(struct tx_cfg, your_disc)");
-_Static_assert(offsetof(struct tx_cfg, min_tx_us) == 12, "offsetof(struct tx_cfg, min_tx_us)");
-_Static_assert(offsetof(struct tx_cfg, min_rx_us) == 16, "offsetof(struct tx_cfg, min_rx_us)");
-_Static_assert(offsetof(struct tx_cfg, src_port) == 20, "offsetof(struct tx_cfg, src_port)");
-_Static_assert(offsetof(struct tx_cfg, state) == 22, "offsetof(struct tx_cfg, state)");
-_Static_assert(offsetof(struct tx_cfg, diag) == 23, "offsetof(struct tx_cfg, diag)");
-_Static_assert(offsetof(struct tx_cfg, mult) == 24, "offsetof(struct tx_cfg, mult)");
-_Static_assert(offsetof(struct tx_cfg, poll) == 25, "offsetof(struct tx_cfg, poll)");
-_Static_assert(offsetof(struct tx_cfg, demand) == 26, "offsetof(struct tx_cfg, demand)");
-_Static_assert(offsetof(struct tx_cfg, demand_hold) == 27, "offsetof(struct tx_cfg, demand_hold)");
-_Static_assert(offsetof(struct tx_cfg, mhop) == 28, "offsetof(struct tx_cfg, mhop)");
-_Static_assert(offsetof(struct tx_cfg, poll_seq) == 32, "offsetof(struct tx_cfg, poll_seq)");
-_Static_assert(offsetof(struct tx_cfg, echo_iv_us) == 36, "offsetof(struct tx_cfg, echo_iv_us)");
-_Static_assert(offsetof(struct tx_cfg, min_echo_rx_us) == 40,
+_Static_assert(sizeof(struct tx_cfg) == 1244, "sizeof(struct tx_cfg)");
+_Static_assert(offsetof(struct tx_cfg, key) == 4, "offsetof(struct tx_cfg, key)");
+_Static_assert(offsetof(struct tx_cfg, enable) == 36, "offsetof(struct tx_cfg, enable)");
+_Static_assert(offsetof(struct tx_cfg, my_disc) == 40, "offsetof(struct tx_cfg, my_disc)");
+_Static_assert(offsetof(struct tx_cfg, your_disc) == 44, "offsetof(struct tx_cfg, your_disc)");
+_Static_assert(offsetof(struct tx_cfg, min_tx_us) == 48, "offsetof(struct tx_cfg, min_tx_us)");
+_Static_assert(offsetof(struct tx_cfg, min_rx_us) == 52, "offsetof(struct tx_cfg, min_rx_us)");
+_Static_assert(offsetof(struct tx_cfg, src_port) == 56, "offsetof(struct tx_cfg, src_port)");
+_Static_assert(offsetof(struct tx_cfg, state) == 58, "offsetof(struct tx_cfg, state)");
+_Static_assert(offsetof(struct tx_cfg, diag) == 59, "offsetof(struct tx_cfg, diag)");
+_Static_assert(offsetof(struct tx_cfg, mult) == 60, "offsetof(struct tx_cfg, mult)");
+_Static_assert(offsetof(struct tx_cfg, poll) == 61, "offsetof(struct tx_cfg, poll)");
+_Static_assert(offsetof(struct tx_cfg, demand) == 62, "offsetof(struct tx_cfg, demand)");
+_Static_assert(offsetof(struct tx_cfg, demand_hold) == 63, "offsetof(struct tx_cfg, demand_hold)");
+_Static_assert(offsetof(struct tx_cfg, mhop) == 64, "offsetof(struct tx_cfg, mhop)");
+_Static_assert(offsetof(struct tx_cfg, poll_seq) == 68, "offsetof(struct tx_cfg, poll_seq)");
+_Static_assert(offsetof(struct tx_cfg, echo_iv_us) == 72, "offsetof(struct tx_cfg, echo_iv_us)");
+_Static_assert(offsetof(struct tx_cfg, min_echo_rx_us) == 76,
 	       "offsetof(struct tx_cfg, min_echo_rx_us)");
-_Static_assert(offsetof(struct tx_cfg, min_ttl) == 44, "offsetof(struct tx_cfg, min_ttl)");
-_Static_assert(offsetof(struct tx_cfg, auth_type) == 48, "offsetof(struct tx_cfg, auth_type)");
-_Static_assert(offsetof(struct tx_cfg, auth_keyid) == 49, "offsetof(struct tx_cfg, auth_keyid)");
-_Static_assert(offsetof(struct tx_cfg, auth_keylen) == 50, "offsetof(struct tx_cfg, auth_keylen)");
-_Static_assert(offsetof(struct tx_cfg, auth_present) == 51,
+_Static_assert(offsetof(struct tx_cfg, min_ttl) == 80, "offsetof(struct tx_cfg, min_ttl)");
+_Static_assert(offsetof(struct tx_cfg, auth_type) == 84, "offsetof(struct tx_cfg, auth_type)");
+_Static_assert(offsetof(struct tx_cfg, auth_keyid) == 85, "offsetof(struct tx_cfg, auth_keyid)");
+_Static_assert(offsetof(struct tx_cfg, auth_keylen) == 86, "offsetof(struct tx_cfg, auth_keylen)");
+_Static_assert(offsetof(struct tx_cfg, auth_present) == 87,
 	       "offsetof(struct tx_cfg, auth_present)");
-_Static_assert(offsetof(struct tx_cfg, auth_kpad) == 52, "offsetof(struct tx_cfg, auth_kpad)");
-_Static_assert(offsetof(struct tx_cfg, auth_nkeys) == 116, "offsetof(struct tx_cfg, auth_nkeys)");
-_Static_assert(offsetof(struct tx_cfg, auth_accept) == 120, "offsetof(struct tx_cfg, auth_accept)");
+_Static_assert(offsetof(struct tx_cfg, auth_kpad) == 88, "offsetof(struct tx_cfg, auth_kpad)");
+_Static_assert(offsetof(struct tx_cfg, auth_nkeys) == 152, "offsetof(struct tx_cfg, auth_nkeys)");
+_Static_assert(offsetof(struct tx_cfg, auth_accept) == 156, "offsetof(struct tx_cfg, auth_accept)");
 _Static_assert(sizeof(((struct tx_cfg *)0)->auth_kpad) == SHA1_BLOCK_LEN,
 	       "the mirrored key must be exactly one HMAC block");
 

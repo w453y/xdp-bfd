@@ -7,6 +7,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <pthread.h>
+#include <sched.h>
 #include <arpa/inet.h>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
@@ -55,6 +57,7 @@ static const char *arm_extra_key = "";
 #include "xdp/harness.c"
 #include "xdp/t_parse.c"
 #include "xdp/t_tx.c"
+#include "xdp/t_race.c"
 #include "xdp/t_echo.c"
 #include "xdp/t_auth.c"
 #include "xdp/t_sweep.c"
@@ -123,6 +126,7 @@ int main(void)
 	case_auth_seq_shared();
 	case_bounce_v4();
 	case_bounce_v4_frame();
+	case_cfg_update_race();
 	case_bounce_v6_frame();
 	case_trim(0, 8);
 	case_trim(1, 8);

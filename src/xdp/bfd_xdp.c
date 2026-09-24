@@ -23,6 +23,52 @@
 #include "echo.h"
 #include "tx.h"
 
+#define TX_CFG_HEAD  __builtin_offsetof(struct tx_cfg, key)
+#define TX_CFG_WORDS ((__builtin_offsetof(struct tx_cfg, auth_accept) - TX_CFG_HEAD) / 4)
+#define TX_KEY_WORDS (sizeof(struct xdp_auth_key) / 4)
+
+/* NULL if the key has no entry, or its entry was freed and reused meanwhile.
+ * Copies only the accept keys in use: all sixteen double a reply's cost.
+ */
+static __always_inline struct tx_cfg *tx_cfg_get(const struct session_key *k)
+{
+	struct tx_cfg *live = bpf_map_lookup_elem(&tx_config, k);
+	__u32 zero = 0;
+	struct tx_cfg *c;
+
+	if (!live)
+		return NULL;
+	c = bpf_map_lookup_elem(&tx_snap, &zero);
+	if (!c)
+		return NULL;
+
+	__u32 *dst = (__u32 *)((__u8 *)c + TX_CFG_HEAD);
+	const __u32 *src = (const __u32 *)((const __u8 *)live + TX_CFG_HEAD);
+	__u32 *kdst = (__u32 *)c->auth_accept;
+	const __u32 *ksrc = (const __u32 *)live->auth_accept;
+	__u32 n;
+
+	bpf_spin_lock(&live->lock);
+#pragma unroll
+	for (int i = 0; i < (int)TX_CFG_WORDS; i++)
+		dst[i] = src[i];
+	n = c->auth_nkeys;
+	if (n > BFD_AUTH_ACCEPT_MAX)
+		n = BFD_AUTH_ACCEPT_MAX;
+	/* The second bound is for the verifier. */
+	for (__u32 i = 0; i < n * TX_KEY_WORDS && i < BFD_AUTH_ACCEPT_MAX * TX_KEY_WORDS; i++)
+		kdst[i] = ksrc[i];
+	bpf_spin_unlock(&live->lock);
+
+	const __u32 *a = (const __u32 *)&c->key, *b = (const __u32 *)k;
+	__u32 diff = 0;
+
+#pragma unroll
+	for (int i = 0; i < (int)(sizeof(*k) / 4); i++)
+		diff |= a[i] ^ b[i];
+	return diff ? NULL : c;
+}
+
 SEC("xdp")
 int bfd_observer(struct xdp_md *ctx)
 {
@@ -98,7 +144,7 @@ int bfd_observer(struct xdp_md *ctx)
 	}
 
 	/* Before header validation: whether the A bit is allowed depends on the session. */
-	struct tx_cfg *cfg = bpf_map_lookup_elem(&tx_config, &c.key);
+	struct tx_cfg *cfg = tx_cfg_get(&c.key);
 
 	int hv = bfd_hdr_verdict(bfd, udp, cfg ? cfg->auth_present : 0);
 

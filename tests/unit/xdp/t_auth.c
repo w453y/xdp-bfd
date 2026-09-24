@@ -23,7 +23,7 @@ static void case_auth_present_without_send_key(void)
 	cfg.auth_keyid = 0;
 	cfg.auth_keylen = 0;
 	cfg.auth_present = 1;
-	bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY);
+	cfg_put(cfg_fd, &k, &cfg);
 
 	mism = stat_get(BFD_STAT_AUTH_MISMATCH);
 	build_sha1_auth(&f, "topsecret", 7, 100, BFD_AUTH_KEYED_SHA1);

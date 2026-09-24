@@ -59,4 +59,5 @@ void ktx_cfg_for(const struct session *s, int64_t now, struct tx_cfg *c, struct 
 
 	k->peer = s->peer;
 	k->local = s->local;
+	c->key = *k;
 }

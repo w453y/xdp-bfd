@@ -32,6 +32,20 @@ struct {
 	__type(value, struct tx_cfg);
 } tx_config SEC(".maps");
 
+/* The copy of tx_config one packet works from. Bytes, since a per-CPU value
+ * cannot hold a spin lock.
+ */
+struct tx_snap {
+	__u8 b[sizeof(struct tx_cfg)];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct tx_snap);
+} tx_snap SEC(".maps");
+
 /* Peers of echo-active sessions; the reflector returns only their echoes. */
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);

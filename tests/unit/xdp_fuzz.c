@@ -88,7 +88,8 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
 	cfg.state = ST_UP;
 	cfg.mult = 3;
 	cfg.min_ttl = 255;
-	if (bpf_map_update_elem(cfg_fd, &g_key, &cfg, BPF_ANY)) {
+	cfg.key = g_key;
+	if (bpf_map_update_elem(cfg_fd, &g_key, &cfg, BPF_F_LOCK)) {
 		fprintf(stderr, "cfg install failed\n");
 		exit(1);
 	}

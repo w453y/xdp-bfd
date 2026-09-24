@@ -89,8 +89,6 @@ struct session {
 	uint32_t applied_tx_us;
 	int pushed_valid;
 	struct tx_cfg pushed_cfg;
-	/* So an address move is noticed. */
-	struct session_key pushed_key;
 	uint64_t last_rx_us, next_tx_us;
 	uint64_t last_ktx_us;	     /* last fast-path reply; see fsm_tx */
 	uint64_t ktx_seen_us;	     /* last packet the kernel saw; 0 if never */
@@ -254,12 +252,10 @@ static inline int ktx_answers(const struct session *s)
 	       !zero_rx_tx_held(s) && ktx_pace_ok(s);
 }
 
-/* Compares the key too, since an address move leaves tx_cfg unchanged. */
-static inline int ktx_push_needed(const struct session *s, const struct tx_cfg *c,
-				  const struct session_key *k)
+/* tx_cfg carries its key, so an address move is a change too. */
+static inline int ktx_push_needed(const struct session *s, const struct tx_cfg *c)
 {
-	return !s->pushed_valid || memcmp(c, &s->pushed_cfg, sizeof(*c)) != 0 ||
-	       memcmp(k, &s->pushed_key, sizeof(*k)) != 0;
+	return !s->pushed_valid || memcmp(c, &s->pushed_cfg, sizeof(*c)) != 0;
 }
 
 extern struct session sessions[MAX_SESSIONS];

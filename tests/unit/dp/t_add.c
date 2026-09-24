@@ -130,9 +130,7 @@ static void case_add_without_auth(void)
 	report("add-without-auth", bad, "session up, unauthenticated");
 }
 
-/* An address move changes no tx_cfg field. ktx_mirror is stubbed, so the
- * predicate is tested directly.
- */
+/* ktx_mirror is stubbed, so the predicate is tested directly. */
 static void case_mirror_cache_tracks_key(void)
 {
 	struct session_key k1 = {}, k2 = {};
@@ -148,28 +146,30 @@ static void case_mirror_cache_tracks_key(void)
 	memcpy(&k2.peer.b[12], &a2, 4);
 
 	c.min_tx_us = 50000;
+	c.key = k1;
 
-	if (!ktx_push_needed(&s, &c, &k1)) {
+	if (!ktx_push_needed(&s, &c)) {
 		printf("     nothing pushed yet and it says no push needed\n");
 		bad = 1;
 	}
 
 	/* Stand in for a push that landed. */
 	s.pushed_cfg = c;
-	s.pushed_key = k1;
 	s.pushed_valid = 1;
 
-	if (ktx_push_needed(&s, &c, &k1)) {
+	if (ktx_push_needed(&s, &c)) {
 		printf("     same key and same value still wants a push\n");
 		bad = 1;
 	}
-	if (!ktx_push_needed(&s, &c, &k2)) {
+	c.key = k2;
+	if (!ktx_push_needed(&s, &c)) {
 		printf("     the address pair moved and it wants no push\n");
 		bad = 1;
 	}
 
+	c.key = k1;
 	c.min_tx_us = 10000;
-	if (!ktx_push_needed(&s, &c, &k1)) {
+	if (!ktx_push_needed(&s, &c)) {
 		printf("     the value changed and it wants no push\n");
 		bad = 1;
 	}

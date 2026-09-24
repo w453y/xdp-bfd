@@ -72,6 +72,7 @@ int main(void)
 	O(xdp_auth_key, kpad);
 
 	S(tx_cfg);
+	O(tx_cfg, key);
 	O(tx_cfg, enable);
 	O(tx_cfg, my_disc);
 	O(tx_cfg, your_disc);

@@ -358,7 +358,7 @@ static void case_auth_required(int v6)
 	}
 	cfg.auth_type = BFD_AUTH_KEYED_SHA1;
 	cfg.auth_present = 1;
-	bpf_map_update_elem(cfg_fd, &k, &cfg, BPF_ANY);
+	cfg_put(cfg_fd, &k, &cfg);
 
 	before = stat_get(BFD_STAT_AUTH_MISMATCH);
 	if (v6)

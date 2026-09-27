@@ -39,6 +39,7 @@ install: all
 	$(INSTALL) -m 0755 bfd_tx     $(DESTDIR)$(SBINDIR)/xdp-bfd
 	$(INSTALL) -m 0755 bfd_loader $(DESTDIR)$(SBINDIR)/xdp-bfd-observe
 	$(INSTALL) -m 0644 bfd_xdp.o  $(DESTDIR)$(LIBDIR)/bfd_xdp.o
+	$(INSTALL) -m 0755 packaging/after-upgrade $(DESTDIR)$(LIBDIR)/after-upgrade
 	$(INSTALL) -d $(DESTDIR)$(UNITDIR) $(DESTDIR)$(SYSCTLDIR)
 	$(INSTALL) -m 0644 packaging/xdp-bfd.service $(DESTDIR)$(UNITDIR)/xdp-bfd.service
 	$(INSTALL) -m 0644 packaging/xdp-bfd-pin.service $(DESTDIR)$(UNITDIR)/xdp-bfd-pin.service

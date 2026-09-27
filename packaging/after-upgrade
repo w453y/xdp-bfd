@@ -1,0 +1,19 @@
+#!/bin/sh
+# after-upgrade [UNIT [CONF]]: make an upgrade take effect in a running engine,
+# by a reload the peers do not see when it runs with --pin and by a restart
+# otherwise. A failed reload leaves the old engine running. Never fails.
+unit=${1:-xdp-bfd.service}
+conf=${2:-/etc/xdp-bfd/engine.conf}
+
+[ -d /run/systemd/system ] || exit 0
+systemctl daemon-reload || true
+systemctl is-active --quiet "$unit" || exit 0
+
+if grep -Eq '^[[:space:]]*XDP_BFD_ARGS=.*(^|[" ])--pin([" ]|$)' "$conf" 2>/dev/null; then
+	systemctl reload "$unit" && exit 0
+	echo "xdp-bfd: reload failed, the previous engine still runs; see journalctl -u $unit" >&2
+else
+	systemctl restart "$unit" && exit 0
+	echo "xdp-bfd: restart failed; see journalctl -u $unit" >&2
+fi
+exit 0

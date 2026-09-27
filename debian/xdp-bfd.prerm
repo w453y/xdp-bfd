@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+
+# On removal only: an upgrade keeps the engine running, see postinst.
+case "$1" in
+    remove)
+        if [ -d /run/systemd/system ]; then
+            systemctl stop xdp-bfd.service xdp-bfd-pin.service || true
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

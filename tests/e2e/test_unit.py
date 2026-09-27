@@ -155,3 +155,52 @@ def test_restart_is_seen_and_stop_unpins(unit):
     assert _peer_downs(NAME_B) > before, "a restart went unnoticed"
     _systemctl("stop", UNIT)
     assert not re.search(r"abi-", sh("sudo ls %s" % PIN, check=False)), "stop left pins"
+
+
+def _after_upgrade(root, pin):
+    "packaging/after-upgrade on the test unit, with an engine.conf that has --pin or not."
+    conf = "/tmp/%s.conf" % UNIT
+    with open(conf, "w") as f:
+        f.write(
+            'XDP_BFD_ARGS="--dplane 50700%s"\n' % (" --pin %s" % PIN if pin else "")
+        )
+    return sh(
+        "sudo %s/packaging/after-upgrade %s.service %s 2>&1; echo rc=$?"
+        % (root, UNIT, conf),
+        check=False,
+    )
+
+
+def test_upgrade_with_pin_reloads(unit, request):
+    before, old = _peer_downs(NAME_B), _main_pid()
+    out = _after_upgrade(str(request.config.rootpath), True)
+    assert "rc=0" in out, out
+    time.sleep(10.0)
+    new = _main_pid()
+    assert new and new != old, "MainPID %d -> %d" % (old, new)
+    assert "handed over in" in _journal(), _journal()[-2000:]
+    assert _peer_downs(NAME_B) == before, "the peer saw the upgrade"
+
+
+def test_upgrade_without_pin_restarts(unit, request):
+    before = _peer_downs(NAME_B)
+    out = _after_upgrade(str(request.config.rootpath), False)
+    assert "rc=0" in out, out
+    time.sleep(10.0)
+    assert _systemctl("is-active", UNIT).strip() == "active"
+    assert _peer_downs(NAME_B) > before, "a restart went unnoticed"
+
+
+def test_failed_reload_keeps_the_engine(unit, request):
+    before, old = _peer_downs(NAME_B), _main_pid()
+    # The new engine cannot start, so the reload fails.
+    sh("sudo chmod -x %s/bfd_tx" % BIN)
+    try:
+        out = _after_upgrade(str(request.config.rootpath), True)
+    finally:
+        sh("sudo chmod +x %s/bfd_tx" % BIN)
+    assert "rc=0" in out and "reload failed" in out, out
+    time.sleep(5.0)
+    assert _main_pid() == old, "the old engine was replaced"
+    assert _systemctl("is-active", UNIT).strip() == "active"
+    assert _peer_downs(NAME_B) == before, "the peer saw a failed reload"

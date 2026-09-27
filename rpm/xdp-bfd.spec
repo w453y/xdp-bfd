@@ -44,6 +44,11 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix} SBINDIR=%{_sbindir} \
     VERSION=%{version}
 
 %pre
+# An upgrade: %%posttrans runs after-upgrade, from this package.
+if [ $1 -gt 1 ]; then
+    mkdir -p %{_localstatedir}/lib/rpm-state/xdp-bfd
+    touch %{_localstatedir}/lib/rpm-state/xdp-bfd/upgrade
+fi
 # The unit's user.
 getent passwd xdp-bfd >/dev/null || \
     useradd --system --no-create-home --home-dir /nonexistent \
@@ -65,7 +70,13 @@ fi
 %systemd_preun xdp-bfd.service
 
 %postun
-%systemd_postun_with_restart xdp-bfd.service
+%systemd_postun xdp-bfd.service
+
+%posttrans
+if [ -e %{_localstatedir}/lib/rpm-state/xdp-bfd/upgrade ]; then
+    rm -f %{_localstatedir}/lib/rpm-state/xdp-bfd/upgrade
+    %{_libdir}/xdp-bfd/after-upgrade
+fi
 
 %files
 %license LICENSE
@@ -74,6 +85,7 @@ fi
 %{_sbindir}/xdp-bfd-observe
 %dir %{_libdir}/xdp-bfd
 %{_libdir}/xdp-bfd/bfd_xdp.o
+%{_libdir}/xdp-bfd/after-upgrade
 %{_unitdir}/xdp-bfd.service
 %{_unitdir}/xdp-bfd-pin.service
 %{_sysctldir}/50-xdp-bfd.conf

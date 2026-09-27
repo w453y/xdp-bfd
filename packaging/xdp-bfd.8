@@ -129,7 +129,11 @@ mounts that bpffs for the unit's user, and
 .B systemctl reload xdp-bfd
 does the restart above.
 .B systemctl restart
-still stops first.
+still stops first. A package upgrade reloads a running engine this way when
+.I engine.conf
+has
+.BR --pin ,
+and restarts it otherwise.
 .SH FILES
 .TP
 .I /etc/xdp-bfd/engine.conf

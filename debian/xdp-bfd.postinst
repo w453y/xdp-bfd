@@ -17,7 +17,11 @@ case "$1" in
             echo "xdp-bfd: this is advisory and did not fail the install; details follow:" >&2
             xdp-bfd --check >&2 2>&1 || true
         fi
-        echo "xdp-bfd: edit /etc/xdp-bfd/engine.conf, then: systemctl enable --now xdp-bfd"
+        if [ -z "$2" ]; then
+            echo "xdp-bfd: edit /etc/xdp-bfd/engine.conf, then: systemctl enable --now xdp-bfd"
+        else
+            /usr/lib/xdp-bfd/after-upgrade
+        fi
         ;;
 esac
 

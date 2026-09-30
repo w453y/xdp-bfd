@@ -1,0 +1,56 @@
+arm B: valid BFD, TTL64 (GTSM)
+  sent: 12055044 packets outgoing over 10s
+  changes-lost +0, dplane notifications to bfdd: see engine log
+  xdp 1185747 frames/s, 213 ns/frame; engine cpu 3.7%; host softirq 3.2%; rcvbuf errors +0
+  during: engine 1022 up, witness 1022 -> 1022; sessions that flapped: 0 []
+  after: engine 1022/1024, witness 1022, recovered in 1s
+
+arm C: malformed BFD
+  sent: 12476737 packets outgoing over 10s
+  changes-lost +0, dplane notifications to bfdd: see engine log
+  xdp 1227020 frames/s, 67 ns/frame; engine cpu 3.6%; host softirq 2.5%; rcvbuf errors +0
+  during: engine 1022 up, witness 1022 -> 1022; sessions that flapped: 0 []
+  after: engine 1022/1024, witness 1022, recovered in 1s
+
+arm D: valid BFD, unknown pair (G3)
+  sent: 12086831 packets outgoing over 10s
+  changes-lost +0, dplane notifications to bfdd: see engine log
+  xdp 1188740 frames/s, 213 ns/frame; engine cpu 3.6%; host softirq 3.3%; rcvbuf errors +0
+  during: engine 1022 up, witness 1022 -> 1022; sessions that flapped: 0 []
+  after: engine 1022/1024, witness 1022, recovered in 1s
+
+arm E: real session, wrong your_disc (demux)
+  sent: 11583373 packets outgoing over 10s
+  changes-lost +0, dplane notifications to bfdd: see engine log
+  xdp 1116125 frames/s, 293 ns/frame; engine cpu 3.2%; host softirq 3.4%; rcvbuf errors +0
+  during: engine 1022 up, witness 1022 -> 1022; sessions that flapped: 0 []
+  after: engine 1022/1024, witness 1022, recovered in 1s
+
+arm F: bad-auth flood, authenticated session (G4)
+  sent: 10585260 packets outgoing over 10s
+  changes-lost +0, dplane notifications to bfdd: see engine log
+  xdp 1034572 frames/s, 301 ns/frame; engine cpu 3.4%; host softirq 3.4%; rcvbuf errors +0
+  during: engine 1019 up, witness 1022 -> 1021; sessions that flapped: 48 ['fd66::10:9', 'fd70::2:a6', 'fd70::2:a1', '10.70.101.148', 'fd70::2:ae']
+  after: engine 1022/1024, witness 1022, recovered in 2s
+
+arm G: self-addressed echo, known peer (reflector)
+  sent: 12064772 packets outgoing over 10s
+  changes-lost +0, dplane notifications to bfdd: see engine log
+  xdp 1187205 frames/s, 263 ns/frame; engine cpu 3.7%; host softirq 3.5%; rcvbuf errors +0
+  during: engine 1022 up, witness 1022 -> 1022; sessions that flapped: 1 ['10.66.0.18']
+  after: engine 1022/1024, witness 1022, recovered in 1s
+
+arm H: moved address naming a real discriminator (passed up)
+  sent: 12042013 packets outgoing over 10s
+  changes-lost +0, dplane notifications to bfdd: see engine log
+  xdp 1184967 frames/s, 274 ns/frame; engine cpu 3.7%; host softirq 3.7%; rcvbuf errors +103
+  during: engine 1022 up, witness 1022 -> 1022; sessions that flapped: 1 ['10.66.0.12']
+  after: engine 1022/1024, witness 1022, recovered in 1s
+
+arm I: real pair and discriminator, timers churning
+  sent: 12239783 packets outgoing over 10s
+  changes-lost +0, dplane notifications to bfdd: see engine log
+  xdp 1204343 frames/s, 304 ns/frame; engine cpu 4.7%; host softirq 3.8%; rcvbuf errors +0
+  during: engine 1022 up, witness 1022 -> 1022; sessions that flapped: 1 ['10.66.0.12']
+  after: engine 1022/1024, witness 1022, recovered in 1s
+

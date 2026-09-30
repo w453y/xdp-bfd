@@ -148,13 +148,77 @@ flapped. #26 moves the unit to 60.
 - For stock bfdd the DUT needs `ip_forward`, to loop the peer's echo; the
   engine does that in XDP.
 
+## Later the same day: the package, and the floods
+
+**The package as installed.** Everything above ran the engine by hand
+under `chrt`. Installed from its `.deb` and run by its own unit (user
+`xdp-bfd`, capabilities only, `SCHED_FIFO` 60), the ladder again gave 0
+flaps (B10). Two things did not work as installed, though the tests said
+they did, both fixed in [#27](https://github.com/w453y/xdp-bfd/pull/27):
+
+- `systemctl reload` failed. A new engine recognised the one it takes over
+  by its comm starting with `bfd_tx`; installed, it is `xdp-bfd`. The unit
+  test installed the binary as `bfd_tx`.
+- A package upgrade stopped the engine. `dh_installsystemd --no-start`
+  makes debhelper stop the units in preinst on upgrade, before postinst can
+  reload, and here it took every session down.
+
+Fixed, an in-place `dpkg -i` over a running 1024-session engine replaced it
+with no down event on the peer, and a reload handed over in 18 ms.
+
+**Floods.** The m9 frames, re-targeted, from m3 with `trafgen` at up to
+1.24M frames/s (line rate for these sizes on 1G), 10 s per arm, against
+the packaged engine and the full mesh. `flood-hw.txt`.
+
+| arm | frames/s at XDP | ns/frame | sessions that flapped |
+|---|---|---|---|
+| A non-BFD UDP, spread | 1.21M | 19 | 0 |
+| B valid BFD, TTL 64 (GTSM) | 1.19M | 213 | 0 |
+| C malformed BFD | 1.23M | 67 | 0 |
+| D valid BFD, unknown pair | 1.19M | 213 | 0 |
+| E real pair, wrong your_disc | 1.12M | 293 | 0 |
+| F bad auth at one session | 1.03M | 301 | 37-48 (see below) |
+| G echo from a known peer | 1.19M | 263 | 1, the target |
+| H moved address, real discriminator | 1.18M | 274 | 1, the target |
+| I real pair, churning timers | 1.20M | 304 | 1, the target |
+
+The engine stayed at 3-5% of a core throughout, and no NIC queue dropped
+anything. F was the one arm with collateral flaps, and they were not the
+engine's: 125 of 135 were the peer's own echo failing on its IPv6 echo
+sessions. F's frames are 94 bytes, so at 1M/s they fill the 1G port to the
+DUT, and the switch drops at that port. BFD control goes through the
+strict-priority queue because it is CS6, and so does bfdd's IPv4 echo, but
+bfdd sends its IPv6 echo unmarked, so it shared the flood's queue: a third
+of those echoes never reached the DUT (the program's own counters account
+for every one that did). At 395k and 590k frames/s the same arm flapped
+nothing. `F-flood.txt` has the per-second echo counts.
+
+## Upstream, from this milestone
+
+On the fork, not yet proposed:
+
+- `bfdd-echo6-tclass`: set the IPv6 echo socket's traffic class to CS6, as
+  the control sockets and the IPv4 echo already are. The F arm above is
+  the consequence of not doing so.
+- `bfdd-echo-sockets-enable`: since the on-demand VRF sockets of
+  5fa775bf1e (in 10.7.0 and 10.7.1), bfdd opens its echo sockets only if
+  the first session enabled uses echo; echo set from the startup
+  configuration on a session enabled later opens none, and every echo
+  session then flaps. Seen on m1 in stock mode; the new topotest
+  reproduces it with a link that appears after bfdd starts.
+
+One observation was not reproduced: after the timer change that stalled the
+peer, one peer session kept transmitting at its old 100 ms against 10 ms
+negotiated. Replaying the change twice on the mesh and twice between two
+bfdds in a topotest left every session at 7-10 ms.
+
 ## Not covered
 
 - One RT load, prio 50 on every thread. A load above 60 starves the engine
   again; that is the priority arms race from writeup section 4, moved, not
   won.
-- 1G only, one NIC model on the DUT, 1024 sessions. The floods of
-  `tools/matrix/m9-flood.md` have not been rerun here.
+- 1G only, one NIC model on the DUT, 1024 sessions. A single injector,
+  so floods reach one RX queue at a time for single-flow arms.
 - With `sched_rt_runtime_us = -1` a starved engine at normal priority
   would never run; not measured.
 

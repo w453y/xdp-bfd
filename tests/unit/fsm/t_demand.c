@@ -85,6 +85,25 @@ static void case_demand_tx_hold(void)
 }
 
 /* RFC 5880 s6.6: not right after hearing the peer, nor faster than the detect budget. */
+/* What the kernel copy carried when a Poll left. */
+static uint32_t poll_sent_mirrored;
+static int poll_sent;
+
+static ssize_t poll_check_send(int fd, const void *buf, size_t len, const struct sockaddr *dst,
+			       socklen_t dlen)
+{
+	const struct bfd_ctrl_pkt *p = buf;
+
+	(void)fd;
+	(void)dst;
+	(void)dlen;
+	if (len >= sizeof(*p) && (p->flags & F_P)) {
+		poll_sent++;
+		poll_sent_mirrored = stub_mirrored_poll;
+	}
+	return (ssize_t)len;
+}
+
 static void case_demand_poll(void)
 {
 	struct session *s;
@@ -130,6 +149,33 @@ static void case_demand_poll(void)
 	s->last_rx_us = t - 40000;
 	fsm_tx(s, t);
 	report("demand-poll-fires-past-detect-budget", s->demand_polls != 1, "poll started");
+
+	/* The kernel acks the Final against its own copy, and a loop starved
+	 * after the send would publish the Poll only after the Final is back.
+	 */
+	demand_poll_us = 1000000;
+	stub_mirrored_poll = 0;
+	poll_sent = 0;
+	fsm_send_hook = poll_check_send;
+	s = demand_sess(1, 0);
+	s->last_rx_us = t - 1000000;
+	s->next_tx_us = 0;
+	fsm_tx(s, t);
+	fsm_send_hook = NULL;
+	report("demand-poll-published-before-sent",
+	       !poll_sent || poll_sent_mirrored != s->poll_seq, "kernel held the Poll first");
+
+	/* The poll restarted the detection clock, so the Poll goes now, not at
+	 * the next periodic slot a starved loop may never reach.
+	 */
+	poll_sent = 0;
+	fsm_send_hook = poll_check_send;
+	s = demand_sess(1, 1);
+	s->last_rx_us = t - 1000000;
+	s->next_tx_us = t + 100000;
+	fsm_tx(s, t);
+	fsm_send_hook = NULL;
+	report("demand-poll-sent-when-started", !s->polling || !poll_sent, "Poll left at once");
 
 	/* Zero turns it off. */
 	demand_poll_us = 0;
@@ -194,4 +240,24 @@ static void case_demand_detect_hold(void)
 	s->r_state = ST_INIT;
 	fsm_detect(s, t);
 	report("demand-detect-needs-peer-up", s->state != ST_DOWN, "timed out");
+
+	/* A starved loop reads the Final ending its Poll only when it syncs to
+	 * time the session out. That Final holds detection again.
+	 */
+	use_ktx = 1;
+	stub_sync_ends_poll = 1;
+	s = demand_sess(1, 0);
+	s->polling = 1;
+	fsm_detect(s, t);
+	report("demand-detect-held-once-sync-ends-poll", s->state != ST_UP,
+	       "timed out on a Poll the peer had answered");
+
+	/* No Final in the kernel either: the Poll still bounds it. */
+	stub_sync_ends_poll = 0;
+	s = demand_sess(1, 0);
+	s->polling = 1;
+	fsm_detect(s, t);
+	report("demand-detect-runs-when-sync-sees-no-final", s->state != ST_DOWN,
+	       "poll is bounded");
+	use_ktx = 0;
 }

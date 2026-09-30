@@ -320,6 +320,9 @@ void fsm_detect(struct session *s, uint64_t t)
 		ktx_sync(s, t);
 		if (s->state == ST_DOWN || s->state == ST_ADMINDOWN)
 			return;
+		/* The Final ending our Poll may be what it brought. */
+		if (demand_detect_held(s))
+			return;
 		sd = t > s->last_rx_us ? (int64_t)(t - s->last_rx_us) : 0;
 		budget = (uint64_t)mult * iv;
 		if (ktx_events_fd() >= 0 && s->ktx_seen_us && s->last_rx_us <= s->ktx_seen_us + iv)
@@ -341,6 +344,12 @@ void fsm_start_poll(struct session *s, uint64_t t)
 {
 	s->poll_seq++;
 	s->polling = 1;
+	/* The program acks the Final against its copy, so it holds the Poll
+	 * before the Poll can leave.
+	 */
+	ktx_mirror(s);
+	/* Now, not at the next periodic slot: the clock below starts now. */
+	s->next_tx_us = t;
 
 	/* The peer was silent because we asked: restart detection now, as bfdd
 	 * does.

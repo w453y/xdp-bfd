@@ -134,6 +134,17 @@ def test_the_unit_runs_unprivileged_with_its_bpffs(unit):
     assert re.search(r"abi-", sh("sudo ls %s" % PIN)), "nothing pinned in %s" % PIN
 
 
+def test_the_engine_outranks_threaded_irqs(unit):
+    """Below SCHED_FIFO 50 a real-time load starves the engine outright:
+    RT throttling hands its slice to normal tasks, not to lower RT ones."""
+    pid = _main_pid()
+    assert pid, _journal()[-2000:]
+    cls, prio = sh("ps -o cls=,rtprio= -p %d" % pid).split()
+    assert (
+        cls == "FF" and int(prio) > 50
+    ), "engine runs %s %s, not SCHED_FIFO above 50" % (cls, prio)
+
+
 def test_reload_is_not_seen_by_the_peer(unit):
     before, old = _peer_downs(NAME_B), _main_pid()
     out = sh("sudo systemctl reload %s; echo rc=$?" % UNIT, check=False)

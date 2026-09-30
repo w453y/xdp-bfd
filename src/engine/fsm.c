@@ -24,6 +24,20 @@
 int tx_sock = -1, tx6_sock = -1;
 uint16_t tx_sock_port, tx6_sock_port;
 
+/* TTL 255 (RFC 5881 s5) and CS6, on every socket that sends control packets. */
+void tx_sockopts(int fd, int family)
+{
+	int hops = 255, tos = BFD_TOS;
+
+	if (family == AF_INET6) {
+		setsockopt(fd, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &hops, sizeof(hops));
+		setsockopt(fd, IPPROTO_IPV6, IPV6_TCLASS, &tos, sizeof(tos));
+	} else {
+		setsockopt(fd, IPPROTO_IP, IP_TTL, &hops, sizeof(hops));
+		setsockopt(fd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos));
+	}
+}
+
 /* Tests replace this to fail sends. */
 ssize_t (*fsm_send_hook)(int fd, const void *buf, size_t len, const struct sockaddr *dst,
 			 socklen_t dlen) = NULL;
@@ -99,19 +113,16 @@ static int slot_sock(int slot, const struct session *s, uint16_t *port)
 		if (fd < 0)
 			/* Out of fds: fall back; a later call retries. */
 			return -1;
-		int hops = 255, on = 1;
+		int on = 1;
 
-		setsockopt(fd, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &hops, sizeof(hops));
 		setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &on, sizeof(on));
 	} else {
 		fd = socket(AF_INET, SOCK_DGRAM, 0);
 		if (fd < 0)
 			/* Out of fds: fall back; a later call retries. */
 			return -1;
-		int ttl = 255;
-
-		setsockopt(fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
 	}
+	tx_sockopts(fd, s->family);
 
 	uint16_t p = tx_bind(fd, s->family, &s->local, (uint16_t)(SRC_PORT + slot));
 

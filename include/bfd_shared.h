@@ -9,6 +9,8 @@
 #define BFD_PORT_1HOP 3784
 #define BFD_PORT_MHOP 4784 /* RFC 5883 multihop */
 #define BFD_ECHO_PORT 3785
+/* Precedence 6 (DSCP CS6), as bfdd marks its packets. */
+#define BFD_TOS 0xc0
 /* Source port = base + slot, up to 65535, away from bfdd's sockets from 49152 up. */
 #define BFD_SRC_PORT	 (65536 - BFD_MAX_SESSIONS)
 #define BFD_MIN_LEN	 24

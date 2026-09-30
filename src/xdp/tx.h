@@ -38,6 +38,14 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx, struct ethhdr *eth,
 		ip6->daddr = t6;
 	}
 
+	/* Our marking, not the one the peer sent. The v4 checksum is recomputed below. */
+	if (iph) {
+		iph->tos = BFD_TOS;
+	} else if (ip6) {
+		ip6->priority = BFD_TOS >> 4;
+		ip6->flow_lbl[0] = (ip6->flow_lbl[0] & 0x0f) | ((BFD_TOS & 0x0f) << 4);
+	}
+
 	/* RFC 5883: send at 255, not at the TTL this arrived with. */
 	if (iph && iph->ttl != 255) {
 		/* The v4 checksum is recomputed below. */

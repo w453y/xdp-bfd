@@ -37,6 +37,14 @@ if [ "$KIND" = deb ]; then
 		"CI build ${PKGVER}." 2>/dev/null || \
 	  dch -b -v "${PKGVER}-1" --distribution unstable "CI build ${PKGVER}."
 	dpkg-buildpackage -b -us -uc
+	# An upgrade reloads the engine from postinst; stopped first, it is a
+	# restart every peer sees.
+	dpkg-deb -e ../xdp-bfd_*.deb ctl
+	if grep -qs stop ctl/preinst; then
+		echo "preinst stops the engine on upgrade:" >&2
+		cat ctl/preinst >&2
+		exit 1
+	fi
 	cp ../xdp-bfd_*.deb "$DIST"/
 	echo "=== lintian (informational) ==="
 	lintian ../xdp-bfd_*.deb || true

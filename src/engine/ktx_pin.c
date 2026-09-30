@@ -196,7 +196,10 @@ int ktx_pin_holder(void)
 		return 0;
 	snprintf(comm, sizeof(comm), "/proc/%d/comm", pid);
 	f = fopen(comm, "r");
-	if (!f || !fgets(comm, sizeof(comm), f) || strncmp(comm, "bfd_tx", 6))
+	/* Built as bfd_tx, installed as xdp-bfd. */
+	if (!f || !fgets(comm, sizeof(comm), f))
+		pid = 0;
+	else if (strcmp(comm, "bfd_tx\n") && strcmp(comm, "xdp-bfd\n"))
 		pid = 0;
 	if (f)
 		fclose(f);

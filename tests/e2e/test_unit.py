@@ -55,7 +55,7 @@ def _unit(root, pa):
         "EnvironmentFile=/etc/xdp-bfd/engine.conf",
         'Environment="XDP_BFD_ARGS=%s"' % args,
     )
-    u = u.replace("/usr/sbin/xdp-bfd", "%s/bfd_tx" % BIN)
+    u = u.replace("/usr/sbin/xdp-bfd", "%s/xdp-bfd" % BIN)
     u = u.replace("xdp-bfd-pin.service", "%s.service" % PIN_UNIT)
     u = u.replace(
         "[Service]\n",
@@ -80,7 +80,8 @@ def unit(request):
         )
     root = str(request.config.rootpath)
     sh("sudo install -d -m 755 %s" % BIN)
-    sh("sudo install -m 755 %s/bfd_tx %s/bfd_tx" % (root, BIN))
+    # Under its installed name: the engine finds the one it takes over by it.
+    sh("sudo install -m 755 %s/bfd_tx %s/xdp-bfd" % (root, BIN))
     sh("sudo install -m 644 %s/bfd_xdp.o %s/bfd_xdp.o" % (root, BIN))
     ca = frr_conf_dir(DAEMONS % DPLANE_OPT, CONF % ("a", IP_B, IP_A, "eth-a"))
     cb = frr_conf_dir(DAEMONS % "", CONF % ("b", IP_A, IP_B, "eth-b"))
@@ -205,11 +206,11 @@ def test_upgrade_without_pin_restarts(unit, request):
 def test_failed_reload_keeps_the_engine(unit, request):
     before, old = _peer_downs(NAME_B), _main_pid()
     # The new engine cannot start, so the reload fails.
-    sh("sudo chmod -x %s/bfd_tx" % BIN)
+    sh("sudo chmod -x %s/xdp-bfd" % BIN)
     try:
         out = _after_upgrade(str(request.config.rootpath), True)
     finally:
-        sh("sudo chmod +x %s/bfd_tx" % BIN)
+        sh("sudo chmod +x %s/xdp-bfd" % BIN)
     assert "rc=0" in out and "reload failed" in out, out
     time.sleep(5.0)
     assert _main_pid() == old, "the old engine was replaced"

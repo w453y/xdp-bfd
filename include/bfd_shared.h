@@ -106,8 +106,13 @@ enum bfd_tunable {
 
 #define BFD_SWEEP_NS_DEFAULT (5ull * 1000 * 1000)
 
-/* 1s: some thirty times the worst loop gap on a 64-session mesh. */
-#define BFD_DEADMAN_NS_DEFAULT (1000ull * 1000 * 1000)
+/* 3s: three real-time throttling periods (sched_rt_period_us, 1s by
+ * default). A loop starved by real-time load runs once a period and now and
+ * then misses one: under a SCHED_FIFO hog on every core it went up to 2.1s
+ * between passes on the testbed, and a 1s bound withheld a live engine's
+ * replies.
+ */
+#define BFD_DEADMAN_NS_DEFAULT (3000ull * 1000 * 1000)
 
 /* A floor; the detect budget raises it. */
 #define BFD_DEMAND_POLL_US_DEFAULT 1000000ull

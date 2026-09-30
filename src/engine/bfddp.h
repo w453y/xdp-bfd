@@ -18,7 +18,13 @@ enum bfddp_message_type {
 	DP_REQUEST_SESSION_COUNTERS = 5,
 	BFD_SESSION_COUNTERS = 6,
 	DP_SESSION_AUTH = 7,
+	BFD_DP_CAPABILITIES = 8,
 };
+
+/* BFD_DP_CAPABILITIES bits. bfdd offloads an authenticated session only to
+ * a data plane that declared this one.
+ */
+#define BFDDP_CAP_SESSION_AUTH (1ULL << 0)
 
 /* Must match bfdd's BFDDP_AUTH_KEY_MAX. */
 #define BFDDP_AUTH_KEY_MAX 64
@@ -55,6 +61,10 @@ struct bfddp_message_header {
 	uint16_t type;
 	uint16_t id;	 /* 0 = async */
 	uint16_t length; /* total, including this header */
+} __attribute__((packed));
+
+struct bfddp_capabilities {
+	uint64_t capabilities;
 } __attribute__((packed));
 
 struct bfddp_echo {

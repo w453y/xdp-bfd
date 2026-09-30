@@ -4,6 +4,10 @@
 static int cli = -1; /* our end, standing in for bfdd */
 static char sockpath[64];
 
+/* The capabilities the engine declared on connecting, read off by rig_up. */
+static int caps_type = -1;
+static uint64_t caps_bits;
+
 static int rig_up(void)
 {
 	snprintf(sockpath, sizeof(sockpath), "/tmp/dp_run.%d.sock", getpid());
@@ -29,6 +33,19 @@ static int rig_up(void)
 	}
 
 	dp_accept(); /* the engine's own accept path installs dp_conn */
+
+	/* It comes first; the cases read what follows. */
+	struct {
+		struct bfddp_message_header h;
+		struct bfddp_capabilities c;
+	} __attribute__((packed)) m;
+
+	caps_type = -1;
+	if (recv(cli, &m, sizeof(m), MSG_WAITALL) == (ssize_t)sizeof(m) &&
+	    ntohs(m.h.length) == sizeof(m)) {
+		caps_type = ntohs(m.h.type);
+		caps_bits = be64toh(m.c.capabilities);
+	}
 	return 1;
 }
 

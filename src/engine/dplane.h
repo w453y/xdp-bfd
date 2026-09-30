@@ -29,6 +29,7 @@ extern ssize_t (*dp_recv_hook)(int fd, void *buf, size_t len);
 void dp_set_conn_for_test(int fd);
 void dp_flush(void);
 void dp_accept(void);
+void dp_send_capabilities(void);
 void dp_fds(int *listen_fd, int *conn_fd);
 int dp_listen_init(const char *arg);
 void dp_set_peer_uid(uid_t uid);

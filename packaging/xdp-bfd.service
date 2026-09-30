@@ -39,10 +39,11 @@ ReadWritePaths=/run/xdp-bfd -/run/xdp-bfd-pin /tmp
 OOMScoreAdjust=-900
 LockPersonality=yes
 
-# The loop runs detection and the heartbeat; keep it schedulable under softirq
-# load.
+# The loop runs detection, the heartbeat and every packet the fast path cannot
+# answer. Above threaded interrupt handlers (SCHED_FIFO 50): below real-time
+# load it never runs, as RT throttling leaves its slice to normal tasks only.
 CPUSchedulingPolicy=fifo
-CPUSchedulingPriority=10
+CPUSchedulingPriority=60
 IOSchedulingClass=realtime
 # Pin off the CPUs serving RX queues if there are spare cores. Not a default.
 #CPUAffinity=

@@ -1,0 +1,10 @@
+run A0-bfdd-idle mode idle capture 300s
+before: peer-down 24342 dut-down 24343 peer-up 1022
+7.0.0-34-generic
+no engine
+capture start 1790783991.335697977
+capture end 1790784296.341278182
+6277401 packets captured
+6278279 packets received by filter
+0 packets dropped by kernel
+after: peer-down 24342 dut-down 24343 peer-up 1022

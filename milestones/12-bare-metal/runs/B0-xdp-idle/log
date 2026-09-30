@@ -1,0 +1,10 @@
+run B0-xdp-idle mode idle capture 300s
+before: peer-down 278 dut-down 278 peer-up 1022
+7.0.0-34-generic
+41072 ./bfd_tx --dplane 50700 --kernel-tx enp1s0 --dp-hold 60 --sweep-us 5000 --bpf-obj /home/w453y/xdp-bfd-dscp/bfd_xdp.o --stats-dump /tmp/bfd_tx_stats.json --pin /sys/fs/bpf/xdp-bfd
+capture start 1790782140.293989634
+capture end 1790782445.298915970
+6327867 packets captured
+6328851 packets received by filter
+0 packets dropped by kernel
+after: peer-down 278 dut-down 278 peer-up 1022

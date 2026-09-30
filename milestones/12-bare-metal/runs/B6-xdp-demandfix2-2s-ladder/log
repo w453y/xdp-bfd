@@ -1,0 +1,14 @@
+run B6-xdp-demandfix2-2s-ladder mode ladder capture 240s
+before: peer-down 34 dut-down 34 peer-up 1022
+7.0.0-34-generic
+48936 ./bfd_tx --dplane 50700 --kernel-tx enp1s0 --dp-hold 60 --sweep-us 5000 --bpf-obj /home/w453y/xdp-bfd-dd/bfd_xdp.o --stats-dump /tmp/bfd_tx_stats.json --pin /sys/fs/bpf/xdp-bfd --deadman-us 2000000
+capture start 1790789001.248148083
+L3 start 1790789031.251701024
+L3 end 1790789152.063822055
+L4 start 1790789152.065661604
+L4 end 1790789212.872279186
+capture end 1790789247.877445616
+5079103 packets captured
+5080133 packets received by filter
+0 packets dropped by kernel
+after: peer-down 248 dut-down 248 peer-up 1022

@@ -1,0 +1,14 @@
+run A1-bfdd-ladder mode ladder capture 240s
+before: peer-down 24342 dut-down 24343 peer-up 1022
+7.0.0-34-generic
+no engine
+capture start 1790784336.764056443
+L3 start 1790784366.767641291
+L3 end 1790784489.344066937
+L4 start 1790784489.345924092
+L4 end 1790784551.875828656
+capture end 1790784586.881029276
+4257207 packets captured
+4258150 packets received by filter
+0 packets dropped by kernel
+after: peer-down 43768 dut-down 43319 peer-up 1022

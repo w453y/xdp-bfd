@@ -1,0 +1,14 @@
+run B9-main-fc32c4f-fifo60-ladder mode ladder capture 240s
+before: peer-down 34 dut-down 34 peer-up 1022
+7.0.0-34-generic
+53283 ./bfd_tx --dplane 50700 --kernel-tx enp1s0 --dp-hold 60 --sweep-us 5000 --bpf-obj /home/w453y/xdp-bfd-main/bfd_xdp.o --stats-dump /tmp/bfd_tx_stats.json --pin /sys/fs/bpf/xdp-bfd
+capture start 1790792420.326193416
+L3 start 1790792450.330096051
+L3 end 1790792571.150658302
+L4 start 1790792571.152578150
+L4 end 1790792631.961188178
+capture end 1790792666.966522601
+5115141 packets captured
+5116155 packets received by filter
+0 packets dropped by kernel
+after: peer-down 34 dut-down 34 peer-up 1022

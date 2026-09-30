@@ -1,0 +1,14 @@
+run B4a-xdp-fifo10-ladder mode ladder capture 240s
+before: peer-down 46 dut-down 46 peer-up 1022
+7.0.0-34-generic
+50784 ./bfd_tx --dplane 50700 --kernel-tx enp1s0 --dp-hold 60 --sweep-us 5000 --bpf-obj /home/w453y/xdp-bfd-both/bfd_xdp.o --stats-dump /tmp/bfd_tx_stats.json --pin /sys/fs/bpf/xdp-bfd
+capture start 1790790282.645616775
+L3 start 1790790312.649205833
+L3 end 1790790433.459194728
+L4 start 1790790433.460992298
+L4 end 1790790494.271591852
+capture end 1790790529.276608322
+3984695 packets captured
+3985868 packets received by filter
+0 packets dropped by kernel
+after: peer-down 1003 dut-down 1003 peer-up 1022

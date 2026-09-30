@@ -1,0 +1,118 @@
+B4a-xdp-fifo10-ladder.pcap: 3601676 control packets over 244.9 s
+
+flaps (sender's state left Up): 957 from the DUT, 957 from the peer
+
+class            side     gaps    p50ms    p99ms    maxms  max/budg   over
+asym             dut     88551    88.06   102.06   301.13     1.001      5
+asym             peer    27065   261.64   300.30   570.24     0.634      0
+auth-keyed       dut     21523   261.76   300.31   573.39     0.637      0
+auth-keyed       peer    21476   262.10   300.33   567.24     0.630      0
+auth-meticulous  dut     21517   263.81   300.31   540.99     0.601      0
+auth-meticulous  peer    21463   263.95   300.31   552.16     0.614      0
+base             dut    231237    44.12   185.93   378.23     0.646      0
+base             peer   212334    44.19   186.36   201.19     0.665      0
+echo-v4          dut     43073   261.93   300.31   546.16     0.607      0
+echo-v4          peer    42947   263.89   300.32   534.19     0.594      0
+echo-v6          dut     14360   262.17   300.31   550.31     0.611      0
+echo-v6          peer    14315   263.95   300.31   558.78     0.621      0
+mhop-v4          dut     28716   261.84   300.32   528.62     0.587      0
+mhop-v4          peer    28635   262.19   300.34   582.18     0.647      0
+mhop-v6          dut     14372   263.88   300.29   551.95     0.613      0
+mhop-v6          peer    14337   263.98   300.31   465.19     0.517      0
+passive-dut      dut     28695   261.55   300.30   546.39     0.607      0
+passive-dut      peer    28640   261.85   300.32   582.48     0.647      0
+passive-peer     dut     14348   261.44   300.32 57280.46    63.645      1
+passive-peer     peer    14293   261.73   300.33   561.27     0.624      0
+v4-10            dut    853420     8.97    10.68    20.67     0.689      0
+v4-10            peer   834009     9.00    10.71    20.78     0.693      0
+v4-1000x5        dut      8569   870.43  1000.30  1720.84     0.344      0
+v4-1000x5        peer     8728   870.57  1000.31  1820.18     0.364      0
+v4-300           dut    143576   261.72   300.31   582.41     0.647      0
+v4-300           peer   143181   262.04   300.33   588.24     0.654      0
+v4-ens20         dut     71785   261.69   300.31   576.56     0.641      0
+v4-ens20         peer    71594   262.02   300.33   576.48     0.641      0
+v6-100           dut     86041    87.81   100.32   192.50     0.642      0
+v6-100           peer    85600    87.92   100.33   196.05     0.654      0
+v6-300           dut     86184   261.62   300.32   579.60     0.644      0
+v6-300           peer    85934   261.89   300.33   582.67     0.647      0
+v6-ens20         dut     43012   263.88   300.31   567.81     0.631      0
+v6-ens20         peer    42912   264.00   300.32   555.82     0.618      0
+
+reply latency, peer packet -> DUT packet on the session within 2 ms (us)
+class                   n      p50      p99     p999      max
+asym                27050    114.4    267.3    353.6   1131.1
+auth-keyed          21426    116.1    275.1    354.3    900.5
+auth-meticulous     21401    116.3    273.0    353.1    557.7
+base               213526    114.7    269.2    353.8   1628.2
+demand              10834     64.1    258.4    337.1    370.3
+echo-v4             42788    114.4    266.1    350.0    417.9
+echo-v6             14278    114.7    283.5    353.6    401.3
+mhop-v4             28542    114.4    265.4    352.9   1660.8
+mhop-v6             14254    114.7    282.5    377.2   1169.4
+passive-dut         28550    114.4    266.1    353.1    865.5
+passive-peer        14243    114.7    266.6    353.1    999.5
+v4-10              831143    114.4    265.6    353.1   1204.0
+v4-1000x5            8600    114.2    267.0    347.6    381.0
+v4-300             142739    114.4    266.6    353.1    899.8
+v4-ens20            71350    114.4    268.0    353.1   1662.7
+v6-100              85304    114.7    273.0    352.9    961.1
+v6-300              85620    114.7    268.0    353.1   1765.0
+v6-ens20            42772    114.7    275.1    354.5    400.5
+ALL               1704420    114.4    266.8    353.1   1765.0
+
+flows with gaps over the receiver's detection time (first 10):
+  10.70.3.90 -> 10.70.103.90  asym: 1, first (1790790437.243849, 300.409, 300.0)
+  10.70.3.73 -> 10.70.103.73  asym: 1, first (1790790436.945329, 300.204, 300.0)
+  10.70.3.68 -> 10.70.103.68  asym: 1, first (1790790435.041292, 300.012, 300.0)
+  10.70.3.67 -> 10.70.103.67  asym: 1, first (1790790437.076617, 300.194, 300.0)
+  10.70.3.61 -> 10.70.103.61  asym: 1, first (1790790435.466725, 300.056, 300.0)
+  10.70.3.11 -> 10.70.103.11  passive-peer: 1, first (1790790494.807002, 57280.455, 900.0)
+
+=== flaps.py
+957 flaps
+
+by phase, first to leave Up, diag:
+  L4         peer  detect     937
+  idle-post  dut   detect     20
+
+by class:
+  asym             38
+  auth-keyed       30
+  auth-meticulous  30
+  base             59
+  echo-v4          60
+  echo-v6          20
+  mhop-v4          40
+  mhop-v6          20
+  passive-dut      40
+  passive-peer     20
+  v4-10            40
+  v4-1000x5        40
+  v4-300           200
+  v4-ens20         100
+  v6-100           40
+  v6-300           120
+  v6-ens20         60
+
+class x side x diag:
+   ('asym', 'peer', 'detect') 38
+   ('auth-keyed', 'peer', 'detect') 30
+   ('auth-meticulous', 'peer', 'detect') 30
+   ('base', 'peer', 'detect') 59
+   ('echo-v4', 'peer', 'detect') 60
+   ('echo-v6', 'peer', 'detect') 20
+   ('mhop-v4', 'peer', 'detect') 40
+   ('mhop-v6', 'peer', 'detect') 20
+   ('passive-dut', 'peer', 'detect') 40
+   ('passive-peer', 'dut', 'detect') 20
+   ('v4-10', 'peer', 'detect') 40
+   ('v4-1000x5', 'peer', 'detect') 40
+   ('v4-300', 'peer', 'detect') 200
+   ('v4-ens20', 'peer', 'detect') 100
+   ('v6-100', 'peer', 'detect') 40
+   ('v6-300', 'peer', 'detect') 120
+   ('v6-ens20', 'peer', 'detect') 60
+
+first 15 in time:
+
+per second (flaps started): [(154, 4), (155, 3), (156, 4), (157, 140), (158, 746), (161, 8), (162, 32), (214, 19), (215, 1)]

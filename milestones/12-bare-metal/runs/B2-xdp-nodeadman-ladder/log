@@ -1,0 +1,14 @@
+run B2-xdp-nodeadman-ladder mode ladder capture 240s
+before: peer-down 40 dut-down 40 peer-up 1022
+7.0.0-34-generic
+45968 ./bfd_tx --dplane 50700 --kernel-tx enp1s0 --dp-hold 60 --sweep-us 5000 --bpf-obj /home/w453y/xdp-bfd-dscp/bfd_xdp.o --stats-dump /tmp/bfd_tx_stats.json --pin /sys/fs/bpf/xdp-bfd --deadman-us 0
+capture start 1790786115.347542895
+L3 start 1790786145.350990299
+L3 end 1790786267.595877842
+L4 start 1790786267.598152254
+L4 end 1790786329.066803021
+capture end 1790786364.071948591
+5075711 packets captured
+5076983 packets received by filter
+0 packets dropped by kernel
+after: peer-down 305 dut-down 305 peer-up 1022

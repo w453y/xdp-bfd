@@ -42,6 +42,7 @@ In the order they happened.
 | [09-multihop](milestones/09-multihop/) | Multihop (RFC 5883) and per-session minimum TTL. |
 | [10-auth](milestones/10-auth/) | Authentication (RFC 5880 s6.7): a keyed digest in the driver, and the key chain that feeds it. |
 | [11-review-hardening](milestones/11-review-hardening/) | Two reviews worked through: a dead-man gate on the fast path, demand-mode path verification, an ABI handshake, and four defects found by tests that were wrong. |
+| [12-bare-metal](milestones/12-bare-metal/) | The ladder on four bare-metal machines at 1024 sessions: a dead-man bound below the RT throttling period, three ways a starved loop timed out an answered Poll, and a unit that ran the engine below real-time load. |
 
 ## Investigations
 

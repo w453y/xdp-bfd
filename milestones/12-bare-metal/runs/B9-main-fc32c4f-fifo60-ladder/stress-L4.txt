@@ -1,0 +1,8 @@
+stress-ng: metrc: [53767] stressor       bogo ops real time  usr time  sys time   bogo ops/s     bogo ops/s
+stress-ng: metrc: [53767]                           (secs)    (secs)    (secs)   (real time) (usr+sys time)
+stress-ng: metrc: [53767] cpu             1162722     60.00    716.88      2.05     19379.17        1617.28
+stress-ng: info:  [53767] skipped: 0
+stress-ng: info:  [53767] passed: 12: cpu (12)
+stress-ng: info:  [53767] failed: 0
+stress-ng: info:  [53767] metrics untrustworthy: 0
+stress-ng: info:  [53767] successful run completed in 1 min

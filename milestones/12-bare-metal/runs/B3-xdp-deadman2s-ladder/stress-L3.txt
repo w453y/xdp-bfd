@@ -1,0 +1,8 @@
+stress-ng: metrc: [47213] timer         204154541    120.00      8.26    446.76   1701299.04      448670.01
+stress-ng: metrc: [47213] timerfd       172213248    119.99      3.59    223.70   1435275.42      757659.06
+stress-ng: metrc: [47213] hrtimers       74649788    119.99    359.47    169.79    622121.36      141043.68
+stress-ng: info:  [47213] skipped: 0
+stress-ng: info:  [47213] passed: 54: cpu (12) timer (24) timerfd (12) hrtimers (6)
+stress-ng: info:  [47213] failed: 0
+stress-ng: info:  [47213] metrics untrustworthy: 0
+stress-ng: info:  [47213] successful run completed in 2 mins

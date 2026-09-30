@@ -74,7 +74,11 @@ Session sweep interval in microseconds.
 Poll-loop tick in microseconds.
 .TP
 .BI --deadman-us " 0|50000-60000000"
-Dead-man interval; 0 turns it off.
+Dead-man interval, default 3000000 (3 s): the program stops answering for
+an engine whose loop has not run for this long, so its peers time the
+sessions out. 0 turns it off. Keep it above the real-time throttling period
+(\fIsched_rt_period_us\fR, 1 s by default): an engine starved by real-time
+load runs only once a period, and a shorter bound takes its sessions down.
 .TP
 .BR --demand ", " --demand-poll-us " " \fI0|10000-600000000\fR
 Demand mode and its poll interval; 0 turns the poll off.

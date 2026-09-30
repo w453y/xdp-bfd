@@ -25,6 +25,33 @@ from conftest import (
 # The 1s bound plus B's 30ms budget.
 STOP_S = 4.0
 
+# Past a real-time throttling period, where a starved but live engine runs.
+DEFAULT_US = 3000000
+
+
+def test_default_outlasts_a_throttling_period(request):
+    root = request.config.rootpath
+    setup()
+    try:
+        start_engine(
+            str(root / "bfd_tx"),
+            4,
+            ns=NS_A,
+            stats=STATS,
+            kernel_tx="rig-a",
+            xdp_mode="generic",
+            extra=("--bpf-obj", str(root / "bfd_xdp.o")),
+        )
+        start_engine(str(root / "bfd_tx"), 4, ns=NS_B, stats=STATS_B)
+        wait_both_up()
+        got = dump(NS_A, STATS)["deadman_us"]
+        assert got == DEFAULT_US, "default dead-man bound %d, want %d" % (
+            got,
+            DEFAULT_US,
+        )
+    finally:
+        teardown()
+
 
 def run_arm(rootpath, deadman):
     binary = str(rootpath / "bfd_tx")

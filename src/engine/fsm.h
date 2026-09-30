@@ -18,6 +18,7 @@ extern int tx_sock;
 extern int tx6_sock;
 /* the fallback sockets' ports */
 extern uint16_t tx_sock_port, tx6_sock_port;
+void tx_sockopts(int fd, int family);
 
 uint16_t tx_bind(int fd, int family, const struct bfd_addr *local, uint16_t port);
 

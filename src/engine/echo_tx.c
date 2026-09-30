@@ -136,7 +136,7 @@ static unsigned int echo_build_v4(struct session *s, uint8_t *frame, uint32_t no
 	uint16_t tot = 20 + 8 + 24;
 
 	ip[0] = 0x45;
-	ip[1] = 0xc0;
+	ip[1] = BFD_TOS;
 	ip[2] = tot >> 8;
 	ip[3] = tot & 0xff;
 	ip[8] = 255;
@@ -192,7 +192,8 @@ static unsigned int echo_build_v6(struct session *s, uint8_t *frame, uint32_t no
 	uint8_t *ip = frame + 14;
 	uint16_t plen = 8 + 24;
 
-	ip[0] = 0x6c; /* version 6, traffic class 0xc0 */
+	ip[0] = 0x60 | BFD_TOS >> 4; /* version 6, traffic class BFD_TOS */
+	ip[1] = (BFD_TOS & 0x0f) << 4;
 	ip[4] = plen >> 8;
 	ip[5] = plen & 0xff;
 	ip[6] = 17;  /* next header: UDP */

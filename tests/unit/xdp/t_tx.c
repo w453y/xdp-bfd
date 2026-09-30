@@ -57,6 +57,7 @@ static void case_bounce_v4_frame(void)
 	CHK(oi->saddr == ii->daddr, "source IP is not the arriving dest");
 	CHK(oi->daddr == ii->saddr, "dest IP is not the arriving source");
 	CHK(oi->ttl == 255, "TTL is not 255");
+	CHK(oi->tos == BFD_TOS, "TOS is not CS6");
 	CHK(ntohs(oi->tot_len) == want_len - sizeof(*oe), "tot_len not updated");
 	CHK(csum16(oi, sizeof(*oi), 0) == 0, "IP checksum does not verify");
 	CHK(ntohs(ou->source) == BFD_SRC_PORT, "source port is not BFD_SRC_PORT");
@@ -215,6 +216,10 @@ static void case_bounce_v6_frame(void)
 	}
 	if (oi->hop_limit != 255) {
 		printf("     hop limit is not 255\n");
+		bad = 1;
+	}
+	if ((oi->priority << 4 | oi->flow_lbl[0] >> 4) != BFD_TOS) {
+		printf("     traffic class is not CS6\n");
 		bad = 1;
 	}
 	if (ntohs(oi->payload_len) != (int)(sizeof(*ou) + 24)) {

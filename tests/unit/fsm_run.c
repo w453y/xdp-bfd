@@ -28,10 +28,22 @@ uint64_t *ktx_seq_mem; /* no program: the session's own counter */
 /* No program, so no sweep ring unless a case pretends there is one. */
 static int stub_events_fd = -1;
 
+/* Set when a case wants the kernel to have seen the Final ending our Poll. */
+static int stub_sync_ends_poll;
+
 void ktx_sync(struct session *s, uint64_t t)
 {
-	(void)s;
 	(void)t;
+	if (stub_sync_ends_poll && s->polling)
+		s->polling = 0;
+}
+
+/* The poll_seq the kernel copy last carried; 0 when it carried no Poll. */
+static uint32_t stub_mirrored_poll;
+
+void ktx_mirror(struct session *s)
+{
+	stub_mirrored_poll = s->polling ? s->poll_seq : 0;
 }
 
 int ktx_events_fd(void)

@@ -13,6 +13,7 @@
 #include "fsm.h"
 #include "ktx.h"
 #include "stats.h"
+#include "sched_dl.h"
 #include "opts.h"
 
 /* "10s" must not parse as 10. Nonzero if not a whole number. */
@@ -57,6 +58,32 @@ static int log_level(const char *a)
 	return 0;
 }
 
+/* <runtime_us>/<period_us>, or 0. The deadline is the period. */
+static int sched_deadline(const char *a)
+{
+	unsigned long long rt, pd;
+	char buf[32];
+	char *slash;
+
+	if (!strcmp(a, "0")) {
+		dl_runtime_us = dl_period_us = 0;
+		return 0;
+	}
+	snprintf(buf, sizeof(buf), "%s", a);
+	slash = strchr(buf, '/');
+	if (slash)
+		*slash = 0;
+	if (!slash || num(buf, &rt) || num(slash + 1, &pd) || pd < 1000 || pd > 1000000 ||
+	    rt < 100 || rt > pd) {
+		log_err("--sched-deadline: expected 0 (off) or <runtime_us>/<period_us>, period 1000-1000000, runtime 100 up to the period, got '%s'\n",
+			a);
+		return -1;
+	}
+	dl_runtime_us = (unsigned int)rt;
+	dl_period_us = (unsigned int)pd;
+	return 0;
+}
+
 static int xdp_mode(const char *m)
 {
 	if (!strcmp(m, "generic") || !strcmp(m, "skb"))
@@ -92,6 +119,8 @@ static int opt_value(const char *opt, const char *a, struct opts *o)
 		return xdp_mode(a);
 	else if (!strcmp(opt, "--dp-peer"))
 		return dp_peer(a);
+	else if (!strcmp(opt, "--sched-deadline"))
+		return sched_deadline(a);
 	else if (!strcmp(opt, "--max-sessions")) {
 		if (num(a, &v) || v < 64 || v > SESSIONS_CEIL) {
 			log_err("--max-sessions: expected 64-%d, got '%s'\n", SESSIONS_CEIL, a);
@@ -208,6 +237,7 @@ int opts_complete(const struct opts *o, const char *argv0)
 			"       [--sweep-us <500-100000>]\n"
 			"       [--tick-us <200-100000>]\n"
 			"       [--deadman-us <0|50000-60000000>]  (0 = off)\n"
+			"       [--sched-deadline <runtime_us>/<period_us>|0]\n"
 			"       [--demand] [--demand-poll-us <0|10000-600000000>]\n"
 			"       [--log-level error|info|debug]\n",
 			argv0, argv0);

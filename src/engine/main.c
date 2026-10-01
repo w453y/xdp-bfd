@@ -26,6 +26,7 @@
 #include "sock.h"
 #include "static.h"
 #include "notify.h"
+#include "sched_dl.h"
 
 /* A timerfd, since SO_RCVTIMEO rounds under 1ms up. */
 static int tick_fd = -1;
@@ -330,6 +331,8 @@ int main(int argc, char **argv)
 	}
 	if (!opts_complete(&o, argv[0]))
 		return 1;
+	/* Before loading, so a takeover under load is not starved either. */
+	sched_dl_apply();
 	if (sess_table_init(sess_max)) {
 		log_err("cannot allocate %d sessions\n", sess_max);
 		return 1;

@@ -135,15 +135,29 @@ def test_the_unit_runs_unprivileged_with_its_bpffs(unit):
     assert re.search(r"abi-", sh("sudo ls %s" % PIN)), "nothing pinned in %s" % PIN
 
 
-def test_the_engine_outranks_threaded_irqs(unit):
-    """Below SCHED_FIFO 50 a real-time load starves the engine outright:
-    RT throttling hands its slice to normal tasks, not to lower RT ones."""
+def _on_deadline(pid):
+    cls = sh("ps -o cls= -p %d" % pid).strip()
+    assert cls == "DLN", "engine runs %s, not SCHED_DEADLINE\n%s" % (
+        cls,
+        _journal()[-2000:],
+    )
+    caps = [
+        line
+        for line in open("/proc/%d/status" % pid)
+        if line.split(":")[0] in ("CapEff", "CapPrm", "CapAmb")
+    ]
+    # CAP_SYS_NICE
+    assert not any(
+        int(c.split()[1], 16) >> 23 & 1 for c in caps
+    ), "the engine kept CAP_SYS_NICE"
+
+
+def test_the_engine_runs_on_a_deadline_reservation(unit):
+    """Ahead of any SCHED_FIFO load: at a fixed priority, a real-time load
+    above it starves the engine outright."""
     pid = _main_pid()
     assert pid, _journal()[-2000:]
-    cls, prio = sh("ps -o cls=,rtprio= -p %d" % pid).split()
-    assert (
-        cls == "FF" and int(prio) > 50
-    ), "engine runs %s %s, not SCHED_FIFO above 50" % (cls, prio)
+    _on_deadline(pid)
 
 
 def test_reload_is_not_seen_by_the_peer(unit):
@@ -154,6 +168,7 @@ def test_reload_is_not_seen_by_the_peer(unit):
     new = _main_pid()
     assert new and new != old, "MainPID %d -> %d" % (old, new)
     assert _systemctl("is-active", UNIT).strip() == "active"
+    _on_deadline(new)
     j = _journal()
     assert "handed over in" in j and "adopts live session" in j, j[-2000:]
     assert _brief_up(NAME_A) and _brief_up(NAME_B)

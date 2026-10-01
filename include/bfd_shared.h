@@ -97,10 +97,16 @@ struct bfd_ctrl_pkt {
 /* Written between load and attach. Their own map: .rodata would need rewriting
  * whole, and sweep_map holds a bpf_timer.
  */
+/* pass_cpus: CPUs other traffic may be handed to, and each one's queue. */
+#define BFD_PASS_CPUS_MAX 256
+#define BFD_PASS_QSIZE	  512
+
 enum bfd_tunable {
 	BFD_TUNE_SWEEP_NS, /* 0 = compiled default */
 	/* max heartbeat age before the fast path stops answering; 0 = off */
 	BFD_TUNE_DEADMAN_NS,
+	/* CPUs in pass_cpus that other traffic is spread over; 0 = passed here */
+	BFD_TUNE_SPREAD_CPUS,
 	BFD_TUNE_MAX
 };
 

@@ -22,6 +22,7 @@
 #include "sweep.h"
 #include "echo.h"
 #include "tx.h"
+#include "spread.h"
 
 #define TX_CFG_HEAD  __builtin_offsetof(struct tx_cfg, key)
 #define TX_CFG_WORDS ((__builtin_offsetof(struct tx_cfg, auth_accept) - TX_CFG_HEAD) / 4)
@@ -87,7 +88,7 @@ int bfd_observer(struct xdp_md *ctx)
 	int pv = parse_l3(eth, data_end, &c);
 
 	if (pv >= 0)
-		return pv;
+		return pv == XDP_PASS ? pass_up(data, data_end) : pv;
 	struct iphdr *iph = c.iph;
 	struct ipv6hdr *ip6 = c.ip6;
 	struct udphdr *udp = c.udp;
@@ -105,7 +106,7 @@ int bfd_observer(struct xdp_md *ctx)
 
 	/* Single-hop 3784 and multihop 4784 (RFC 5883); the reply uses the arrival port. */
 	if (udp->dest != bpf_htons(BFD_PORT_1HOP) && udp->dest != bpf_htons(BFD_PORT_MHOP))
-		return XDP_PASS;
+		return pass_up(data, data_end);
 
 	struct bfd_ctrl_pkt *bfd = (void *)(udp + 1);
 

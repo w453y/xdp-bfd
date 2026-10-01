@@ -26,6 +26,8 @@ unsigned int ktx_xdp_flags = XDP_FLAGS_DRV_MODE;
 __u64 ktx_sweep_ns;
 /* 0 disables the gate. */
 __u64 ktx_deadman_ns = BFD_DEADMAN_NS_DEFAULT;
+/* --spread-pass */
+int ktx_spread_pass;
 /* mmapped so a beat is a plain store. */
 static __u64 *ktx_hb;
 uint64_t *ktx_seq_mem;
@@ -248,6 +250,34 @@ int ktx_load(void)
 			log_err("kernel-tx: dead-man bound NOT applied, the fast path will answer for a wedged engine\n");
 			ktx_deadman_ns = 0;
 		}
+	}
+
+	/* Always written: a takeover without the option turns it off. */
+	{
+		int tune_fd = bpf_object__find_map_fd_by_name(bpf_obj, "tunables");
+		int cpu_fd = bpf_object__find_map_fd_by_name(bpf_obj, "pass_cpus");
+		__u32 k = BFD_TUNE_SPREAD_CPUS;
+		__u64 n = 0;
+
+		if (ktx_spread_pass) {
+			long online = sysconf(_SC_NPROCESSORS_ONLN);
+			struct bpf_cpumap_val v = { .qsize = BFD_PASS_QSIZE };
+
+			if (online > BFD_PASS_CPUS_MAX)
+				online = BFD_PASS_CPUS_MAX;
+			/* A CPU that cannot be added passes in place. */
+			for (__u32 c = 0; cpu_fd >= 0 && c < (__u32)online; c++)
+				if (!bpf_map_update_elem(cpu_fd, &c, &v, 0))
+					n = c + 1;
+			if (!n)
+				log_err("kernel-tx: --spread-pass NOT applied (%s), other traffic is passed in place\n",
+					strerror(errno));
+		}
+		if (tune_fd < 0 || bpf_map_update_elem(tune_fd, &k, &n, 0))
+			n = 0;
+		if (n)
+			log_info("kernel-tx: other traffic spread over %llu CPUs\n",
+				 (unsigned long long)n);
 	}
 
 	ktx_prog = bpf_object__find_program_by_name(bpf_obj, "bfd_observer");

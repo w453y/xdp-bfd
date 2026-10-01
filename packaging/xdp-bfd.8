@@ -88,6 +88,13 @@ real-time load starves the loop. Needs \fBCAP_SYS_NICE\fR, which the engine
 drops once it has the reservation; refused, it logs why and keeps the policy
 it was started with. The packaged unit passes 1000/10000. Off by default.
 .TP
+.B --spread-pass
+Hand traffic that is not BFD to the stack on other CPUs, through a cpumap,
+by flow. The RX CPU then only runs the program, so a flood of other traffic
+cannot back up the ring BFD arrives on; an overloaded CPU drops in its own
+queue. Every packet the host receives on the interface takes this path, so it
+is off by default. Needs a native or generic XDP attach.
+.TP
 .BR --demand ", " --demand-poll-us " " \fI0|10000-600000000\fR
 Demand mode and its poll interval; 0 turns the poll off.
 .TP

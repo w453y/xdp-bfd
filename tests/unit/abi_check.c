@@ -147,7 +147,8 @@ _Static_assert(BFD_MAX_LEN <= HMAC_SHA1_MAX_MSG, "a keyed-SHA1 packet must fit t
 /* Enum values are indices on both planes, so they are pinned by value. */
 _Static_assert(BFD_TUNE_SWEEP_NS == 0, "BFD_TUNE_SWEEP_NS");
 _Static_assert(BFD_TUNE_DEADMAN_NS == 1, "BFD_TUNE_DEADMAN_NS");
-_Static_assert(BFD_TUNE_MAX == 2, "BFD_TUNE_MAX");
+_Static_assert(BFD_TUNE_SPREAD_CPUS == 2, "BFD_TUNE_SPREAD_CPUS");
+_Static_assert(BFD_TUNE_MAX == 3, "BFD_TUNE_MAX");
 _Static_assert(ST_ADMINDOWN == 0, "ST_ADMINDOWN");
 _Static_assert(ST_DOWN == 1, "ST_DOWN");
 _Static_assert(ST_INIT == 2, "ST_INIT");

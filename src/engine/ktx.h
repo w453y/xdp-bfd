@@ -15,6 +15,7 @@ extern unsigned int ktx_xdp_flags;
 extern int ktx_ifindex;
 extern __u64 ktx_sweep_ns;
 extern __u64 ktx_deadman_ns;
+extern int ktx_spread_pass;
 extern int ktx_cfg_fd;
 extern int ktx_flags_fd;
 extern int sess_fd;

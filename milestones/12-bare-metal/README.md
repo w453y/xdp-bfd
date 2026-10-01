@@ -265,6 +265,14 @@ the CPUs. #28 (0ca5ca3) has the engine take the reservation itself and drop
 for a kernel that refuses it. Installed over the running engine with
 `dpkg -i`, it handed over in 10 ms with no down event on the peer.
 
+Both at once, against main with #28: the prio-99 hog on every thread and
+flood arm D at 1.16M frames/s for 50 s inside it (C1, valid BFD for an
+unknown pair, which the program passes up to the engine's socket): 0 down
+events, and the dead-man gate held nothing. Then an hour idle on main
+5b8e73f, sampled each minute (S1, `tools/soak.sh`): 0 down events at either
+end, 1022 Up throughout, the engine's RSS flat at 8 MB and its CPU 4% of a
+core, the minute's stats dump included.
+
 ## Upstream, from this milestone
 
 Proposed on 2026-10-01 as FRR

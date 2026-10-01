@@ -81,6 +81,8 @@ static void case_auth_reject(const char *name, __u8 type, const char *key, __u8 
 		}
 		st.auth_rx_seq = pre_seq;
 		st.auth_rx_seen = 1;
+		/* Just seen: the sweep forgets a window idle for twice the detection time. */
+		st.last_seen_ns = mono_ns();
 		bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY);
 	}
 

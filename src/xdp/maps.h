@@ -116,6 +116,14 @@ struct {
 	__type(value, __u64);
 } tunables SEC(".maps");
 
+/* --spread-pass: the CPUs other traffic is handed to, keyed by CPU number. */
+struct {
+	__uint(type, BPF_MAP_TYPE_CPUMAP);
+	__uint(max_entries, BFD_PASS_CPUS_MAX);
+	__type(key, __u32);
+	__type(value, struct bpf_cpumap_val);
+} pass_cpus SEC(".maps");
+
 /* Shared structs no map carries, declared by value so BTF records their sizes
  * for ktx_abi_check.
  */

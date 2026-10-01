@@ -184,6 +184,10 @@ int opts_parse(int argc, char **argv, struct opts *o)
 			o->demand = 1;
 			continue;
 		}
+		if (!strcmp(a, "--spread-pass")) {
+			ktx_spread_pass = 1;
+			continue;
+		}
 		if (!strcmp(a, "--check")) {
 			o->check = 1;
 			continue;
@@ -238,6 +242,7 @@ int opts_complete(const struct opts *o, const char *argv0)
 			"       [--tick-us <200-100000>]\n"
 			"       [--deadman-us <0|50000-60000000>]  (0 = off)\n"
 			"       [--sched-deadline <runtime_us>/<period_us>|0]\n"
+			"       [--spread-pass]  (traffic not for BFD goes up on other CPUs)\n"
 			"       [--demand] [--demand-poll-us <0|10000-600000000>]\n"
 			"       [--log-level error|info|debug]\n",
 			argv0, argv0);

@@ -1,0 +1,28 @@
+arm L0-default rx-usecs 3 cstate all 60s
+rx-usecs:	3
+Available idle states: POLL C1E C6 C8 C10
+POLL:
+irq/s 16315  pkg W 8.45  cpu busy 0.52%
+1334422 packets received by filter
+0 packets dropped by kernel
+reply latency, peer packet -> DUT packet on the session within 2 ms (us)
+class                   n      p50      p99     p999      max
+asym                 9193    117.8    248.0    297.8    378.1
+auth-keyed           7268    120.4    263.2    373.8    756.5
+auth-meticulous      7270    120.2    254.9    341.4   1007.3
+base                72627    118.3    253.2    328.5   1191.6
+demand               3702     62.2    233.4    286.8    926.0
+echo-v4             14543    118.0    249.1    298.7    994.0
+echo-v6              4841    118.3    259.6    380.3   1039.7
+mhop-v4              9674    118.0    251.1    304.9    448.2
+mhop-v6              4839    118.0    252.0    313.0    705.5
+passive-dut          9686    118.0    253.4    377.4    973.7
+passive-peer         4840    118.0    248.4    342.8   1195.4
+v4-10              282847    118.0    248.9    306.1   1547.1
+v4-1000x5            2908    118.0    248.9    305.2    368.4
+v4-300              48447    118.0    248.4    302.8   1120.1
+v4-ens20            24192    118.0    250.8    297.3    755.8
+v6-100              29015    118.3    249.9    316.1   1215.2
+v6-300              29058    118.3    249.6    297.3    884.5
+v6-ens20            14529    118.3    251.8    330.7    972.7
+ALL                579479    118.0    250.1    309.7   1547.1

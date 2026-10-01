@@ -131,8 +131,8 @@ flapped. #26 moves the unit to 60.
   the mirror: 0 of 55554 control packets unmarked afterwards. FRR's own v6
   echo socket sets no traffic class either; not fixed.
 - **Reply latency on the wire** is 118 us at p50 and 248 us at p99 (B0),
-  against about 1.5 us in the program: the I210's adaptive interrupt
-  moderation and idle C-states. Not investigated further.
+  against about 1.5 us in the program. Not interrupt moderation or
+  C-states, as first written here: the NIC's PCIe link, below.
 - **A peer bfdd stalls on its own configuration.** With 1022 software
   sessions, a timer change on 40 of them and a `write memory` stalled m2's
   bfdd for about a second and flapped 231 sessions, 1 s x5 excepted.
@@ -193,9 +193,59 @@ of those echoes never reached the DUT (the program's own counters account
 for every one that did). At 395k and 590k frames/s the same arm flapped
 nothing. `F-flood.txt` has the per-second echo counts.
 
+## Reply latency: the NIC's PCIe link
+
+Measured on 2026-10-01 at idle, full mesh, 60 s per arm, peer packet in to
+the DUT's packet out, both from the mirror (`tools/lat.sh`,
+`analysis/latency.txt`). Knobs on m1 only.
+
+| ASPM | rx-usecs | C-states | p50 | p99 | p999 | package |
+|---|---|---|---|---|---|---|
+| L1 (as installed) | 3 | all | 118 us | 250 us | 310 us | 8.5 W |
+| L1 | 0 | all | 122 | 237 | 317 | 8.3 W |
+| L1 | 3 | C1E | 114 | 299 | 356 | 33.6 W |
+| L1 | 0 | C1E | 117 | 237 | 237 | 33.9 W |
+| off | 3 | all | **33** | **122** | 162 | 8.9 W |
+| off | 0 | all | **31** | **52** | 143 | 8.9 W |
+| off | 3 | C1E | 34 | 108 | 135 | 33.9 W |
+| off | 0 | C1E | 27 | 46 | 50 | 34.4 W |
+
+At this rate igb already raises about one interrupt per packet, so
+`rx-usecs` alone changes nothing, and holding the cores in C1E costs 25 W
+for no gain at p50. Kernel ICMP replies showed the same spread as the
+program's, from m1 and from m2 alike, so it was neither XDP nor one host.
+With gi1 mirrored both ways the switch took 1.0 us flat, and the rest lay
+between the frame reaching m1 and the reply leaving it; the I210's own
+receive timestamp against the kernel's put it on the receive side. EEE off
+moved nothing and DMA coalescing was already off. The I210's PCIe link was
+in ASPM L1: clearing it on the NIC and its root port took a ping's
+turnaround on m1 from 97 us to 18 us at p50. The link advertises an L1
+exit under 16 us.
+
+The firmware on these boxes enables L1 and withholds ASPM from the kernel
+("FADT indicates ASPM is unsupported, using BIOS configuration"), so
+`pcie_aspm.policy` is refused and `pcie_aspm=off` leaves L1 on. Only the
+BIOS or `setpci` at boot turns it off.
+
+None of this moves a detection time: 250 us is 2.5% of the shortest
+interval FRR accepts. It applies to every frame the host receives, not
+only BFD. With the floor lower, authenticated sessions show the digest
+computed in XDP: about 7 us more at p50 than the rest.
+
+`rx-usecs 0` was also run under floods C and I with ASPM off. Under a
+flood NAPI stays in polling, so it added no interrupts, and the engine and
+softirq used no more CPU. No session went down beyond I's target, the
+session I forges with its real discriminators. That one went down on the
+peer in all five runs at `rx-usecs 0` and in none of three at 3; it also
+went down in the first flood run above, at 3 with ASPM on.
+
+m1 was left as installed: ASPM L1, EEE on, `rx-usecs 3`, all C-states.
+
 ## Upstream, from this milestone
 
-On the fork, not yet proposed:
+Proposed on 2026-10-01 as FRR
+[#23495](https://github.com/FRRouting/frr/pull/23495) and
+[#23496](https://github.com/FRRouting/frr/pull/23496):
 
 - `bfdd-echo6-tclass`: set the IPv6 echo socket's traffic class to CS6, as
   the control sockets and the IPv4 echo already are. The F arm above is
@@ -206,6 +256,11 @@ On the fork, not yet proposed:
   configuration on a session enabled later opens none, and every echo
   session then flaps. Seen on m1 in stock mode; the new topotest
   reproduces it with a link that appears after bfdd starts.
+
+m1 and m2 then ran FRR master with all six open bfdd PRs merged (fork
+branch `lab-combined`, 09b22b01c6), the engine declaring its capabilities
+to #23463: the ladder gave 0 flaps (B12), and with a data plane bfdd held
+no BFD socket at all.
 
 One observation was not reproduced: after the timer change that stalled the
 peer, one peer session kept transmitting at its old 100 ms against 10 ms
@@ -233,4 +288,8 @@ bfdds in a topotest left every session at 7-10 ms.
 - `runs/` - each run's log (phase times, both ends' down counters) and
   stress-ng's own report.
 - `tools/` - the harness (`run.sh`, `mode_a.sh`, `mode_b.sh`), the two
-  analysers and the session-to-class map they read.
+  analysers and the session-to-class map they read; for the reply latency,
+  `lat.sh` (one arm), `icmplat.py`, `icmpsplit.py` and `turn.sh` (ping
+  turnaround from the mirror) and `rxts.py` (NIC against kernel receive
+  time).
+- `runs/lat-*` - each latency arm's log, per class.

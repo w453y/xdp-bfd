@@ -1,0 +1,82 @@
+Wire reply latency on the DUT (m1), 2026-10-01
+
+Peer packet entering the switch (gi2 rx mirror) to the DUT's packet on the
+same session leaving m1 (gi1 rx mirror), within 2 ms. m4 HW timestamps.
+Idle, 1022 sessions, 60 s per arm, FRR lab-combined 09b22b01c6, engine
+dp-capabilities 0.0.3~dev (packaged, FIFO 60). tools/lat.sh; per-class
+output in runs/lat-*/log.
+
+Knobs on m1 only:
+  ASPM     LnkCtl of the I210 (01:00.0) and its root port (00:01.0):
+           L1 as the firmware sets it, or cleared with
+           setpci -s DEV CAP_EXP+10.w=0:3
+  rx-usecs ethtool -C enp1s0 rx-usecs N (3 = igb dynamic conservative)
+  C-states cpupower idle-set -D 2 (C1E deepest); "all" = POLL C1E C6 C8 C10
+
+arm                          ASPM  rx-usecs C-states  irq/s  pkg W   n       p50    p99   p999    us
+L0-default                   L1    3        all       16315  8.45  579479  118.0  250.1  309.7
+L1-itr0                      L1    0        all       17130  8.27  581122  121.6  236.7  316.9
+L2-c1e                       L1    3        C1E       16029 33.60  579537  113.7  298.5  356.0
+L3-itr0-c1e                  L1    0        C1E       17613 33.92  581632  116.6  236.5  237.0
+L4-itr0-poll                 L1    0        POLL      17624 34.12  581858  116.6  236.7  237.2
+L5r-aspmoff                  off   3        all       16156  8.90  574075   32.7  121.6  161.6
+L6r-aspmoff-itr0             off   0        all       16048  8.87  567484   31.0   51.7  143.3
+L7r-aspmoff-c1e              off   3        C1E       15937 33.93  574479   33.9  108.0  134.7
+L8r-aspmoff-itr0-c1e         off   0        C1E       17236 34.43  566179   27.2   46.0   49.6
+L0r-default-after            L1    3        all       16389  8.37  579559  118.0  249.9  314.5
+
+irq/s: all enp1s0 vectors. Already about one interrupt per packet at this
+rate, which is why rx-usecs alone changes nothing.
+
+With ASPM off, authenticated classes sit about 7 us above the rest at p50
+(L5r: auth-keyed 39.1, auth-meticulous 39.3, base 33.1): the digest,
+computed in XDP. With ASPM on it was lost in the wake-up.
+
+A first run of L5-L8 with gi1 mirrored both ways is not used: the peer's
+packets then appear twice, the analyser pairs replies with the second
+copy, and 7-12% fewer pairs matched (539k-507k), the slow ones. p50 read
+17 us there. L5r-L8r repeat them with the mirror as for L0-L4.
+
+Narrowing it down (ICMP, 2500-3000 echoes from m2 every 10 ms):
+
+  replies from m1 and m2, mirror rx only (tools/icmplat.py)
+    m2 replying  p50 120.4  p99 242.5 us
+    m1 replying  p50 120.6  p99 237.7 us      the kernel, not XDP; both hosts
+  EEE off on m1's link
+    m2 replying  p50  98.9  p99 240.8 us
+    m1 replying  p50  97.3  p99 207.4 us      moved both alike: noise
+  gi1 mirrored rx+tx (tools/icmpsplit.py, tools/turn.sh)
+    switch gi2 in -> gi1 out          p50   1.0  p99   1.2 us
+    m1 wire in -> reply on the wire   p50  98.0  p99 212.7 us
+  I210 RX HW timestamp -> kernel RX timestamp (tools/rxts.py; clocks differ,
+  each 1 s window against its own minimum, so approximate)
+    rx-usecs 3   p50 85.4  p99 143.5 us
+    rx-usecs 0   p50 93.7  p99 115.4 us
+    rx-usecs 10  p50 93.2  p99 111.6 us
+    rx-usecs 50  p50 87.3  p99 144.2 us   receive side; not the interrupt timer
+  I210 registers (BAR0, read only)
+    DMACR 0x3000c020: DMA coalescing off. RXDCTL WTHRESH 4 on all queues.
+  m1 wire in -> reply on the wire, ASPM
+    L1 (pcie_aspm.policy write refused)  p50 97.0  p99 205.3 us
+    off (setpci, NIC + root port)        p50 18.1  p99  84.6 us
+
+Why the kernel cannot do it here:
+  ACPI FADT declares the system doesn't support PCIe ASPM, so disable it
+  acpi PNP0A08:00: FADT indicates ASPM is unsupported, using BIOS configuration
+The firmware enables L1 itself and keeps ASPM; pcie_aspm.policy is refused
+and pcie_aspm=off leaves the firmware's L1 in place. The link advertises
+an L1 exit under 16 us.
+
+Floods with ASPM off (flood_hw.py, 10 s, about 1.2M frames/s):
+  rx-usecs 3  C  xdp 175 ns/frame engine 6.2% softirq 2.8%  0 flaps
+  rx-usecs 3  I  xdp 312 ns/frame engine 4.9% softirq 3.8%  0 flaps (3 runs)
+  rx-usecs 0  C  xdp  90 ns/frame engine 1.5% softirq 2.0%  0 flaps
+  rx-usecs 0  I  xdp 170 ns/frame engine 3.8% softirq 1.1%  the target, on the peer (5 runs)
+Under a flood NAPI stays in polling, so rx-usecs 0 adds no interrupts.
+Arm I forges the real session 10.66.0.12/.112 with its discriminators;
+that session went down on the peer in all five runs at rx-usecs 0, in
+none of three at 3, and in the first flood run of 2026-09-30 (rx-usecs 3,
+ASPM L1). No other session went down in any of them, and the engine
+recorded no flap.
+
+m1 left as installed: ASPM L1, EEE on, rx-usecs 3, all C-states.

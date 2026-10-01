@@ -1,0 +1,11 @@
+run B12-lab-combined-v2 mode ladder capture 240s
+before: peer-down 20 dut-down 20 peer-up 1022
+7.0.0-34-generic
+no engine
+capture start 1790845982.457026756
+L3 start 1790846012.460254622
+L3 end 1790846133.534495920
+L4 start 1790846133.536679229
+L4 end 1790846194.286598617
+capture end 1790846229.291794514
+after: peer-down 20 dut-down 20 peer-up 1022

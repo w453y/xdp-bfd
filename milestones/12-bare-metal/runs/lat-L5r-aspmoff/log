@@ -1,0 +1,28 @@
+arm L5r-aspmoff rx-usecs 3 cstate all 60s
+rx-usecs:	3
+Available idle states: POLL C1E C6 C8 C10
+POLL:
+irq/s 16156  pkg W 8.90  cpu busy 0.56%
+1331785 packets received by filter
+0 packets dropped by kernel
+reply latency, peer packet -> DUT packet on the session within 2 ms (us)
+class                   n      p50      p99     p999      max
+asym                 9137     32.2    121.4    160.9    965.4
+auth-keyed           7247     39.1    130.4    172.1    215.1
+auth-meticulous      7234     39.3    130.9    163.3    421.8
+base                72345     33.1    122.8    176.2    992.8
+demand               3595     44.1    117.1    186.9   1071.5
+echo-v4             14442     32.4    118.7    142.1    568.2
+echo-v6              4824     32.9    122.8    169.0    677.6
+mhop-v4              9626     32.4    121.4    159.3   1002.3
+mhop-v6              4813     32.9    122.5    151.4    492.6
+passive-dut          9632     32.4    120.6    156.9    220.3
+passive-peer         4821     32.4    121.8    189.3    644.4
+v4-10              279191     32.4    120.9    157.4   1084.8
+v4-1000x5            2890     32.7    119.9    155.0    269.2
+v4-300              48138     32.4    121.6    154.3    946.3
+v4-ens20            24067     32.4    122.5    161.2   1001.6
+v6-100              28819     32.7    120.9    152.1    954.2
+v6-300              28842     32.7    121.4    166.2    554.8
+v6-ens20            14412     32.9    122.3    156.6    239.1
+ALL                574075     32.7    121.6    161.6   1084.8

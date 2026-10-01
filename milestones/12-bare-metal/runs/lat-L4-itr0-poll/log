@@ -1,0 +1,28 @@
+arm L4-itr0-poll rx-usecs 0 cstate poll 60s
+rx-usecs:	0
+Available idle states: POLL C1E C6 C8 C10
+POLL (DISABLED) :
+irq/s 17624  pkg W 34.12  cpu busy 0.33%
+1335402 packets received by filter
+0 packets dropped by kernel
+reply latency, peer packet -> DUT packet on the session within 2 ms (us)
+class                   n      p50      p99     p999      max
+asym                 9204    116.6    236.7    236.7    246.5
+auth-keyed           7295    118.5    237.2    237.9    239.6
+auth-meticulous      7286    118.5    237.2    237.9    239.8
+base                72729    117.1    237.0    237.5    774.4
+demand               3732     94.2    134.0    219.8    236.7
+echo-v4             14550    116.6    236.7    237.0    361.0
+echo-v6              4855    116.6    237.0    237.2    267.0
+mhop-v4              9681    116.1    236.7    237.0    273.0
+mhop-v6              4854    116.6    237.0    237.2    256.3
+passive-dut          9714    116.6    236.7    236.7    601.5
+passive-peer         4857    116.8    236.7    237.0    365.5
+v4-10              284671    116.6    236.7    237.0    812.8
+v4-1000x5            2908    115.9    236.7    237.0    237.2
+v4-300              48519    116.6    236.7    237.0    711.0
+v4-ens20            24269    116.8    236.7    237.0    582.2
+v6-100              29064    116.6    237.0    237.2    359.3
+v6-300              29117    116.6    237.0    237.2    751.0
+v6-ens20            14553    116.6    237.0    237.5    585.3
+ALL                581858    116.6    236.7    237.2    812.8

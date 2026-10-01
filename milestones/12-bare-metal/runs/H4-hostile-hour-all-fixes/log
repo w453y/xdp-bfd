@@ -1,0 +1,37 @@
+start 17:50:50 peer-down 396668 peer-up 1022
+7.0.0-34-generic
+156425 /usr/sbin/xdp-bfd --sched-deadline 1000/10000 --dplane 50700 --kernel-tx enp1s0 --spread-pass --dp-hold 60 --pin /run/xdp-bfd-pin --stats-dump /tmp/bfd_tx_stats.json
+MemoryMin=8388608 OOMScoreAdjust=-900 17:50:52 phase 0: sudo stress-ng --cpu 12 --sched fifo --sched-prio 99
+17:55:53 phase 1: stress-ng --cpu 12 --timer 24 --timerfd 12 --hrtimers 6
+18:00:54 phase 2: stress-ng --vm 8 --vm-bytes 95% --vm-keep
+18:05:56 phase 3: sudo stress-ng --cpu 12 --sched fifo --sched-prio 50 --vm 4 --vm-bytes 90% --vm-keep
+18:11:26 phase 4: stress-ng --vm 12 --vm-bytes 110% --vm-keep --page-in
+18:16:32 phase 5: stress-ng --cpu 12 --timer 24 --vm 6 --vm-bytes 85% --vm-keep
+18:21:34 phase 0: sudo stress-ng --cpu 12 --sched fifo --sched-prio 99
+18:26:34 phase 2: stress-ng --vm 8 --vm-bytes 95% --vm-keep
+18:31:41 phase 3: sudo stress-ng --cpu 12 --sched fifo --sched-prio 50 --vm 4 --vm-bytes 90% --vm-keep
+18:36:44 phase 4: stress-ng --vm 12 --vm-bytes 110% --vm-keep --page-in
+18:41:53 phase 5: stress-ng --cpu 12 --timer 24 --vm 6 --vm-bytes 85% --vm-keep
+18:46:56 phase 1: stress-ng --cpu 12 --timer 24 --timerfd 12 --hrtimers 6
+stress done 18:51:57
+end 19:04:35 peer-down 400816 peer-up 1022
+[109231053395] lid=3080031269 Init -> Up (peer up)
+[109242369599] lid=1954054095 1 more transition(s) suppressed in the last second
+[109242369599] lid=1954054095 Up -> Down (detect timeout (sweep))
+[109242369599] lid=2729092654 Up -> Down (detect timeout (sweep))
+[109242369599] lid=1678910634 Up -> Down (detect timeout (sweep))
+[109242369599] lid=1521854806 Up -> Down (detect timeout (sweep))
+[109242371079] lid=1521854806 Down -> Init (peer sent Down)
+[109242371079] lid=2729092654 Down -> Init (peer sent Down)
+[109242371079] lid=1678910634 Down -> Init (peer sent Down)
+[109242371163] lid=1954054095 Down -> Init (peer sent Down)
+[109242371397] lid=2729092654 Init -> Up (peer up)
+[109242371397] lid=1521854806 Init -> Up (peer up)
+[109242371397] lid=1678910634 Init -> Up (peer up)
+[109242371397] lid=1954054095 Init -> Up (peer up)
+[109396955642] lid=3631178931 Up -> Down (detect timeout (sweep))
+[109396965846] lid=3631178931 Down -> Init (peer sent Down)
+[109396966652] lid=3631178931 Init -> Up (peer up)
+[109405512666] lid=1156051751 Up -> Down (map: peer sent Down)
+[109405512767] lid=1156051751 Down -> Init (peer sent Down)
+[109405512967] lid=1156051751 Init -> Up (peer up)

@@ -1,0 +1,37 @@
+start 13:32:27 peer-down 3455 peer-up 1022
+7.0.0-34-generic
+119018 /usr/sbin/xdp-bfd --sched-deadline 1000/10000 --dplane 50700 --kernel-tx enp1s0 --dp-hold 60 --pin /run/xdp-bfd-pin --stats-dump /tmp/bfd_tx_stats.json
+MemoryMin=8388608 OOMScoreAdjust=-900 13:32:29 phase 0: sudo stress-ng --cpu 12 --sched fifo --sched-prio 99
+13:37:30 phase 1: stress-ng --cpu 12 --timer 24 --timerfd 12 --hrtimers 6
+13:42:31 phase 2: stress-ng --vm 8 --vm-bytes 95% --vm-keep
+13:47:32 phase 3: sudo stress-ng --cpu 12 --sched fifo --sched-prio 50 --vm 4 --vm-bytes 90% --vm-keep
+13:53:02 phase 4: stress-ng --vm 12 --vm-bytes 110% --vm-keep --page-in
+13:58:03 phase 5: stress-ng --cpu 12 --timer 24 --vm 6 --vm-bytes 85% --vm-keep
+14:03:05 phase 0: sudo stress-ng --cpu 12 --sched fifo --sched-prio 99
+14:08:07 phase 2: stress-ng --vm 8 --vm-bytes 95% --vm-keep
+14:13:09 phase 3: sudo stress-ng --cpu 12 --sched fifo --sched-prio 50 --vm 4 --vm-bytes 90% --vm-keep
+14:18:12 phase 4: stress-ng --vm 12 --vm-bytes 110% --vm-keep --page-in
+14:23:15 phase 5: stress-ng --cpu 12 --timer 24 --vm 6 --vm-bytes 85% --vm-keep
+14:28:18 phase 1: stress-ng --cpu 12 --timer 24 --timerfd 12 --hrtimers 6
+stress done 14:33:18
+end 14:45:25 peer-down 111620 peer-up 1022
+[94129917441] lid=3950927373 Down -> Up (peer sent Init)
+[94129922197] lid=4070736684 Down -> Up (peer sent Init)
+[94129939636] lid=3439863828 Down -> Up (peer sent Init)
+[94130012254] lid=1395388406 Down -> Up (peer sent Init)
+[94130022447] lid=2462334419 Down -> Up (peer sent Init)
+[94130051718] lid=4110952087 Down -> Up (peer sent Init)
+[94130104021] lid=2116968728 Init -> Up (peer up)
+[94130136312] lid=3214331077 Down -> Init (peer sent Down)
+[94130136522] lid=3214331077 Init -> Up (peer up)
+[94130142349] lid=2762141278 Down -> Up (peer sent Init)
+[94130161975] lid=3715328882 Down -> Up (peer sent Init)
+[94130181924] lid=372587705 Down -> Up (peer sent Init)
+[94130184149] lid=1614286073 Down -> Up (peer sent Init)
+[94130188241] lid=1525098134 Init -> Up (peer up)
+[94130250062] lid=3094043216 Down -> Up (peer sent Init)
+[94130274048] lid=1551885352 Down -> Up (peer sent Init)
+[94130379489] lid=2712817915 Down -> Up (peer sent Init)
+[94130937659] lid=3957536004 Down -> Up (peer sent Init)
+[94131414716] lid=269024500 Down -> Up (peer sent Init)
+[94132817328] lid=1236058129 Down -> Up (peer sent Init)

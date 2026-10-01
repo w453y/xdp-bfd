@@ -1,0 +1,44 @@
+stress-ng: info:  [172652] passed: 12: cpu (12)
+stress-ng: info:  [172652] failed: 0
+stress-ng: info:  [172652] metrics untrustworthy: 0
+stress-ng: info:  [172652] successful run completed in 5 mins
+stress-ng: info:  [173352] passed: 54: cpu (12) timer (24) timerfd (12) hrtimers (6)
+stress-ng: info:  [173352] failed: 0
+stress-ng: info:  [173352] metrics untrustworthy: 0
+stress-ng: info:  [173352] successful run completed in 5 mins
+stress-ng: info:  [174241] passed: 8: vm (8)
+stress-ng: info:  [174241] failed: 0
+stress-ng: info:  [174241] metrics untrustworthy: 0
+stress-ng: info:  [174241] successful run completed in 5 mins
+stress-ng: info:  [175831] passed: 12: vm (12)
+stress-ng: info:  [175831] failed: 0
+stress-ng: info:  [175831] metrics untrustworthy: 0
+stress-ng: info:  [175831] successful run completed in 5 mins 5.62 secs
+stress-ng: info:  [176493] passed: 42: cpu (12) timer (24) vm (6)
+stress-ng: info:  [176493] failed: 0
+stress-ng: info:  [176493] metrics untrustworthy: 0
+stress-ng: info:  [176493] successful run completed in 5 mins
+stress-ng: info:  [177337] passed: 12: cpu (12)
+stress-ng: info:  [177337] failed: 0
+stress-ng: info:  [177337] metrics untrustworthy: 0
+stress-ng: info:  [177337] successful run completed in 5 mins
+stress-ng: info:  [178053] passed: 8: vm (8)
+stress-ng: info:  [178053] failed: 0
+stress-ng: info:  [178053] metrics untrustworthy: 0
+stress-ng: info:  [178053] successful run completed in 5 mins 5.61 secs
+stress-ng: info:  [178837] passed: 16: cpu (12) vm (4)
+stress-ng: info:  [178837] failed: 0
+stress-ng: info:  [178837] metrics untrustworthy: 0
+stress-ng: info:  [178837] successful run completed in 5 mins
+stress-ng: info:  [179545] passed: 12: vm (12)
+stress-ng: info:  [179545] failed: 0
+stress-ng: info:  [179545] metrics untrustworthy: 0
+stress-ng: info:  [179545] successful run completed in 5 mins 7.96 secs
+stress-ng: info:  [180178] passed: 42: cpu (12) timer (24) vm (6)
+stress-ng: info:  [180178] failed: 0
+stress-ng: info:  [180178] metrics untrustworthy: 0
+stress-ng: info:  [180178] successful run completed in 5 mins 1.52 sec
+stress-ng: info:  [181087] passed: 54: cpu (12) timer (24) timerfd (12) hrtimers (6)
+stress-ng: info:  [181087] failed: 0
+stress-ng: info:  [181087] metrics untrustworthy: 0
+stress-ng: info:  [181087] successful run completed in 5 mins

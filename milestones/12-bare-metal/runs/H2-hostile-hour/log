@@ -1,0 +1,37 @@
+start 14:50:46 peer-down 126215 peer-up 1022
+7.0.0-34-generic
+119018 /usr/sbin/xdp-bfd --sched-deadline 1000/10000 --dplane 50700 --kernel-tx enp1s0 --dp-hold 60 --pin /run/xdp-bfd-pin --stats-dump /tmp/bfd_tx_stats.json
+MemoryMin=8388608 OOMScoreAdjust=-900 14:50:51 phase 0: sudo stress-ng --cpu 12 --sched fifo --sched-prio 99
+14:55:52 phase 1: stress-ng --cpu 12 --timer 24 --timerfd 12 --hrtimers 6
+15:00:53 phase 2: stress-ng --vm 8 --vm-bytes 95% --vm-keep
+15:05:56 phase 3: sudo stress-ng --cpu 12 --sched fifo --sched-prio 50 --vm 4 --vm-bytes 90% --vm-keep
+15:10:58 phase 4: stress-ng --vm 12 --vm-bytes 110% --vm-keep --page-in
+15:16:05 phase 5: stress-ng --cpu 12 --timer 24 --vm 6 --vm-bytes 85% --vm-keep
+15:21:08 phase 0: sudo stress-ng --cpu 12 --sched fifo --sched-prio 99
+15:26:09 phase 2: stress-ng --vm 8 --vm-bytes 95% --vm-keep
+15:31:11 phase 3: sudo stress-ng --cpu 12 --sched fifo --sched-prio 50 --vm 4 --vm-bytes 90% --vm-keep
+15:36:13 phase 4: stress-ng --vm 12 --vm-bytes 110% --vm-keep --page-in
+15:41:20 phase 5: stress-ng --cpu 12 --timer 24 --vm 6 --vm-bytes 85% --vm-keep
+15:46:22 phase 1: stress-ng --cpu 12 --timer 24 --timerfd 12 --hrtimers 6
+stress done 15:51:24
+end 16:06:31 peer-down 291294 peer-up 1022
+[98830407373] lid=3351020053 Down -> Up (peer sent Init)
+[98830439740] lid=1165201827 Init -> Up (peer up)
+[98830441711] lid=1408060087 Init -> Up (peer up)
+[98830446476] lid=1165889501 Init -> Up (peer up)
+[98830446643] lid=1030650928 Init -> Up (peer up)
+[98830446742] lid=75425552 Init -> Up (peer up)
+[98830454009] lid=1057491038 Down -> Up (peer sent Init)
+[98830460991] lid=2028255518 Down -> Up (peer sent Init)
+[98830463749] lid=1062559039 Init -> Up (peer up)
+[98830481966] lid=195172340 Init -> Up (peer up)
+[98830487771] lid=2133086533 Init -> Up (peer up)
+[98830487992] lid=2435339859 Down -> Up (peer sent Init)
+[98830494464] lid=933227134 Init -> Up (peer up)
+[98830500065] lid=4059304378 Down -> Up (peer sent Init)
+[98830500232] lid=1226703383 Init -> Up (peer up)
+[98830523443] lid=4130741907 Down -> Up (peer sent Init)
+[98830534549] lid=4235362731 Down -> Up (peer sent Init)
+[98830571651] lid=4088999096 Init -> Up (peer up)
+[98830587683] lid=1572955871 Init -> Up (peer up)
+[98830589764] lid=730147199 Init -> Up (peer up)

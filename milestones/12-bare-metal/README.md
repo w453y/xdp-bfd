@@ -273,6 +273,69 @@ events, and the dead-man gate held nothing. Then an hour idle on main
 end, 1022 Up throughout, the engine's RSS flat at 8 MB and its CPU 4% of a
 core, the minute's stats dump included.
 
+## Under attack: flood, CPU and memory at once
+
+The question, from a network engineer: what does an XDP fast path with no
+SmartNIC do when the host is flooded and its CPU and memory are choked at the
+same time? The floods above ran 10 s each on an otherwise idle box. Here,
+`tools/hsoak.sh`: an hour, m3 flooding m1's port at line rate throughout,
+rotating every minute through A-E (plain UDP, wrong TTL, malformed, unknown
+pair, wrong discriminator), while m1 ran a different `stress-ng` every 5
+minutes: a FIFO 99 hog on every thread; CPU and timers; memory at 95% and at
+110% (into swap); and mixes. Down events counted on m2, which was not under
+attack, every 30 s.
+
+| run | m1 | down events in the hour |
+|---|---|---|
+| H1 | (void: see below) | 108,165 |
+| H2 | main | 165,028 |
+| H3 | `--spread-pass` | 68,231 |
+| H4 | `--spread-pass`, flow control off, UDP hashed on ports | **4,148** |
+
+By phase:
+
+| phase | H2 | H3 | H4 |
+|---|---|---|---|
+| CPU and timers | 16k | 13 | 0 |
+| CPU, timers, memory 85% | 23k | 6k | 3 |
+| FIFO 99 hog | 34k | 7k | 453 |
+| FIFO 50, memory 90% | 23k | 5k | 542 |
+| memory 95% | 36k | 28k | 1,675 |
+| memory 110%, 2.2 GB of swap | 32k | 22k | 1,475 |
+
+The engine itself never wavered: on its deadline reservation throughout, no
+major fault, nothing swapped, the dead-man gate never held. What failed was
+m1's receive path, in three layers, found one at a time with 60 s cases
+(`tools/iso.sh`, `tools/iso2.sh`):
+
+1. **Other traffic up the stack on the RX CPU.** Arm A, plain UDP, is passed
+   to the stack. igb hashes UDP on addresses only, so it all lands on one
+   queue whatever its ports, and the stack's work runs in that queue's
+   softirq. Alone that core keeps up (1.21M frames/s); with `stress-ng` on the
+   other threads, the sibling hyperthread and lower clocks take it over the
+   edge (12,715 down events in a minute). Threaded NAPI at FIFO 50 did not
+   help (11,659): it is capacity, not scheduling.
+   [#30](https://github.com/w453y/xdp-bfd/pull/30) (3546741) adds
+   `--spread-pass`, a cpumap redirect of that traffic by flow to every CPU;
+   the RX CPU then only runs the program: 0, and 0 for a single flow too.
+2. **One queue drowns the rest.** With flow control negotiated, igb leaves
+   per-queue drop off, so a queue that falls behind fills the I210's shared
+   RX buffer and all four drop (`rx_missed_errors`). Flow control off turns
+   per-queue drop on: the flooded queue drops its own and the others are
+   clean (12,715 to 2,103 before `--spread-pass`). Hashing UDP on ports
+   spreads a many-flow flood over all queues (0).
+3. **Memory.** With RAM thrashed, the program's own map accesses miss cache:
+   a malformed frame it drops in 73 ns took 142, and a single line-rate flow
+   no longer fits one core. Not the engine (0 major faults), not the
+   driver's allocations (0 failures). With per-queue drop on, nothing was
+   lost at the NIC and 74 down events in a minute remained, nearly all on the
+   10 ms x3 class: a box's own memory bandwidth is the floor here.
+
+H1 is void, and a trap worth knowing: the reply-latency work earlier left
+m1's NIC timestamping every packet (`HWTSTAMP_FILTER_ALL`). igb then reads
+each timestamp from a register, `igb_rd32` took 84% of the RX CPU, and one
+queue managed 200k frames/s instead of 1.21M. Nothing logs it.
+
 ## Upstream, from this milestone
 
 Proposed on 2026-10-01 as FRR

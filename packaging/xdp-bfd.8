@@ -80,6 +80,14 @@ sessions out. 0 turns it off. Keep it above the real-time throttling period
 (\fIsched_rt_period_us\fR, 1 s by default): an engine starved by real-time
 load runs only once a period, and a shorter bound takes its sessions down.
 .TP
+.BI --sched-deadline " runtime_us/period_us|0"
+Run the loop on a \fBSCHED_DEADLINE\fR reservation: \fIruntime_us\fR of
+CPU in every \fIperiod_us\fR (100 up to the period, and 1000-1000000).
+Deadline tasks run ahead of every \fBSCHED_FIFO\fR priority, so no
+real-time load starves the loop. Needs \fBCAP_SYS_NICE\fR, which the engine
+drops once it has the reservation; refused, it logs why and keeps the policy
+it was started with. The packaged unit passes 1000/10000. Off by default.
+.TP
 .BR --demand ", " --demand-poll-us " " \fI0|10000-600000000\fR
 Demand mode and its poll interval; 0 turns the poll off.
 .TP

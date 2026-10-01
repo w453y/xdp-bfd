@@ -12,11 +12,14 @@ After=xdp-bfd-pin.service
 Type=notify
 # A reload's new engine takes over as the main process.
 NotifyAccess=all
+# The loop's SCHED_DEADLINE reservation. Before XDP_BFD_ARGS, so a
+# --sched-deadline there wins, and engine.conf may set this too.
+Environment="XDP_BFD_SCHED=--sched-deadline 1000/10000"
 EnvironmentFile=/etc/xdp-bfd/engine.conf
-ExecStart=/usr/sbin/xdp-bfd $XDP_BFD_ARGS
+ExecStart=/usr/sbin/xdp-bfd $XDP_BFD_SCHED $XDP_BFD_ARGS
 # With --pin, a new engine loads, the running one hands it the sessions, and
 # the peers see nothing; done once the old one is gone. restart still stops.
-ExecReload=/bin/sh -c 'case " $$XDP_BFD_ARGS " in *" --pin "*) ;; *) echo "xdp-bfd: reload needs --pin in XDP_BFD_ARGS" >&2; exit 1;; esac; /usr/sbin/xdp-bfd $$XDP_BFD_ARGS & new=$$!; while kill -0 $$MAINPID 2>/dev/null; do kill -0 $$new 2>/dev/null || exit 1; sleep 0.05; done'
+ExecReload=/bin/sh -c 'case " $$XDP_BFD_ARGS " in *" --pin "*) ;; *) echo "xdp-bfd: reload needs --pin in XDP_BFD_ARGS" >&2; exit 1;; esac; /usr/sbin/xdp-bfd $$XDP_BFD_SCHED $$XDP_BFD_ARGS & new=$$!; while kill -0 $$MAINPID 2>/dev/null; do kill -0 $$new 2>/dev/null || exit 1; sleep 0.05; done'
 # The engine that handed over.
 SuccessExitStatus=75
 Restart=on-failure
@@ -26,11 +29,11 @@ TimeoutStopSec=5
 RuntimeDirectory=xdp-bfd
 
 # CAP_BPF and CAP_PERFMON to load, CAP_NET_ADMIN to attach, CAP_NET_RAW for
-# echo.
+# echo, CAP_SYS_NICE for the reservation; the engine drops it at once.
 User=xdp-bfd
 Group=xdp-bfd
-AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_NET_ADMIN CAP_NET_RAW
-CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_NICE
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_NICE
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -40,12 +43,15 @@ OOMScoreAdjust=-900
 LockPersonality=yes
 
 # The loop runs detection, the heartbeat and every packet the fast path cannot
-# answer. Above threaded interrupt handlers (SCHED_FIFO 50): below real-time
-# load it never runs, as RT throttling leaves its slice to normal tasks only.
+# answer. It takes the reservation above, which runs ahead of any SCHED_FIFO
+# load. Where the kernel refuses it, this: above threaded interrupt handlers
+# (SCHED_FIFO 50), though a real-time load above 60 still starves it, as RT
+# throttling leaves its slice to normal tasks only.
 CPUSchedulingPolicy=fifo
 CPUSchedulingPriority=60
 IOSchedulingClass=realtime
-# Pin off the CPUs serving RX queues if there are spare cores. Not a default.
+# Pin off the CPUs serving RX queues if there are spare cores. Not a default;
+# the kernel refuses a reservation to a task pinned to part of a root domain.
 #CPUAffinity=
 
 # RSS is about 2 MB and flat.

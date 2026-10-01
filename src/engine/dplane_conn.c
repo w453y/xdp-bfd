@@ -218,6 +218,7 @@ void dp_accept(void)
 	fcntl(c, F_SETFL, O_NONBLOCK);
 	dp_conn = c;
 	log_info("dplane: bfdd connected\n");
+	dp_send_capabilities();
 	dp_sessions_reclaim();
 }
 

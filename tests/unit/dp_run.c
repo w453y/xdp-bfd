@@ -41,6 +41,7 @@ int main(void)
 		return 1;
 	}
 
+	case_capabilities();
 	case_whole();
 	case_auth_rollover();
 	case_auth_short();

@@ -454,6 +454,21 @@ static void dp_handle_echo_req(const struct bfddp_message_header *h, const struc
 	dp_send(&m, sizeof(m));
 }
 
+/* On every connection: what we can run. A bfdd without the message ignores it. */
+void dp_send_capabilities(void)
+{
+	struct {
+		struct bfddp_message_header h;
+		struct bfddp_capabilities c;
+	} __attribute__((packed)) m = { 0 };
+
+	m.h.version = 1;
+	m.h.type = htons(BFD_DP_CAPABILITIES);
+	m.h.length = htons(sizeof(m));
+	m.c.capabilities = htobe64(BFDDP_CAP_SESSION_AUTH);
+	dp_send(&m, sizeof(m));
+}
+
 static void dp_handle_counters_req(const struct bfddp_message_header *h, const uint32_t *lid_be)
 {
 	struct {

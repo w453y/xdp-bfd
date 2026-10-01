@@ -1,0 +1,14 @@
+run R4-deadline-005of10-vs-prio99 mode ladder capture 120s
+before: peer-down 2981 dut-down 2981 peer-up 1021
+7.0.0-34-generic
+78584 /usr/sbin/xdp-bfd --dplane 50700 --kernel-tx enp1s0 --dp-hold 60 --pin /run/xdp-bfd-pin --stats-dump /tmp/bfd_tx_stats.json
+CLS RTPRIO COMMAND
+DLN      0 xdp-bfd
+capture start 1790849779.843007079
+L4 start 1790849809.846659306 prio 99
+L4 end 1790849870.874783035
+capture end 1790849905.879659205
+2583815 packets captured
+2584986 packets received by filter
+0 packets dropped by kernel
+after: peer-down 3392 dut-down 3421 peer-up 1022

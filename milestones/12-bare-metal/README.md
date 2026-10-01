@@ -241,6 +241,30 @@ went down in the first flood run above, at 3 with ASPM on.
 
 m1 was left as installed: ASPM L1, EEE on, `rx-usecs 3`, all C-states.
 
+## The priority race, ended
+
+\#26 put the engine above the prio-50 load, which only moves the race the
+writeup's section 4 calls a standoff: a load above 60 starves it as one
+above 10 did. Measured on 2026-10-01 with the hog at 99 instead (`run.sh`
+with `L4PRIO=99 NOL3=1`: 30 s idle, 60 s of hog, 30 s idle), down events
+from both bfdds:
+
+| run | engine | down events |
+|---|---|---|
+| R1 | packaged, `SCHED_FIFO` 60 | 959 |
+| R2 | `SCHED_DEADLINE`, 1 ms in 10 ms (`chrt -d`) | **0** |
+| R3 | 0.2 ms in 10 ms | 0 |
+| R4 | 0.05 ms in 10 ms | 411 |
+| R5 | 1 ms in 10 ms, the usual ladder | 0 |
+| R6 | packaged with [#28](https://github.com/w453y/xdp-bfd/pull/28) | **0** |
+
+Deadline tasks run ahead of every `SCHED_FIFO` priority, so there is no
+number left to outbid, and admission control keeps the reservations within
+the CPUs. #28 (0ca5ca3) has the engine take the reservation itself and drop
+`CAP_SYS_NICE`; the unit passes 1 ms in 10 ms and keeps `SCHED_FIFO` 60
+for a kernel that refuses it. Installed over the running engine with
+`dpkg -i`, it handed over in 10 ms with no down event on the peer.
+
 ## Upstream, from this milestone
 
 Proposed on 2026-10-01 as FRR
@@ -269,13 +293,11 @@ bfdds in a topotest left every session at 7-10 ms.
 
 ## Not covered
 
-- One RT load, prio 50 on every thread. A load above 60 starves the engine
-  again; that is the priority arms race from writeup section 4, moved, not
-  won.
+- One shape of RT load: every thread spinning at a single priority.
 - 1G only, one NIC model on the DUT, 1024 sessions. A single injector,
   so floods reach one RX queue at a time for single-flow arms.
 - With `sched_rt_runtime_us = -1` a starved engine at normal priority
-  would never run; not measured.
+  would never run, and a deadline one should be unaffected; not measured.
 
 ## Files
 

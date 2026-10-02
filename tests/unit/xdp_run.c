@@ -129,6 +129,7 @@ int main(void)
 	case_unknown_session();
 	case_v6_exthdr();
 	case_auth_ratelimit();
+	case_auth_verify_budget();
 	case_auth_seq_shared();
 	case_auth_seq_by_slot();
 	case_bounce_v4();

@@ -31,7 +31,7 @@ _Static_assert(sizeof(struct session_key) == 32, "sizeof(struct session_key)");
 _Static_assert(offsetof(struct session_key, peer) == 0, "offsetof(struct session_key, peer)");
 _Static_assert(offsetof(struct session_key, local) == 16, "offsetof(struct session_key, local)");
 
-_Static_assert(sizeof(struct session_state) == 168, "sizeof(struct session_state)");
+_Static_assert(sizeof(struct session_state) == 176, "sizeof(struct session_state)");
 _Static_assert(offsetof(struct session_state, last_seen_ns) == 0,
 	       "offsetof(struct session_state, last_seen_ns)");
 _Static_assert(offsetof(struct session_state, rx_pkts) == 8,
@@ -91,6 +91,8 @@ _Static_assert(offsetof(struct session_state, last_act_ns) == 144,
 _Static_assert(offsetof(struct session_state, pf_win_ns) == 152,
 	       "offsetof(struct session_state, pf_win_ns)");
 _Static_assert(offsetof(struct session_state, pf_n) == 160, "offsetof(struct session_state, pf_n)");
+_Static_assert(offsetof(struct session_state, verify_tb) == 168,
+	       "offsetof(struct session_state, verify_tb)");
 
 _Static_assert(sizeof(struct bfd_event) == 56, "sizeof(struct bfd_event)");
 _Static_assert(offsetof(struct bfd_event, ts_ns) == 0, "offsetof(struct bfd_event, ts_ns)");
@@ -177,5 +179,5 @@ _Static_assert(BFD_STAT_MOVED_RATELIMITED == 18, "BFD_STAT_MOVED_RATELIMITED");
 _Static_assert(BFD_STAT_ECHO_RATELIMITED == 19, "BFD_STAT_ECHO_RATELIMITED");
 _Static_assert(BFD_STAT_CHANGES_LOST == 20, "BFD_STAT_CHANGES_LOST");
 _Static_assert(BFD_STAT_TOO_FAST == 21, "BFD_STAT_TOO_FAST");
-_Static_assert(BFD_STAT_MAX == 22, "BFD_STAT_MAX");
+_Static_assert(BFD_STAT_MAX == 23, "BFD_STAT_MAX");
 _Static_assert(BFD_EV_DOWN == 0 && BFD_EV_ALIVE == 1 && BFD_EV_CHANGED == 2, "BFD_EV_*");

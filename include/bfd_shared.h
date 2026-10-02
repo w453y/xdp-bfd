@@ -92,7 +92,8 @@ struct bfd_ctrl_pkt {
 	X(MOVED_RATELIMITED, "moved-ratelimited") /* over the moved-address budget */             \
 	X(ECHO_RATELIMITED, "echo-ratelimited")	  /* over a peer's echo budget */                 \
 	X(CHANGES_LOST, "changes-lost")		  /* change ring full; engine resyncs */          \
-	X(TOO_FAST, "too-fast")			  /* faster than the peer may send; dropped */
+	X(TOO_FAST, "too-fast")			  /* faster than the peer may send; dropped */    \
+	X(VERIFY_LIMITED, "verify-limited")	  /* over the digest verify budget */
 
 /* Written between load and attach. Their own map: .rodata would need rewriting
  * whole, and sweep_map holds a bpf_timer.
@@ -244,6 +245,10 @@ struct session_state {
 	__u64 pf_win_ns;    /* Poll and Final budget window */
 	__u32 pf_n;
 	__u32 pad6;
+	/* Digest verify budget, as a virtual clock: one verify per half the
+	 * Required Min RX, a burst of two. Kernel-owned.
+	 */
+	__u64 verify_tb;
 };
 
 /* DOWN and ALIVE on bfd_events; CHANGED on bfd_changes, when something the

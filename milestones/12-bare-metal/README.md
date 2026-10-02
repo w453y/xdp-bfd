@@ -336,6 +336,46 @@ m1's NIC timestamping every packet (`HWTSTAMP_FILTER_ALL`). igb then reads
 each timestamp from a register, `igb_rd32` took 84% of the RX CPU, and one
 queue managed 200k frames/s instead of 1.21M. Nothing logs it.
 
+## A neighbour that holds the key
+
+The second question from the same engineer: assume the neighbour is
+compromised, keys and all; can the engine be hurt beyond that neighbour's own
+session? BFD concedes the session itself to whoever holds its key. Reviewed
+against the code on 2026-10-02 (wiki: Security model):
+
+- **Memory.** Nothing a received packet does allocates. The only fast-path
+  map write is the per-session state insert, reachable only for a configured
+  pair; sessions come from bfdd or static config, never from a packet.
+- **A crash.** A key-holder's packets run the same verified program as any
+  other.
+- **Other sessions: one gap, now closed.** The failure budget counts only bad
+  digests and the s6.8.7 rate gate sat after the digest, so good digests from
+  a key-holder each cost a full HMAC: 2632 ns of program time a frame against
+  68 on the drop path (`BPF_PROG_TEST_RUN`), enough to hold one RX CPU and the
+  sessions sharing its queue.
+  [#32](https://github.com/w453y/xdp-bfd/pull/32) (1829351) budgets verifies
+  before the digest, at twice the rate the peer may send with a burst of two,
+  reading only arrival time and refunding a failed verify so a forger without
+  the key cannot spend the peer's. Same flood: 267 ns a frame. On m1's real
+  traffic, 2.76M authenticated packets in five minutes moved
+  `verify-limited` by zero, 68 of 68 authenticated sessions Up.
+
+## The lab, kept honest
+
+- An unattended upgrade on m2 (openssl, 2026-10-02 06:56) restarted
+  systemd-networkd, which drops addresses it did not configure: the 1022 lab
+  addresses went, and the mesh sat dead until the next measurement noticed.
+  The test ports now carry `critical: true` (networkd keeps static addresses
+  across a restart, proven by restarting it), `bfd-lab-addrs` restarts with
+  networkd, and automatic upgrades are off on all four machines; updates are
+  applied by hand between runs.
+- m1's port is tuned at boot as the wiki recommends for a flooded link
+  (`bfd-lab-nic.service`: flow control off, UDP hashed on ports), before the
+  engine and FRR, since changing flow control resets the NIC. A cold reboot
+  of m1 alone came back to 1022/1024 with every setting in place.
+- The reply-latency work left m1's NIC timestamping every packet, which voided
+  H1 above. A probe that changes NIC state now puts it back.
+
 ## Upstream, from this milestone
 
 Proposed on 2026-10-01 as FRR

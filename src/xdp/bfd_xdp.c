@@ -265,12 +265,37 @@ int bfd_observer(struct xdp_md *ctx)
 			return XDP_DROP;
 		}
 
+		/* The failure budget counts only bad digests, so a peer that holds
+		 * the key could force an HMAC per packet; the s6.8.7 gate below is
+		 * past the digest. Cap verifies at twice the rate the peer may send,
+		 * a burst of two for a Final that follows a packet closely. Does not
+		 * read P or F: they are not yet authenticated.
+		 */
+		__u64 viv = (__u64)cfg->min_rx_us * 500ull;
+
+		if (viv) {
+			__u64 lo = anow > 2 * viv ? anow - 2 * viv : 0;
+
+			if (st->verify_tb < lo)
+				st->verify_tb = lo;
+			if (st->verify_tb + viv > anow) {
+				count(BFD_STAT_VERIFY_LIMITED);
+				return XDP_DROP;
+			}
+			st->verify_tb += viv;
+		}
+
 		asc = bpf_map_lookup_elem(&auth_scratch, &azero);
 		/* Only a send key needs the capability check; the accept set
 		 * verifies without one.
 		 */
 		if (!asc || (cfg->auth_type && !xdp_auth_fast(cfg)) ||
 		    !xdp_auth_verify(ctx, iph ? BFD_OFF_V4 : BFD_OFF_V6, bfd, cfg, st, asc)) {
+			/* Bad digests are the failure budget's; a forger without the
+			 * key must not spend the peer's verifies.
+			 */
+			if (viv)
+				st->verify_tb -= viv;
 			st->auth_fail_n++;
 			count(BFD_STAT_AUTH_BAD);
 			return XDP_DROP;

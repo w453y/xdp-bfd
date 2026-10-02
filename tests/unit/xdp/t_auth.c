@@ -237,6 +237,98 @@ static void case_auth_ratelimit(void)
 	map_reset();
 }
 
+/* A 1 s Required Min RX: a token every 500 ms, so a slow runner cannot refill
+ * the budget between two syscalls.
+ */
+static int verify_budget_arm(struct session_key *k)
+{
+	struct tx_cfg cfg;
+
+	map_reset();
+	arm_session_auth(BFD_AUTH_METICULOUS_SHA1, 7, "topsecret");
+	if (bpf_map_lookup_elem(cfg_fd, k, &cfg))
+		return -1;
+	cfg.min_rx_us = 1000000;
+	return cfg_put(cfg_fd, k, &cfg);
+}
+
+static void case_auth_verify_budget(void)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct session_state st;
+	struct frame f;
+	unsigned long long l0, b0;
+	int n = 12, bad = 0;
+
+	/* A peer holding the key: good digests, back to back. Two verify. */
+	if (verify_budget_arm(&k)) {
+		printf("FAIL auth-verify-budget (no session)\n");
+		fails++;
+		return;
+	}
+	l0 = stat_get(BFD_STAT_VERIFY_LIMITED);
+	b0 = stat_get(BFD_STAT_AUTH_BAD);
+	for (int i = 0; i < n; i++) {
+		build_sha1_auth(&f, "topsecret", 7, 100 + i, BFD_AUTH_METICULOUS_SHA1);
+		run_frame(&f, NULL, NULL);
+	}
+	if (stat_get(BFD_STAT_VERIFY_LIMITED) - l0 != (unsigned long long)n - 2) {
+		printf("     key holder: verify-limited +%llu, want +%d\n",
+		       stat_get(BFD_STAT_VERIFY_LIMITED) - l0, n - 2);
+		bad = 1;
+	}
+	if (stat_get(BFD_STAT_AUTH_BAD) != b0) {
+		printf("     key holder: auth-bad moved\n");
+		bad = 1;
+	}
+
+	/* A budget, not a latch: rewound, the next good digest verifies. */
+	if (!bpf_map_lookup_elem(sess_fd, &k, &st)) {
+		st.verify_tb = 0;
+		bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY);
+	}
+	l0 = stat_get(BFD_STAT_VERIFY_LIMITED);
+	build_sha1_auth(&f, "topsecret", 7, 100 + n, BFD_AUTH_METICULOUS_SHA1);
+	run_frame(&f, NULL, NULL);
+	if (stat_get(BFD_STAT_VERIFY_LIMITED) != l0) {
+		printf("     refilled budget still limited\n");
+		bad = 1;
+	}
+
+	/* No key: bad digests are the failure budget's, and leave the peer's. */
+	if (verify_budget_arm(&k)) {
+		printf("FAIL auth-verify-budget (no session)\n");
+		fails++;
+		return;
+	}
+	l0 = stat_get(BFD_STAT_VERIFY_LIMITED);
+	b0 = stat_get(BFD_STAT_AUTH_BAD);
+	for (int i = 0; i < 2; i++) {
+		build_sha1_auth(&f, "topsecret", 7, 100 + i, BFD_AUTH_METICULOUS_SHA1);
+		f.b[f.len - 1] ^= 0xff;
+		run_frame(&f, NULL, NULL);
+	}
+	for (int i = 2; i < 4; i++) {
+		build_sha1_auth(&f, "topsecret", 7, 100 + i, BFD_AUTH_METICULOUS_SHA1);
+		run_frame(&f, NULL, NULL);
+	}
+	if (stat_get(BFD_STAT_AUTH_BAD) - b0 != 2) {
+		printf("     no key: auth-bad +%llu, want +2\n", stat_get(BFD_STAT_AUTH_BAD) - b0);
+		bad = 1;
+	}
+	if (stat_get(BFD_STAT_VERIFY_LIMITED) != l0) {
+		printf("     no key: the forger spent the peer's verifies\n");
+		bad = 1;
+	}
+
+	if (bad) {
+		printf("FAIL auth-verify-budget\n");
+		fails++;
+	} else
+		printf("ok   %-40s %d of %d verified\n", "auth-verify-budget", 2, n);
+	map_reset();
+}
+
 /* The kernel draws its TX sequence from the counter it shares with the engine,
  * so a number either plane used is never used again.
  */

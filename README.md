@@ -72,6 +72,11 @@ replaced.
 [review/](review/) — an outside reviewer's read of the tree, and what
 came of it.
 
+## Branding
+
+[branding/](branding/): the repository's social preview image, 1280x640,
+for Settings, Social preview on GitHub.
+
 ## License
 
 GPL-2.0. See [LICENSE](LICENSE).

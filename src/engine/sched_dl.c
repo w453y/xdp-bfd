@@ -34,20 +34,19 @@ struct dl_attr {
 	uint64_t period;
 };
 
-/* Only needed for the reservation; kept, it reschedules any task. */
-static void drop_sys_nice(void)
+void cap_drop(int cap, const char *name)
 {
 	struct __user_cap_header_struct h = { .version = _LINUX_CAPABILITY_VERSION_3 };
 	struct __user_cap_data_struct d[2];
 
-	prctl(PR_CAP_AMBIENT_LOWER, CAP_SYS_NICE, 0, 0, 0);
+	prctl(PR_CAP_AMBIENT_LOWER, cap, 0, 0, 0);
 	if (syscall(SYS_capget, &h, d))
 		return;
-	d[0].effective &= ~CAP_TO_MASK(CAP_SYS_NICE);
-	d[0].permitted &= ~CAP_TO_MASK(CAP_SYS_NICE);
-	d[0].inheritable &= ~CAP_TO_MASK(CAP_SYS_NICE);
+	d[CAP_TO_INDEX(cap)].effective &= ~CAP_TO_MASK(cap);
+	d[CAP_TO_INDEX(cap)].permitted &= ~CAP_TO_MASK(cap);
+	d[CAP_TO_INDEX(cap)].inheritable &= ~CAP_TO_MASK(cap);
 	if (syscall(SYS_capset, &h, d))
-		log_err("cannot drop CAP_SYS_NICE: %s\n", strerror(errno));
+		log_err("cannot drop %s: %s\n", name, strerror(errno));
 }
 
 void sched_dl_apply(void)
@@ -69,5 +68,6 @@ void sched_dl_apply(void)
 			log_info("engine: SCHED_DEADLINE, %uus every %uus\n", dl_runtime_us,
 				 dl_period_us);
 	}
-	drop_sys_nice();
+	/* Only needed for the reservation; kept, it reschedules any task. */
+	cap_drop(CAP_SYS_NICE, "CAP_SYS_NICE");
 }

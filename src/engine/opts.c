@@ -15,6 +15,7 @@
 #include "stats.h"
 #include "sched_dl.h"
 #include "opts.h"
+#include "static.h"
 
 /* "10s" must not parse as 10. Nonzero if not a whole number. */
 static int num(const char *a, unsigned long long *v)
@@ -23,6 +24,26 @@ static int num(const char *a, unsigned long long *v)
 
 	*v = strtoull(a, &end, 10);
 	return end == a || *end;
+}
+
+/* The pidfile is named by the last component, which a trailing slash would
+ * empty.
+ */
+static int pin_dir(const char *a)
+{
+	static char pin[256];
+	size_t n = strlen(a);
+
+	/* Cut short, it would name another directory. */
+	if (n >= sizeof(pin)) {
+		log_err("--pin: %.32s... is too long a path\n", a);
+		return -1;
+	}
+	memcpy(pin, a, n + 1);
+	while (n > 1 && pin[n - 1] == '/')
+		pin[--n] = 0;
+	ktx_pin_dir = pin;
+	return 0;
 }
 
 /* The account bfdd runs as. */
@@ -108,7 +129,7 @@ static int opt_value(const char *opt, const char *a, struct opts *o)
 	else if (!strcmp(opt, "--bpf-obj"))
 		ktx_obj_path = a;
 	else if (!strcmp(opt, "--pin"))
-		ktx_pin_dir = a;
+		return pin_dir(a);
 	else if (!strcmp(opt, "--stats-dump"))
 		stats_path = a;
 	else if (!strcmp(opt, "--auth"))
@@ -248,5 +269,17 @@ int opts_complete(const struct opts *o, const char *argv0)
 			argv0, argv0);
 		return 0;
 	}
+
+	/* Whatever can be refused is refused here: after a --pin takeover the
+	 * running engine is gone.
+	 */
+	if (ktx_pin_dir && !o->ktx_if) {
+		log_err("--pin needs --kernel-tx; what it keeps is the program's\n");
+		return 0;
+	}
+	if (o->dplane && !dp_listen_arg_ok(o->dplane))
+		return 0;
+	if (o->local && static_check(o))
+		return 0;
 	return 1;
 }

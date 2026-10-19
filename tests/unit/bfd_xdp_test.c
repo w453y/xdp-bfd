@@ -73,7 +73,10 @@ int hmac_once(struct xdp_md *ctx)
 
 	if (!s)
 		return XDP_ABORTED;
-	s->ok = hmac_sha1_blocks(s->kpad, s->mblk, s->msglen, s->out, s->tmp);
+	/* Masked first: some clang and kernel pairs bound only a zero-extended
+	 * copy of a length read from a map. The vectors stay under 64.
+	 */
+	s->ok = hmac_sha1_blocks(s->kpad, s->mblk, s->msglen & 63, s->out, s->tmp);
 	return XDP_PASS;
 }
 

@@ -65,9 +65,11 @@ static int static_auth_apply(struct session *s, const char *spec)
 	k->keylen = (uint8_t)klen;
 	memcpy(k->kpad, c2 + 1, klen);
 
+	/* An adopted session keeps the sequence the peer's window follows. */
+	if (!s->auth_present)
+		auth_seq_seed(s, (uint32_t)random());
 	s->auth_present = 1;
 	s->auth_nkeys = 1;
-	auth_seq_seed(s, (uint32_t)random());
 	/* As the dplane path does when keys arrive. */
 	session_auth_evaluate(s, (int64_t)time(NULL));
 	if (!s->auth_type) {
@@ -109,23 +111,54 @@ static int static_addrs(struct session *s, const char *local, const char *peer)
 	return 0;
 }
 
+int static_check(const struct opts *o)
+{
+	static struct session scratch;
+	int rc;
+
+	memset(&scratch, 0, sizeof(scratch));
+	rc = static_addrs(&scratch, o->local, o->peer);
+	if (!rc && o->auth)
+		rc = static_auth_apply(&scratch, o->auth);
+	memset(&scratch, 0, sizeof(scratch));
+	return rc;
+}
+
 int static_session_add(const struct opts *o)
 {
-	struct session *s = sess_alloc();
+	static struct session want;
+	struct session *s;
 
-	if (static_addrs(s, o->local, o->peer))
+	memset(&want, 0, sizeof(want));
+	if (static_addrs(&want, o->local, o->peer))
 		return -1;
-	s->lid = (random() & 0x7fffffff) | 1;
-	s->wire_disc = s->lid;
+	/* After a --pin takeover the program's session is held already; keep
+	 * it, so the peer sees one discriminator.
+	 */
+	s = sess_by_addr(&want.peer, &want.local);
+	if (s) {
+		s->orphaned = 0;
+		if (!s->lid)
+			s->lid = s->wire_disc;
+	} else {
+		s = sess_alloc();
+		if (!s)
+			return -1;
+		s->local = want.local;
+		s->peer = want.peer;
+		s->family = want.family;
+		s->lid = (random() & 0x7fffffff) | 1;
+		s->wire_disc = s->lid;
+		s->applied_tx_us = DEF_MIN_TX;
+		s->state = ST_DOWN;
+		s->pushed_valid = 0;
+		s->next_tx_us = now_us();
+	}
 	sess_reindex(s);
 	s->min_tx_us = DEF_MIN_TX;
-	s->applied_tx_us = DEF_MIN_TX;
 	s->min_rx_us = DEF_MIN_RX;
 	s->detect_mult = DEF_MULT;
-	s->state = ST_DOWN;
 	s->demand = o->demand;
-	s->pushed_valid = 0;
-	s->next_tx_us = now_us();
 	if (o->auth && static_auth_apply(s, o->auth))
 		return -1;
 	log_info("bfd_tx: static session lid=%u %s -> %s%s\n", s->lid, o->local, o->peer,

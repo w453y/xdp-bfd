@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* bfd_loader.c - debugging observer: attach, dump sessions each second, log liveness events. */
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -114,8 +115,13 @@ int main(int argc, char **argv)
 	}
 	const char *mode = (xdp_flags & XDP_FLAGS_SKB_MODE) ? "GENERIC" : "NATIVE";
 
-	if (bpf_xdp_attach(ifindex, bpf_program__fd(prog), xdp_flags, NULL)) {
-		fprintf(stderr, "%s XDP attach failed on %s\n", mode, argv[1]);
+	/* Never over another program, such as an engine attached without a
+	 * link: replacing it would take its sessions down.
+	 */
+	if (bpf_xdp_attach(ifindex, bpf_program__fd(prog), xdp_flags | XDP_FLAGS_UPDATE_IF_NOEXIST,
+			   NULL)) {
+		fprintf(stderr, "%s XDP attach failed on %s%s\n", mode, argv[1],
+			errno == EBUSY ? ": another XDP program is attached" : "");
 		return 1;
 	}
 	printf("attached (%s mode)\n", mode);

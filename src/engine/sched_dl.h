@@ -11,4 +11,7 @@ extern unsigned int dl_runtime_us, dl_period_us;
  */
 void sched_dl_apply(void);
 
+/* Out of every set, ambient included. */
+void cap_drop(int cap, const char *name);
+
 #endif /* BFD_ENGINE_SCHED_DL_H */

@@ -133,8 +133,10 @@ past the handover the dead-man gate keeps the program answering with no
 engine running.
 .PP
 SIGTERM stops the engine as before: AdminDown to every peer, and the pins
-removed. A build whose maps differ from the pinned ones does not take them
-over; it discards them and starts fresh.
+removed. A build whose maps differ from the pinned ones cannot take them
+over: started while an engine holds them, it exits 1 and leaves that engine
+running, so the change needs a restart; started with no engine, it discards
+them and starts fresh.
 .PP
 The pin directory must be on bpffs and writable by the engine, and
 .I /run/xdp-bfd

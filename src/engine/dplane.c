@@ -72,6 +72,8 @@ void sess_teardown_one(struct session *s, const char *why)
  */
 void dp_sessions_orphan(const char *why)
 {
+	/* A sweep armed by an earlier reconnect must not cut this hold short. */
+	dp_reconcile_us = 0;
 	if (!dp_hold_us) {
 		dp_sessions_teardown(why);
 		return;
@@ -166,30 +168,35 @@ static int addr_unspecified(const struct bfd_addr *a, int family)
 	return a->b[12] == 0 && a->b[13] == 0 && a->b[14] == 0 && a->b[15] == 0;
 }
 
-static void dp_resolve_local(struct session *s)
+static void resolve_local(int family, const struct bfd_addr *peer, struct bfd_addr *local)
 {
-	int fd = socket(s->family, SOCK_DGRAM, 0);
+	int fd = socket(family, SOCK_DGRAM, 0);
 
 	if (fd < 0)
 		return;
-	if (s->family == AF_INET6) {
+	if (family == AF_INET6) {
 		struct sockaddr_in6 pa = { .sin6_family = AF_INET6, .sin6_port = htons(PORT_CTRL) };
 		struct sockaddr_in6 la = { 0 };
 		socklen_t ll = sizeof(la);
 
-		memcpy(&pa.sin6_addr, s->peer.b, 16);
+		memcpy(&pa.sin6_addr, peer->b, 16);
 		if (!connect(fd, (void *)&pa, sizeof(pa)) && !getsockname(fd, (void *)&la, &ll))
-			key_set_v6(&s->local, &la.sin6_addr);
+			key_set_v6(local, &la.sin6_addr);
 	} else {
 		struct sockaddr_in pa = { .sin_family = AF_INET, .sin_port = htons(PORT_CTRL) };
 		struct sockaddr_in la = { 0 };
 		socklen_t ll = sizeof(la);
 
-		memcpy(&pa.sin_addr.s_addr, &s->peer.b[12], 4);
+		memcpy(&pa.sin_addr.s_addr, &peer->b[12], 4);
 		if (!connect(fd, (void *)&pa, sizeof(pa)) && !getsockname(fd, (void *)&la, &ll))
-			key_set_v4(&s->local, la.sin_addr.s_addr);
+			key_set_v4(local, la.sin_addr.s_addr);
 	}
 	close(fd);
+}
+
+static void dp_resolve_local(struct session *s)
+{
+	resolve_local(s->family, &s->peer, &s->local);
 }
 
 /* Once a second while not Up; if the route moved, drop the old key. */
@@ -209,7 +216,8 @@ void dp_reresolve_wildcard(struct session *s, uint64_t now)
 		log_info("dplane: lid=%u wildcard local moved to a new source; re-keying the fast path\n",
 			 s->lid);
 		ktx_clear_key(&s->peer, &old, s->wire_disc);
-		echo_peer_refresh(&s->peer, s);
+		/* Same peer, so this session still counts. */
+		echo_peer_refresh(&s->peer, NULL);
 		s->echo_disc_done = 0;
 		s->pushed_valid = 0;
 		sess_reindex(s);
@@ -224,6 +232,8 @@ static struct session *dp_add_find(uint32_t lid, const struct bfddp_session_msg 
 {
 	struct session *s = sess_by_lid(lid);
 	struct session *stale;
+	struct bfd_addr l, p;
+	int fam;
 
 	if (s) {
 		/* bfdd reconnected with stable lids. It ran the session itself
@@ -234,8 +244,15 @@ static struct session *dp_add_find(uint32_t lid, const struct bfddp_session_msg 
 		s->orphaned = 0;
 		return s;
 	}
-	stale = sess_by_addr_pair_local(sm);
-	if (stale && dp_hold_us && stale->state == ST_UP) {
+	/* An orphan is keyed on the local it resolved to; bfdd sends the
+	 * wildcard again.
+	 */
+	sm_addrs(sm, &l, &p, &fam);
+	if (addr_unspecified(&l, fam))
+		resolve_local(fam, &p, &l);
+	stale = sess_by_addr(&p, &l);
+	if (stale && dp_hold_us && stale->orphaned && stale->state == ST_UP &&
+	    !!stale->is_mhop == !!(ntohl(sm->flags) & SESSION_MULTIHOP)) {
 		/* Graceful restart: bfdd re-registered the pair under a new
 		 * lid. Adopt the live session in place.
 		 */
@@ -246,6 +263,12 @@ static struct session *dp_add_find(uint32_t lid, const struct bfddp_session_msg 
 	}
 	if (stale) {
 		log_info("dplane: ADD lid=%u replaces stale lid=%u\n", lid, stale->lid);
+		/* bfdd still runs that lid; tell it the session is gone. */
+		if (!stale->orphaned && stale->state != ST_DOWN) {
+			stale->state = ST_DOWN;
+			stale->diag = 0;
+			dp_notify_state(stale);
+		}
 		ktx_clear(stale);
 		memset(stale, 0, sizeof(*stale));
 	}
@@ -378,6 +401,7 @@ static void dp_handle_add(const struct bfddp_session_msg *sm, uint64_t t)
 	int fresh = 0, adopted = 0;
 	struct session *s = dp_add_find(lid, sm, &fresh, &adopted);
 	uint32_t old_tx, old_rx;
+	int was_demand;
 
 	if (!s)
 		return;
@@ -408,6 +432,7 @@ static void dp_handle_add(const struct bfddp_session_msg *sm, uint64_t t)
 	s->min_echo_rx_us = (flags & SESSION_ECHO) ? ntohl(sm->min_echo_rx) : 0;
 	s->min_ttl = sm->ttl ? sm->ttl : 255;
 	s->is_mhop = !!(flags & SESSION_MULTIHOP);
+	was_demand = s->demand;
 	s->demand = !!(flags & SESSION_DEMAND);
 
 	dp_add_auth(s, flags);
@@ -418,6 +443,14 @@ static void dp_handle_add(const struct bfddp_session_msg *sm, uint64_t t)
 	 */
 	echo_peer_refresh(&s->peer, NULL);
 	dp_add_timers(s, t, fresh, old_tx, old_rx);
+	if (!fresh && was_demand && !s->demand && s->state == ST_UP) {
+		/* The peer is silent because we asked: a Poll brings it back, and
+		 * detection starts now.
+		 */
+		s->last_rx_us = t;
+		if (!s->polling)
+			fsm_start_poll(s, t);
+	}
 	dp_add_log(s, fresh);
 	if (adopted)
 		dp_notify_state(s);
@@ -451,6 +484,21 @@ static void dp_handle_echo_req(const struct bfddp_message_header *h, const struc
 
 	clock_gettime(CLOCK_REALTIME, &ts);
 	m.e.dp_time = htobe64((uint64_t)ts.tv_sec * 1000000ull + ts.tv_nsec / 1000);
+	dp_send(&m, sizeof(m));
+}
+
+/* Answered by bfdd; dp_conn asks when it doubts the connection. */
+void dp_send_echo_request(void)
+{
+	struct {
+		struct bfddp_message_header h;
+		struct bfddp_echo e;
+	} __attribute__((packed)) m = { 0 };
+
+	m.h.version = 1;
+	m.h.type = htons(ECHO_REQUEST);
+	m.h.length = htons(sizeof(m));
+	m.e.dp_time = htobe64(now_us());
 	dp_send(&m, sizeof(m));
 }
 
@@ -489,11 +537,13 @@ static void dp_handle_counters_req(const struct bfddp_message_header *h, const u
 
 		ktx_session_counters(s, &krx, &ktx);
 
-		/* Userspace plus kernel counts. Kernel bytes assume 24 per
-		 * packet.
+		/* The program counts every packet it saw, including those it
+		 * passed up, so userspace adds only what came round it. Kernel
+		 * bytes assume 24 per packet. Replies and our own sends are
+		 * apart.
 		 */
-		uint64_t rx = s->rx_pkts + krx;
-		uint64_t rx_bytes = s->rx_bytes + krx * BFD_MIN_LEN;
+		uint64_t rx = krx > s->rx_pkts ? krx : s->rx_pkts;
+		uint64_t rx_bytes = s->rx_bytes + (rx - s->rx_pkts) * BFD_MIN_LEN;
 		uint64_t tx = s->tx_pkts + ktx;
 
 		m.c.control_input_bytes = htobe64(rx_bytes);
@@ -594,7 +644,7 @@ void dp_process(const uint8_t *buf, size_t len)
 			dp_handle_echo_req(h, (const void *)payload);
 		break;
 	case ECHO_REPLY:
-		break; /* unsolicited: we send no ECHO_REQUEST */
+		break; /* reading it is the answer */
 	case DP_REQUEST_SESSION_COUNTERS:
 		if (plen >= sizeof(uint32_t))
 			dp_handle_counters_req(h, (const void *)payload);

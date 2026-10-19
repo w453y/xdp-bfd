@@ -307,12 +307,15 @@ void ktx_session_counters(const struct session *s, uint64_t *rx, uint64_t *tx)
 static void ktx_apply(struct session *s, const struct session_state *m, uint64_t t)
 {
 	struct session_state ms = *m;
+	/* Whether the program saw a packet userspace did not. */
+	int news;
 
 	sess_wake(s);
 	s->ktx_seen_us = ms.last_seen_ns / 1000;
 	if (s->state != ST_UP)
 		return;
-	if (ms.last_seen_ns / 1000 > s->last_rx_us)
+	news = ms.last_seen_ns / 1000 > s->last_rx_us;
+	if (news)
 		s->last_rx_us = ms.last_seen_ns / 1000;
 	/* The program cannot store a TX time, but a reply leaves in the softirq
 	 * of the packet that caused it.
@@ -328,10 +331,11 @@ static void ktx_apply(struct session *s, const struct session_state *m, uint64_t
 		s->r_state = ms.remote_state;
 	if (ms.detect_iv_us)
 		s->detect_iv_us = ms.detect_iv_us;
-	/* The RX window comes back while the fast path answers, since
-	 * userspace then sees no packets.
+	/* The program verifies every packet, answered or passed up, so its
+	 * window is never behind ours.
 	 */
-	if (s->auth_present && ktx_answers(s) && ms.auth_rx_seen) {
+	if (s->auth_present && ms.auth_rx_seen &&
+	    (!s->auth_rx_seen || (int32_t)(ms.auth_rx_seq - s->auth_rx_seq) > 0)) {
 		s->auth_rx_seq = ms.auth_rx_seq;
 		s->auth_rx_seen = 1;
 	}
@@ -381,8 +385,13 @@ static void ktx_apply(struct session *s, const struct session_state *m, uint64_t
 		s->r_flags = ms.remote_flags;
 		dp_notify_state(s);
 	}
-	if (ms.remote_state == ST_DOWN)
+	/* An entry no newer than what userspace saw is stale: the peer may
+	 * have come back on a path the program does not cover.
+	 */
+	if (news && ms.remote_state == ST_DOWN)
 		state_transition(s, ST_DOWN, 3, t, "map: peer sent Down");
+	else if (news && ms.remote_state == ST_ADMINDOWN)
+		state_transition(s, ST_DOWN, 3, t, "map: peer AdminDown");
 }
 
 /* One session, now: before a decision that rests on what the kernel saw. */

@@ -10,6 +10,10 @@ static uint64_t caps_bits;
 
 static int rig_up(void)
 {
+	/* A bfdd still connected would keep the engine's connection. */
+	if (cli >= 0)
+		close(cli);
+	cli = -1;
 	snprintf(sockpath, sizeof(sockpath), "/tmp/dp_run.%d.sock", getpid());
 	unlink(sockpath);
 

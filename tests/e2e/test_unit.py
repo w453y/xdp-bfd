@@ -150,6 +150,8 @@ def _on_deadline(pid):
     assert not any(
         int(c.split()[1], 16) >> 23 & 1 for c in caps
     ), "the engine kept CAP_SYS_NICE"
+    # CAP_CHOWN
+    assert not any(int(c.split()[1], 16) & 1 for c in caps), "the engine kept CAP_CHOWN"
 
 
 def test_the_engine_runs_on_a_deadline_reservation(unit):

@@ -12,6 +12,7 @@
 #include <sys/resource.h>
 #include <sys/timerfd.h>
 #include <sys/utsname.h>
+#include <linux/capability.h>
 
 #include "bfd_shared.h"
 #include "util.h"
@@ -339,12 +340,33 @@ int main(int argc, char **argv)
 	}
 
 	nofile_raise();
+	/* Before the takeover: once the old engine has gone, a stats scraper's
+	 * SIGUSR1 must not kill this one. The handlers only set flags, and wait
+	 * for the loop: a pending signal makes the verifier give up the load.
+	 */
+	sigset_t startup;
+
+	sigemptyset(&startup);
+	sigaddset(&startup, SIGUSR1);
+	sigaddset(&startup, SIGUSR2);
+	sigaddset(&startup, SIGTERM);
+	sigaddset(&startup, SIGINT);
+	sigprocmask(SIG_BLOCK, &startup, NULL);
+	signal(SIGUSR1, stats_on_signal);
+	signal(SIGTERM, shutdown_on_signal);
+	signal(SIGINT, shutdown_on_signal);
+	if (ktx_pin_dir)
+		signal(SIGUSR2, shutdown_on_signal);
+
 	/* A running engine hands over only once the slow part, loading and
 	 * verifying the object, is done here: then it is gone for milliseconds.
 	 */
 	if (ktx_pin_dir) {
 		int old = ktx_pin_holder();
 
+		if (old < 0)
+			return 1;
+		ktx_pin_taking_over = old > 0;
 		if (old && (ktx_load() || ktx_pin_take_over(old)))
 			return 1;
 	}
@@ -360,6 +382,8 @@ int main(int argc, char **argv)
 	}
 	if (o.dplane && dp_listen_init(o.dplane))
 		return 1;
+	/* Only to hand the --dp-peer socket to bfdd. */
+	cap_drop(CAP_CHOWN, "CAP_CHOWN");
 	/* Before the first pass, so nothing overwrites what the program holds. */
 	if (ktx_reused)
 		ktx_adopt(dp_hold_us);
@@ -367,15 +391,10 @@ int main(int argc, char **argv)
 	sd_note("READY=1");
 
 	srandom(getpid() ^ time(NULL));
-	/* The handlers only set flags. */
-	signal(SIGUSR1, stats_on_signal);
-	signal(SIGTERM, shutdown_on_signal);
-	signal(SIGINT, shutdown_on_signal);
-	if (ktx_pin_dir)
-		signal(SIGUSR2, shutdown_on_signal);
 
 	if (o.local && static_session_add(&o))
 		return 1;
+	sigprocmask(SIG_UNBLOCK, &startup, NULL);
 
 	for (;;) {
 		int ready[RX_NSOCK] = { 0 };
@@ -384,6 +403,8 @@ int main(int argc, char **argv)
 		auth_rollover_tick();
 
 		dp_flush();
+		dp_conn_check(now_us());
+		dp_conn_reap();
 
 		/* Deferred state changes go out in the room the flush freed. */
 		dp_notify_flush_pending();

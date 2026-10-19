@@ -121,6 +121,16 @@ static __always_inline int parse_l3(struct ethhdr *eth, void *data_end, struct l
 			if (eh->nexthdr != IPPROTO_UDP)
 				return XDP_PASS;
 
+			if (nh == IPPROTO_FRAGMENT) {
+				const __be16 *fo = (const void *)eh + 2;
+
+				if ((void *)(fo + 1) > data_end)
+					return XDP_PASS;
+				/* A later fragment has no UDP header to read. */
+				if (*fo & bpf_htons(0xfff8))
+					return XDP_PASS;
+			}
+
 			/* Bounded so the variable offset stays provable. */
 			ehlen = nh == IPPROTO_FRAGMENT ? 8u : (((__u32)eh->hdrlen + 1u) * 8u);
 			if (ehlen > 64u)

@@ -46,6 +46,14 @@ static void case_local_resolve_v6(void)
 	size_t n = build_add6(buf, 0x5002, "::", "::1");
 	struct session *s;
 	int bad = 0;
+	int fd = socket(AF_INET6, SOCK_DGRAM, 0);
+
+	/* Nothing to resolve to on a host without IPv6. */
+	if (fd < 0) {
+		printf("skip %-40s no IPv6 here\n", "local-resolve-v6");
+		return;
+	}
+	close(fd);
 
 	if (!rig_up()) {
 		report("local-resolve-v6", 1, "rig up");

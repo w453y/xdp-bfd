@@ -164,6 +164,10 @@ static struct bpf_object *ktx_open(const char *obj)
 		return o;
 	if (!ktx_reused)
 		goto fail;
+	if (ktx_pin_taking_over) {
+		ktx_pin_refuse(0);
+		goto fail;
+	}
 	/* Pins from this build that no longer fit: start over without them. */
 	bpf_object__close(o);
 	ktx_pin_discard();
@@ -210,14 +214,16 @@ int ktx_load(void)
 	}
 
 	/* Before attach, so the first packet cannot arm the sweeper on the
-	 * default.
+	 * default. Always written, as below: pinned tunables are the previous
+	 * engine's, and 0 is the default.
 	 */
-	if (ktx_sweep_ns) {
+	{
 		int tune_fd = bpf_object__find_map_fd_by_name(bpf_obj, "tunables");
 		__u32 k = BFD_TUNE_SWEEP_NS;
 
 		if (tune_fd < 0 || bpf_map_update_elem(tune_fd, &k, &ktx_sweep_ns, 0)) {
-			log_err("kernel-tx: sweep interval NOT applied, running the compiled default\n");
+			if (ktx_sweep_ns)
+				log_err("kernel-tx: sweep interval NOT applied, running the compiled default\n");
 			ktx_sweep_ns = 0;
 		}
 	}
@@ -241,13 +247,16 @@ int ktx_load(void)
 		}
 	}
 
-	/* On failure disarm, so the log matches what is in force. */
-	if (ktx_deadman_ns) {
+	/* On failure disarm, so the log matches what is in force. Written as
+	 * 0 too, which turns off a bound a previous engine pinned.
+	 */
+	{
 		int tune_fd = bpf_object__find_map_fd_by_name(bpf_obj, "tunables");
 		__u32 k = BFD_TUNE_DEADMAN_NS;
 
 		if (tune_fd < 0 || bpf_map_update_elem(tune_fd, &k, &ktx_deadman_ns, 0)) {
-			log_err("kernel-tx: dead-man bound NOT applied, the fast path will answer for a wedged engine\n");
+			if (ktx_deadman_ns)
+				log_err("kernel-tx: dead-man bound NOT applied, the fast path will answer for a wedged engine\n");
 			ktx_deadman_ns = 0;
 		}
 	}

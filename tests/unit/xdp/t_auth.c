@@ -99,6 +99,12 @@ static void case_auth_reject(const char *name, __u8 type, const char *key, __u8 
 			       v < 0 ? "syscall-error" : verdict_str(v));
 			bad = 1;
 		}
+		/* Or the next packet could replay this one. */
+		if (bpf_map_lookup_elem(sess_fd, &k, &st) || !st.auth_rx_seen ||
+		    st.auth_rx_seq != seq) {
+			printf("     the window did not move to %u\n", seq);
+			bad = 1;
+		}
 	} else {
 		if (v != XDP_DROP) {
 			printf("     verdict %s, want DROP\n",

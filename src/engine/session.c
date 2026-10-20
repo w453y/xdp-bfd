@@ -187,15 +187,6 @@ void sm_addrs(const struct bfddp_session_msg *sm, struct bfd_addr *l, struct bfd
 	}
 }
 
-struct session *sess_by_addr_pair_local(const struct bfddp_session_msg *sm)
-{
-	struct bfd_addr l, p;
-	int fam;
-
-	sm_addrs(sm, &l, &p, &fam);
-	return sess_by_addr(&p, &l);
-}
-
 struct session *sess_by_addr(const struct bfd_addr *peer, const struct bfd_addr *local)
 {
 	return ix_get(IX_ADDR, 0, peer, local);
@@ -208,6 +199,12 @@ static void auth_note_boundary(int64_t at, int64_t now, int64_t *soonest)
 		return;
 	if (*soonest == 0 || at < *soonest)
 		*soonest = at;
+}
+
+/* An end is inclusive, so the key changes the second after it. */
+static int64_t auth_after(int64_t end)
+{
+	return end > 0 && end < INT64_MAX ? end + 1 : 0;
 }
 
 /* Non-zero if the send key changed. */
@@ -223,9 +220,9 @@ int session_auth_evaluate(struct session *s, int64_t now)
 		const struct auth_key *k = &s->auth_keys[i];
 
 		auth_note_boundary(k->send_start, now, &soonest);
-		auth_note_boundary(k->send_end, now, &soonest);
+		auth_note_boundary(auth_after(k->send_end), now, &soonest);
 		auth_note_boundary(k->accept_start, now, &soonest);
-		auth_note_boundary(k->accept_end, now, &soonest);
+		auth_note_boundary(auth_after(k->accept_end), now, &soonest);
 
 		/* First match wins, as bfdd picks. */
 		if (chosen == NULL && s->auth_present && auth_key_sendable(k, now))

@@ -28,9 +28,15 @@ void dp_read(void);
 extern ssize_t (*dp_recv_hook)(int fd, void *buf, size_t len);
 void dp_set_conn_for_test(int fd);
 void dp_flush(void);
+/* Orphans the sessions of a connection a send failure closed. */
+void dp_conn_reap(void);
 void dp_accept(void);
 void dp_send_capabilities(void);
+void dp_send_echo_request(void);
+/* Drops a connection that left a probe unanswered. */
+void dp_conn_check(uint64_t now);
 void dp_fds(int *listen_fd, int *conn_fd);
+int dp_listen_arg_ok(const char *arg);
 int dp_listen_init(const char *arg);
 void dp_set_peer_uid(uid_t uid);
 int dp_connected(void);

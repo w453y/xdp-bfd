@@ -317,7 +317,6 @@ struct session *sess_by_lid(uint32_t lid);
 struct session *sess_by_wire(uint32_t disc);
 void sm_addrs(const struct bfddp_session_msg *sm, struct bfd_addr *l, struct bfd_addr *p,
 	      int *family);
-struct session *sess_by_addr_pair_local(const struct bfddp_session_msg *sm);
 struct session *sess_by_addr(const struct bfd_addr *peer, const struct bfd_addr *local);
 
 #endif /* BFD_ENGINE_SESSION_H */

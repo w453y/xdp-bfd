@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/stat.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -15,6 +16,7 @@
 #include <netinet/in.h>
 
 #include "bfddp.h"
+#include "util.h"
 #include "log.h"
 #include "dplane.h"
 
@@ -35,11 +37,41 @@ static size_t dp_have;
 static char dp_out[65536];
 static size_t dp_out_len;
 
+/* A second connection waits while the open one is asked whether it is still
+ * bfdd's. bfdd answers at once; a half-open one, whose far end went without a
+ * reset, answers nothing by this time and gives way. Refusing a reconnect
+ * instead would make bfdd keep its sessions in software.
+ */
+#define DP_PROBE_US 500000ull
+static uint64_t dp_probe_us;
+static int dp_pending = -1;
+
 /* Both directions: queued output may end mid-frame. */
 static void dp_conn_reset(void)
 {
 	dp_have = 0;
 	dp_out_len = 0;
+	dp_probe_us = 0;
+}
+
+static void dp_install(int c)
+{
+	fcntl(c, F_SETFL, O_NONBLOCK);
+	dp_conn = c;
+	log_info("dplane: bfdd connected\n");
+	dp_send_capabilities();
+	dp_sessions_reclaim();
+}
+
+/* The connection that waited takes over from one that went. */
+static void dp_promote(void)
+{
+	int c = dp_pending;
+
+	if (c < 0 || dp_conn >= 0)
+		return;
+	dp_pending = -1;
+	dp_install(c);
 }
 
 static void dp_drop_conn(const char *why)
@@ -48,6 +80,39 @@ static void dp_drop_conn(const char *why)
 	dp_conn = -1;
 	dp_conn_reset();
 	dp_sessions_orphan(why);
+	dp_promote();
+}
+
+/* A send fails from inside a session's visit, which must not see the
+ * sessions torn down under it: close now, orphan from the loop.
+ */
+static const char *dp_lost;
+
+static void dp_drop_conn_later(const char *why)
+{
+	close(dp_conn);
+	dp_conn = -1;
+	dp_conn_reset();
+	dp_lost = why;
+}
+
+void dp_conn_check(uint64_t now)
+{
+	if (dp_conn < 0 || !dp_probe_us || now < dp_probe_us)
+		return;
+	log_err("dplane: bfdd did not answer, dropping its connection\n");
+	dp_drop_conn("bfdd did not answer");
+}
+
+void dp_conn_reap(void)
+{
+	const char *why = dp_lost;
+
+	if (!why)
+		return;
+	dp_lost = NULL;
+	dp_sessions_orphan(why);
+	dp_promote();
 }
 
 void dp_flush(void)
@@ -69,7 +134,7 @@ void dp_flush(void)
 			return; /* still backed up; retry next pass */
 		log_err("dplane: send failed (%s), dropping connection\n",
 			n < 0 ? strerror(errno) : "zero-length write");
-		dp_drop_conn("send failure");
+		dp_drop_conn_later("send failure");
 		return;
 	}
 }
@@ -91,7 +156,7 @@ void dp_send(const void *msg, size_t len)
 	if (len > sizeof(dp_out) - dp_out_len) {
 		log_err("dplane: output queue full (%zu bytes pending), dropping connection\n",
 			dp_out_len);
-		dp_drop_conn("output queue overflow");
+		dp_drop_conn_later("output queue overflow");
 		return;
 	}
 	memcpy(dp_out + dp_out_len, msg, len);
@@ -106,6 +171,7 @@ void dp_set_conn_for_test(int fd)
 {
 	dp_conn = fd;
 	dp_have = 0;
+	dp_probe_us = 0;
 }
 
 void dp_read(void)
@@ -122,6 +188,13 @@ void dp_read(void)
 	}
 	if (n < 0)
 		return;
+	/* Any answer: bfdd is there, so the one waiting is not. */
+	dp_probe_us = 0;
+	if (dp_pending >= 0) {
+		log_err("dplane: refusing a second control connection while bfdd is connected\n");
+		close(dp_pending);
+		dp_pending = -1;
+	}
 	dp_have += n;
 
 	size_t off = 0;
@@ -209,17 +282,51 @@ void dp_accept(void)
 		close(c);
 		return;
 	}
+	dp_conn_reap();
 	if (dp_conn >= 0) {
+		struct pollfd p = { .fd = dp_conn, .events = POLLRDHUP };
+
+		/* Only a closed connection gives way at once, or any local
+		 * process could push bfdd off. Unread data does not keep it open.
+		 */
+		if (poll(&p, 1, 0) >= 0 && !(p.revents & (POLLRDHUP | POLLHUP | POLLERR))) {
+			if (dp_pending >= 0)
+				close(dp_pending);
+			dp_pending = c;
+			if (!dp_probe_us) {
+				dp_probe_us = now_us() + DP_PROBE_US;
+				dp_send_echo_request();
+			}
+			return;
+		}
 		log_info("dplane: replacing existing bfdd connection\n");
 		close(dp_conn);
 		dp_conn_reset();
 		dp_sessions_orphan("connection replaced");
 	}
-	fcntl(c, F_SETFL, O_NONBLOCK);
-	dp_conn = c;
-	log_info("dplane: bfdd connected\n");
-	dp_send_capabilities();
-	dp_sessions_reclaim();
+	dp_install(c);
+}
+
+/* Checked before a --pin takeover, which nothing can undo. */
+int dp_listen_arg_ok(const char *arg)
+{
+	char *end;
+	long parsed;
+
+	if (arg[0] == '/') {
+		if (strlen(arg) >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
+			log_err("dplane: socket path %s is too long\n", arg);
+			return 0;
+		}
+		return 1;
+	}
+	/* atoi would bind port 0 for "abc". */
+	parsed = strtol(arg, &end, 10);
+	if (end == arg || *end || parsed < 1 || parsed > 65535) {
+		log_err("dplane: expected a port in 1-65535 or a socket path, got '%s'\n", arg);
+		return 0;
+	}
+	return 1;
 }
 
 int dp_listen_init(const char *arg)
@@ -241,27 +348,23 @@ int dp_listen_init(const char *arg)
 			perror("dplane listen (unix)");
 			return -1;
 		}
-		/* 0600, or 0660 owned by --dp-peer. */
+		/* 0600, or 0660 owned by --dp-peer. The mode first: once the file
+		 * is bfdd's, only CAP_FOWNER could change it.
+		 */
 		if (dp_peer_uid != (uid_t)-1) {
+			chmod(arg, 0660);
 			if (chown(arg, dp_peer_uid, (gid_t)-1))
 				perror("dplane chown (unix)");
-			chmod(arg, 0660);
 		} else {
 			chmod(arg, 0600);
 		}
 		log_info("dplane: listening on %s (bfdd: unixc:%s)\n", arg, arg);
 	} else {
-		/* atoi would bind port 0 for "abc". */
-		char *end;
-		long parsed = strtol(arg, &end, 10);
 		int port;
 
-		if (end == arg || *end || parsed < 1 || parsed > 65535) {
-			log_err("dplane: expected a port in 1-65535 or a socket path, got '%s'\n",
-				arg);
+		if (!dp_listen_arg_ok(arg))
 			return -1;
-		}
-		port = (int)parsed;
+		port = (int)strtol(arg, NULL, 10);
 		dp_listen = socket(AF_INET, SOCK_STREAM, 0);
 		if (dp_listen < 0) {
 			perror("dplane socket (tcp)");

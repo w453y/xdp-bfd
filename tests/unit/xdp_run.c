@@ -117,7 +117,9 @@ int main(void)
 			}
 		}
 	} else {
-		fprintf(stderr, "sweep object not loaded: %s\n", strerror(errno));
+		/* Every sweep, window and HMAC case below would skip. */
+		printf("FAIL sweep object not loaded: %s\n", strerror(errno));
+		fails++;
 	}
 
 	case_not_bfd();

@@ -24,9 +24,8 @@ That is also why it
 be run on a production interface: it reopens the flood path to the
 socket that the engine's unknown-session drop exists to close.
 .PP
-Attaching replaces whatever XDP program the interface already has, so
-running this on an interface an engine is serving takes that engine's
-fast path away.
+It refuses an interface that already has an XDP program, such as one an
+engine is serving, rather than take that engine's fast path away.
 .SH OPTIONS
 .TP
 .B --generic

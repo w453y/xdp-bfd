@@ -144,10 +144,14 @@ int bfd_observer(struct xdp_md *ctx)
 		}
 	}
 
-	/* Before header validation: whether the A bit is allowed depends on the session. */
+	/* Before header validation: whether the A bit is allowed depends on the
+	 * session. With none, a moved peer's packet goes up as it is and
+	 * userspace checks it against the session it names.
+	 */
 	struct tx_cfg *cfg = tx_cfg_get(&c.key);
+	__u8 auth_expected = cfg ? cfg->auth_present : (bfd->flags & BFD_F_AUTH);
 
-	int hv = bfd_hdr_verdict(bfd, udp, cfg ? cfg->auth_present : 0);
+	int hv = bfd_hdr_verdict(bfd, udp, auth_expected);
 
 	if (hv >= 0)
 		return hv;
@@ -188,7 +192,8 @@ int bfd_observer(struct xdp_md *ctx)
 		__u8 pttl = iph ? iph->ttl : (ip6 ? ip6->hop_limit : 0);
 
 		if (pttl != 255) {
-			__u32 mt = (cfg && cfg->min_ttl) ? cfg->min_ttl : 255;
+			/* Single hop wants 255 whatever the minimum says, as userspace. */
+			__u32 mt = (cfg && cfg->mhop && cfg->min_ttl) ? cfg->min_ttl : 255;
 
 			if (!cfg || pttl < mt) {
 				count(BFD_STAT_REJECTED);

@@ -86,6 +86,127 @@ static void case_reconnect_resyncs_state(void)
 	sessions_clear();
 }
 
+/* A second connection waits while the open one is probed: bfdd answers and
+ * keeps it, a half-open one does not and the newcomer takes over.
+ */
+static void case_second_connection_waits(int answer)
+{
+	const char *name = answer ? "second-connection-refused-bfdd-answers"
+				  : "second-connection-takes-over-from-silence";
+	struct sockaddr_un sa = { .sun_family = AF_UNIX };
+	struct bfddp_message_header h;
+	int l = -1, before = -1, c = -1, other, bad = 0;
+	char rest[64];
+
+	if (!rig_up()) {
+		report(name, 1, "rig up");
+		rig_down();
+		return;
+	}
+	dp_fds(&l, &before);
+	other = socket(AF_UNIX, SOCK_STREAM, 0);
+	strncpy(sa.sun_path, sockpath, sizeof(sa.sun_path) - 1);
+	if (other < 0 || connect(other, (void *)&sa, sizeof(sa))) {
+		report(name, 1, "connect");
+		if (other >= 0)
+			close(other);
+		rig_down();
+		return;
+	}
+	dp_accept();
+	dp_fds(&l, &c);
+	if (c != before) {
+		printf("     the open connection gave way at once\n");
+		bad = 1;
+	}
+	if (recv(cli, &h, sizeof(h), MSG_DONTWAIT) != (ssize_t)sizeof(h) ||
+	    ntohs(h.type) != ECHO_REQUEST) {
+		printf("     no probe on the open connection\n");
+		bad = 1;
+	} else if (recv(cli, rest, ntohs(h.length) - sizeof(h), MSG_DONTWAIT) < 0) {
+		bad = 1;
+	}
+	if (answer) {
+		struct {
+			struct bfddp_message_header h;
+			struct bfddp_echo e;
+		} __attribute__((packed)) r = { 0 };
+
+		r.h.version = 1;
+		r.h.type = htons(ECHO_REPLY);
+		r.h.length = htons(sizeof(r));
+		feed(&r, sizeof(r));
+		dp_read();
+	}
+	dp_conn_check(now_us() + 1000000ull);
+	dp_fds(&l, &c);
+	if (answer && c != before) {
+		printf("     bfdd lost its connection\n");
+		bad = 1;
+	}
+	if (!answer) {
+		/* The newcomer is the connection now: it gets the capabilities. */
+		if (c < 0 || c == before ||
+		    recv(other, &h, sizeof(h), MSG_DONTWAIT) != (ssize_t)sizeof(h) ||
+		    ntohs(h.type) != BFD_DP_CAPABILITIES) {
+			printf("     the waiting connection did not take over\n");
+			bad = 1;
+		}
+	} else if (recv(other, &h, sizeof(h), MSG_DONTWAIT) != 0) {
+		printf("     the waiting connection was not closed\n");
+		bad = 1;
+	}
+	report(name, bad, answer ? "bfdd kept it" : "the newcomer took over");
+	close(other);
+	rig_down();
+}
+
+/* A send that fails inside a session's visit must leave the sessions to the
+ * loop, which tears them down after the visit.
+ */
+static void case_send_failure_defers_teardown(void)
+{
+	struct linger lg = { .l_onoff = 1, .l_linger = 0 };
+	unsigned char buf[256];
+	uint64_t saved = dp_hold_us;
+	struct session *s;
+	int bad = 0;
+	size_t n;
+
+	if (!rig_up()) {
+		report("send-failure-defers-teardown", 1, "rig up");
+		rig_down();
+		return;
+	}
+	sessions_clear();
+	dp_hold_us = 0;
+	n = build_add(buf, 0x6101, "10.0.0.1", "10.0.0.71");
+	feed(buf, n);
+	dp_read();
+	s = sess_by_lid(0x6101);
+	/* Reset, so the next send fails at once. */
+	setsockopt(cli, SOL_SOCKET, SO_LINGER, &lg, sizeof(lg));
+	close(cli);
+	cli = -1;
+	if (s) {
+		state_transition(s, ST_UP, 0, now_us(), "test");
+		state_transition(s, ST_DOWN, 0, now_us(), "test");
+		if (!s->used || s->lid != 0x6101) {
+			printf("     the session was torn down inside the visit\n");
+			bad = 1;
+		}
+	}
+	dp_conn_reap();
+	if (s && s->used) {
+		printf("     the loop did not tear the session down\n");
+		bad = 1;
+	}
+	report("send-failure-defers-teardown", !s || bad, "after the visit");
+	dp_hold_us = saved;
+	rig_down();
+	sessions_clear();
+}
+
 /* A notification storm must leave room for a reply: bfdd waits for a counters
  * reply synchronously, so the engine can neither drop it nor the connection.
  */
@@ -153,11 +274,18 @@ static void case_adopted_disc_not_reissued(void)
 	feed(buf, n);
 	dp_read();
 	a = sess_by_lid(0x7001);
-	if (a)
+	if (a) {
 		a->state = ST_UP;
+		a->orphaned = 1; /* only a held session is adopted */
+	}
 	n = build_add(buf, 0x7002, "10.0.0.1", "10.0.0.71"); /* adopts, keeps 0x7001 */
 	feed(buf, n);
 	dp_read();
+	a = sess_by_lid(0x7002);
+	if (!a || a->wire_disc != 0x7001) {
+		printf("     the ADD did not adopt the held session\n");
+		bad = 1;
+	}
 	n = build_add(buf, 0x7001, "10.0.0.1", "10.0.0.72"); /* a new session */
 	feed(buf, n);
 	dp_read();

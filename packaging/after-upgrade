@@ -11,7 +11,7 @@ systemctl is-active --quiet "$unit" || exit 0
 
 if grep -Eq '^[[:space:]]*XDP_BFD_ARGS=.*(^|[" ])--pin([" ]|$)' "$conf" 2>/dev/null; then
 	systemctl reload "$unit" && exit 0
-	echo "xdp-bfd: reload failed, the previous engine still runs; see journalctl -u $unit" >&2
+	echo "xdp-bfd: reload failed, the previous engine still runs; see journalctl -u $unit (a build with other maps needs systemctl restart)" >&2
 else
 	systemctl restart "$unit" && exit 0
 	echo "xdp-bfd: restart failed; see journalctl -u $unit" >&2

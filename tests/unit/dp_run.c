@@ -59,6 +59,9 @@ int main(void)
 	case_flags();
 	case_notify_coalesce();
 	case_reconnect_resyncs_state();
+	case_second_connection_waits(1);
+	case_second_connection_waits(0);
+	case_send_failure_defers_teardown();
 	case_counters_reply_fits_during_storm();
 	case_adopted_disc_not_reissued();
 	case_local_resolve();

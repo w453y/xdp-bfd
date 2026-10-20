@@ -23,6 +23,7 @@
 
 const char *ktx_pin_dir; /* --pin, or NULL */
 int ktx_reused;		 /* the state maps came from a pin */
+int ktx_pin_taking_over; /* a running engine holds the pins */
 static char pin_sub[512];
 
 /* The state a restart must keep. Scratch, the rings and the sweep timer's map
@@ -92,7 +93,8 @@ int ktx_pin_prepare(struct bpf_object *o)
 		log_err("--pin: cannot create %s: %s\n", ktx_pin_dir, strerror(errno));
 		return -1;
 	}
-	d = opendir(ktx_pin_dir);
+	/* A running engine's pins are its own until it hands them over. */
+	d = ktx_pin_taking_over ? NULL : opendir(ktx_pin_dir);
 	while (d && (e = readdir(d))) {
 		snprintf(p, sizeof(p), "%s/%s", ktx_pin_dir, e->d_name);
 		if (strncmp(e->d_name, "abi-", 4) || !strcmp(p, pin_sub))
@@ -102,6 +104,11 @@ int ktx_pin_prepare(struct bpf_object *o)
 	}
 	if (d)
 		closedir(d);
+	/* Another build's pins only: refused before anything is made. */
+	if (ktx_pin_taking_over && access(pin_sub, F_OK)) {
+		ktx_pin_refuse(1);
+		return -1;
+	}
 	if (mkdir(pin_sub, 0700) && errno != EEXIST) {
 		log_err("--pin: cannot create %s: %s\n", pin_sub, strerror(errno));
 		return -1;
@@ -119,7 +126,22 @@ int ktx_pin_prepare(struct bpf_object *o)
 		if (bpf_map__set_pin_path(m, p))
 			return -1;
 	}
+	if (ktx_pin_taking_over && !ktx_reused) {
+		ktx_pin_refuse(1);
+		return -1;
+	}
 	return 0;
+}
+
+/* The running engine keeps its pins and its sessions: a takeover that cannot
+ * use them would cost every peer its session.
+ */
+void ktx_pin_refuse(int other_maps)
+{
+	if (other_maps)
+		log_err("--pin: the running engine's pinned state does not fit this object; it keeps running. Restart the engine to change to this build\n");
+	else
+		log_err("--pin: this object did not load over the running engine's pinned state; it keeps running\n");
 }
 
 /* A load that could not reuse the pins starts over without them. */
@@ -177,21 +199,27 @@ static const char *pidfile(void)
 	return p;
 }
 
-/* The engine holding the pins now, or 0. */
+/* The engine holding the pins now, 0 if none, -1 if the file is another pin
+ * directory's that shares the name.
+ */
 int ktx_pin_holder(void)
 {
 	FILE *f;
-	char comm[32] = "";
+	char comm[32] = "", dir[256] = "", buf[300];
 	int pid = 0;
+	size_t n;
 
 	if (!ktx_pin_dir)
 		return 0;
 	f = fopen(pidfile(), "r");
 	if (!f)
 		return 0;
-	if (fscanf(f, "%d", &pid) != 1)
-		pid = 0;
+	n = fread(buf, 1, sizeof(buf) - 1, f);
 	fclose(f);
+	buf[n] = 0;
+	/* Older engines wrote the pid alone. */
+	if (sscanf(buf, "%d %255[^\n]", &pid, dir) < 1)
+		pid = 0;
 	if (pid <= 0 || pid == getpid() || kill(pid, 0))
 		return 0;
 	snprintf(comm, sizeof(comm), "/proc/%d/comm", pid);
@@ -203,6 +231,11 @@ int ktx_pin_holder(void)
 		pid = 0;
 	if (f)
 		fclose(f);
+	if (pid && dir[0] && strcmp(dir, ktx_pin_dir)) {
+		log_err("--pin: %s names engine %d, which holds %s, not %s\n", pidfile(), pid, dir,
+			ktx_pin_dir);
+		return -1;
+	}
 	return pid;
 }
 
@@ -221,18 +254,23 @@ int ktx_pin_take_over(int pid)
 	sd_note(note);
 	if (kill(pid, SIGUSR2)) {
 		log_err("--pin: cannot signal engine %d: %s\n", pid, strerror(errno));
-		return -1;
+		goto fail;
 	}
 	while (!kill(pid, 0)) {
 		if (now_us() - t0 > 3000000) {
 			log_err("--pin: engine %d did not hand over within 3s\n", pid);
-			return -1;
+			goto fail;
 		}
 		usleep(1000);
 	}
 	log_info("--pin: engine %d handed over in %llums\n", pid,
 		 (unsigned long long)((now_us() - t0) / 1000));
 	return 0;
+fail:
+	/* The old engine is still the service. */
+	snprintf(note, sizeof(note), "MAINPID=%d", pid);
+	sd_note(note);
+	return -1;
 }
 
 void ktx_pin_claim(void)
@@ -247,7 +285,7 @@ void ktx_pin_claim(void)
 		log_err("--pin: cannot write %s: %s\n", pidfile(), strerror(errno));
 		return;
 	}
-	fprintf(f, "%d\n", getpid());
+	fprintf(f, "%d\n%s\n", getpid(), ktx_pin_dir);
 	fclose(f);
 }
 

@@ -29,12 +29,15 @@ int ktx_load(void);
 /* ktx_pin.c */
 extern const char *ktx_pin_dir;
 extern int ktx_reused;
+extern int ktx_pin_taking_over;
 int ktx_pin_prepare(struct bpf_object *o);
 void ktx_pin_discard(void);
 int ktx_pin_take_link(int ifindex, int prog_fd);
 void ktx_pin_link(int ifindex, int link_fd);
 void ktx_unpin(void);
 int ktx_pin_holder(void);
+/* Logs why a takeover loads nothing; other_maps if the build differs. */
+void ktx_pin_refuse(int other_maps);
 int ktx_pin_take_over(int pid);
 void ktx_pin_claim(void);
 

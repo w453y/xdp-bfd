@@ -18,7 +18,11 @@ jobs:
   full:
     runs-on: [self-hosted, Linux, X64]
     # Needs bpftool map access, which hosted runners lack. Not on push: one VM.
-    if: github.event_name != 'push'
+    # Not for a fork's pull request either: it would run as root on the VM.
+    if: >-
+      github.event_name != 'push' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     timeout-minutes: 30
     env:
       BFD_CONTAINER_RUNTIME: podman
@@ -119,7 +123,11 @@ jobs:
 
   kernel:
     runs-on: [self-hosted, Linux, X64]
-    if: github.event_name != 'push'
+    # As full.
+    if: >-
+      github.event_name != 'push' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     timeout-minutes: 30
     strategy:
       fail-fast: false

@@ -29,11 +29,12 @@ TimeoutStopSec=5
 RuntimeDirectory=xdp-bfd
 
 # CAP_BPF and CAP_PERFMON to load, CAP_NET_ADMIN to attach, CAP_NET_RAW for
-# echo, CAP_SYS_NICE for the reservation; the engine drops it at once.
+# echo, CAP_SYS_NICE for the reservation and CAP_CHOWN to give a --dp-peer
+# socket to bfdd; the engine drops those two once used.
 User=xdp-bfd
 Group=xdp-bfd
-AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_NICE
-CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_NICE
+AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_NICE CAP_CHOWN
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_NICE CAP_CHOWN
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

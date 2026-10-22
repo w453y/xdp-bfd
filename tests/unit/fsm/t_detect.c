@@ -36,6 +36,30 @@ static void dv_row(const struct dv_case *c)
 	report(c->name, bad, detail);
 }
 
+/* RFC 5880 s6.8.1: a Detection Time without packets zeroes bfd.RemoteDiscr
+ * outside Up too, or a restarted passive peer never answers.
+ */
+static void case_rdisc_forgotten(const char *name, uint8_t state, uint64_t silent_us,
+				 uint64_t ktx_seen_us, int want_kept)
+{
+	struct session *s = sess_init(state);
+	int bad;
+
+	s->rdisc = 0x3b49b300;
+	s->detect_iv_us = 300000;
+	s->r_mult = 3;
+	s->last_rx_us = 10000000;
+	/* The program saw the peer since userspace did. */
+	s->ktx_seen_us = ktx_seen_us;
+
+	fsm_detect(s, s->last_rx_us + silent_us);
+
+	bad = (s->rdisc != 0) != want_kept;
+	if (bad)
+		printf("     rdisc %#x, want %s\n", s->rdisc, want_kept ? "kept" : "0");
+	report(name, bad, want_kept ? "kept" : "zeroed");
+}
+
 static void run_detect_vectors(void)
 {
 	for (int i = 0; i < DV_NCASES; i++)

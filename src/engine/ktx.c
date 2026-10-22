@@ -70,6 +70,8 @@ static int on_sweep_event(void *ctx, void *data, size_t len)
 	s->last_detect_lag_us = now > decided_us ? (uint32_t)(now - decided_us) : 0;
 	s->kernel_detects++;
 
+	/* As fsm_detect: a Detection Time without packets forgets the peer. */
+	s->rdisc = 0;
 	state_transition(s, ST_DOWN, 1, decided_us, "detect timeout (sweep)");
 	return 0;
 }

@@ -122,6 +122,7 @@ jobs:
           fi
 
   kernel:
+    name: kernel (${{ matrix.kernel }})
     runs-on: [self-hosted, Linux, X64]
     # As full.
     if: >-
@@ -132,27 +133,44 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kernel:
-          - "7.0.0-30-generic"
+        # The oldest verifiers the support matrix claims, each with a clang
+        # it has failed with: older verifiers lose bounds that newer clang
+        # or newer kernels keep. Pinned URLs, which do not rotate.
+        include:
+          - kernel: "7.0.0-30-generic"
+            clang: 21
+          - kernel: "6.8.0-31-generic"   # Ubuntu 24.04
+            clang: 18
+            image: https://launchpad.net/ubuntu/+archive/primary/+files/linux-image-unsigned-6.8.0-31-generic_6.8.0-31.31_amd64.deb
+            modules: https://launchpad.net/ubuntu/+archive/primary/+files/linux-modules-6.8.0-31-generic_6.8.0-31.31_amd64.deb
+          - kernel: "6.1.0-50-amd64"     # Debian 12
+            clang: 21
+            image: https://snapshot.debian.org/archive/debian/20260901T000000Z/pool/main/l/linux-signed-amd64/linux-image-6.1.0-50-amd64_6.1.176-1_amd64.deb
     steps:
       - uses: actions/checkout@v4
 
-      - name: build on the host
-        run: make CLANG=clang-21 && make CLANG=clang-21 tests/unit/bfd_xdp_test.o
-
-      # Installed mode 600; vng reads it as the runner user.
-      - name: make the kernel image readable
+      - name: clang-${{ matrix.clang }}
         run: |
-          test -f /boot/vmlinuz-${{ matrix.kernel }} || {
-            sudo apt-get update
-            sudo apt-get install -y linux-image-${{ matrix.kernel }}
+          command -v clang-${{ matrix.clang }} >/dev/null || {
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq clang-${{ matrix.clang }}
           }
-          sudo chmod 644 /boot/vmlinuz-${{ matrix.kernel }}
+
+      - name: build on the host
+        run: |
+          make CLANG=clang-${{ matrix.clang }}
+          make CLANG=clang-${{ matrix.clang }} tests/unit/bfd_xdp_test.o
+
+      - name: fetch ${{ matrix.kernel }}
+        id: kimg
+        run: |
+          echo "path=$(tools/ci-kernel.sh ${{ matrix.kernel }} \
+            '${{ matrix.image }}' '${{ matrix.modules }}')" >> "$GITHUB_OUTPUT"
 
       - name: run the suites under ${{ matrix.kernel }}
         run: |
-          vng -r ${{ matrix.kernel }} --rwdir=$PWD -- \
-            sh -c "cd $PWD && make CLANG=clang-21 check" 2>&1 | tee /tmp/vng.log
+          vng -r ${{ steps.kimg.outputs.path }} --rwdir=$PWD -- \
+            sh -c "cd $PWD && make CLANG=clang-${{ matrix.clang }} check" 2>&1 | tee /tmp/vng.log
           # tee masks the exit status.
           grep -q 'all suites passed' /tmp/vng.log
 

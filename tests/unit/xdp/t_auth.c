@@ -131,13 +131,16 @@ static void case_auth_reject(const char *name, __u8 type, const char *key, __u8 
 	map_reset();
 }
 
-/* The vectors hmac_run checks on the host. */
+/* The vectors hmac_run checks on the host. As the program's hmac_scratch,
+ * tmp included: a lookup copies the whole value.
+ */
 struct hmac_scratch_u {
 	__u8 kpad[SHA1_BLOCK_LEN];
 	__u8 mblk[SHA1_BLOCK_LEN];
 	__u8 out[SHA1_DIGEST_LEN];
 	__u32 msglen;
 	__u32 ok;
+	__u8 tmp[SHA1_BLOCK_LEN];
 };
 
 static void case_hmac(const struct hmac_vec *v)

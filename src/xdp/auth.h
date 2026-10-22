@@ -42,17 +42,21 @@ static __always_inline __u32 xdp_auth_len(const struct tx_cfg *cfg)
 
 /* Hide a length from the optimiser so the verifier keeps its non-zero lower
  * bound for ARG_CONST_SIZE. A 6.1 verifier otherwise fails with "invalid access
- * to map value ... size=0". As sha1_barrier.
+ * to map value ... size=0". As sha1_barrier. 64 bits wide, or clang checks a
+ * zero-extended copy and passes the original, which 6.8 does not bound.
  */
-static __always_inline __u32 xdp_len_pin(__u32 len)
+static __always_inline __u64 xdp_len_pin(__u32 len)
 {
-	__asm__ __volatile__("" : "+r"(len));
-	return len;
+	__u64 n = len;
+
+	__asm__ __volatile__("" : "+r"(n));
+	return n;
 }
 
 /* bpf_xdp_load_bytes: a loop bounded by a runtime length does not survive the verifier. */
 static __always_inline int xdp_auth_load(struct xdp_md *ctx, __u32 off, __u32 len, __u8 *blk)
 {
+	__u64 n;
 	int i;
 
 	if (len < BFD_MIN_LEN || len > BFD_MAX_LEN)
@@ -60,10 +64,10 @@ static __always_inline int xdp_auth_load(struct xdp_md *ctx, __u32 off, __u32 le
 	for (i = 0; i < SHA1_BLOCK_LEN; i++)
 		blk[i] = 0;
 	/* After the loop, where clang spills it. */
-	len = xdp_len_pin(len);
-	if (len < BFD_MIN_LEN || len > BFD_MAX_LEN)
+	n = xdp_len_pin(len);
+	if (n < BFD_MIN_LEN || n > BFD_MAX_LEN)
 		return 0;
-	return bpf_xdp_load_bytes(ctx, off, blk, len) == 0;
+	return bpf_xdp_load_bytes(ctx, off, blk, n) == 0;
 }
 
 /* Advance the replay window on success. The digest covers the packet with the
@@ -185,6 +189,7 @@ static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 	__u8 *dig = sc->dig;
 	__u32 want = xdp_auth_len(cfg);
 	__u32 seq;
+	__u64 n;
 	int i;
 
 	/* Written back in one store, for the same verifier reason as the load. */
@@ -202,10 +207,10 @@ static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 	if (cfg->auth_type == BFD_AUTH_SIMPLE) {
 		for (i = 0; i < BFD_AUTH_SIMPLE_MAXKEY; i++)
 			blk[BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR + i] = cfg->auth_kpad[i];
-		want = xdp_len_pin(want);
-		if (want < BFD_MIN_LEN || want > BFD_MAX_LEN)
+		n = xdp_len_pin(want);
+		if (n < BFD_MIN_LEN || n > BFD_MAX_LEN)
 			return 0;
-		if (bpf_xdp_store_bytes(ctx, boff, blk, want))
+		if (bpf_xdp_store_bytes(ctx, boff, blk, n))
 			return 0;
 		*psum = xdp_auth_sum(blk);
 		return 1;
@@ -235,10 +240,10 @@ static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 	for (i = 0; i < SHA1_DIGEST_LEN; i++)
 		blk[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF + i] = dig[i];
 
-	want = xdp_len_pin(want);
-	if (want < BFD_MIN_LEN || want > BFD_MAX_LEN)
+	n = xdp_len_pin(want);
+	if (n < BFD_MIN_LEN || n > BFD_MAX_LEN)
 		return 0;
-	if (bpf_xdp_store_bytes(ctx, boff, blk, want))
+	if (bpf_xdp_store_bytes(ctx, boff, blk, n))
 		return 0;
 	*psum = xdp_auth_sum(blk);
 	return 1;

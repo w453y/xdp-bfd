@@ -53,11 +53,12 @@ static __always_inline struct tx_cfg *tx_cfg_get(const struct session_key *k)
 #pragma unroll
 	for (int i = 0; i < (int)TX_CFG_WORDS; i++)
 		dst[i] = src[i];
-	n = c->auth_nkeys;
-	if (n > BFD_AUTH_ACCEPT_MAX)
-		n = BFD_AUTH_ACCEPT_MAX;
-	/* The second bound is for the verifier. */
-	for (__u32 i = 0; i < n * TX_KEY_WORDS && i < BFD_AUTH_ACCEPT_MAX * TX_KEY_WORDS; i++)
+	n = c->auth_nkeys * TX_KEY_WORDS;
+	/* Opaque, or clang 20 drops the second bound as implied by a clamp a 6.1
+	 * verifier cannot follow.
+	 */
+	__asm__ __volatile__("" : "+r"(n));
+	for (__u32 i = 0; i < n && i < BFD_AUTH_ACCEPT_MAX * TX_KEY_WORDS; i++)
 		kdst[i] = ksrc[i];
 	bpf_spin_unlock(&live->lock);
 

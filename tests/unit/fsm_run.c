@@ -71,6 +71,10 @@ int main(void)
 {
 	run_table();
 	run_detect_vectors();
+	case_rdisc_forgotten("rdisc-zeroed-down-past-detect", ST_DOWN, 1000000, 0, 0);
+	case_rdisc_forgotten("rdisc-kept-down-within-detect", ST_DOWN, 800000, 0, 1);
+	case_rdisc_forgotten("rdisc-zeroed-init-past-detect", ST_INIT, 1000000, 0, 0);
+	case_rdisc_forgotten("rdisc-kept-after-kernel-sighting", ST_DOWN, 1000000, 10500000, 1);
 	case_zero_remote_min_rx_halts_tx();
 	case_failed_send_keeps_pending();
 	case_tx_bind_skips_taken_ports();

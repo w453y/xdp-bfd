@@ -291,6 +291,22 @@ void fsm_detect(struct session *s, uint64_t t)
 		}
 	}
 
+	/* RFC 5880 s6.8.1: bfd.RemoteDiscr is zeroed once a Detection Time
+	 * passes without a packet. Kept, a passive peer that restarted drops
+	 * every packet naming its old discriminator. Up does it below, on the
+	 * timeout; the program's last sighting counts too.
+	 */
+	if (s->rdisc && s->state != ST_UP && !demand_detect_held(s)) {
+		uint64_t div = s->detect_iv_us
+				       ? s->detect_iv_us
+				       : (s->r_min_tx > s->min_rx_us ? s->r_min_tx : s->min_rx_us);
+		uint8_t dmult = s->r_mult ? s->r_mult : s->detect_mult;
+		uint64_t seen = s->last_rx_us > s->ktx_seen_us ? s->last_rx_us : s->ktx_seen_us;
+
+		if (div && seen && t > seen && t - seen > (uint64_t)dmult * div)
+			s->rdisc = 0;
+	}
+
 	if (s->state == ST_DOWN || s->state == ST_ADMINDOWN || !s->last_rx_us)
 		return;
 	/* We asked the peer to stop, so its silence is not a fault. */

@@ -332,6 +332,12 @@ int ktx_covers(int ifindex)
 }
 
 /* Idempotent. */
+/* Another program, in either mode, or another engine's link. */
+static int ktx_xdp_busy(int err)
+{
+	return err == -EBUSY || err == -EEXIST;
+}
+
 int ktx_attach_if(int ifindex, const char *ifname)
 {
 	if (ktx_covers(ifindex))
@@ -364,15 +370,24 @@ int ktx_attach_if(int ifindex, const char *ifname)
 	LIBBPF_OPTS(bpf_link_create_opts, lopts, .flags = flags);
 	fd = bpf_link_create(bpf_program__fd(ktx_prog), ifindex, BPF_XDP, &lopts);
 
-	if (fd < 0 && !(flags & XDP_FLAGS_SKB_MODE)) {
+	if (fd < 0 && !ktx_xdp_busy(fd) && !(flags & XDP_FLAGS_SKB_MODE)) {
 		flags = XDP_FLAGS_SKB_MODE;
 		mode = "generic";
 		lopts.flags = flags;
 		fd = bpf_link_create(bpf_program__fd(ktx_prog), ifindex, BPF_XDP, &lopts);
 	}
+	/* Never over another program: its owner's traffic depends on it. */
+	if (ktx_xdp_busy(fd)) {
+		log_err("kernel-tx: %s already has an XDP program; not replacing it\n", ifname);
+		return -1;
+	}
 	if (fd < 0) {
-		if (bpf_xdp_attach(ifindex, bpf_program__fd(ktx_prog), flags, NULL)) {
-			log_err("%s XDP attach failed on %s\n", mode, ifname);
+		if (bpf_xdp_attach(ifindex, bpf_program__fd(ktx_prog),
+				   flags | XDP_FLAGS_UPDATE_IF_NOEXIST, NULL)) {
+			log_err("%s XDP attach failed on %s%s\n", mode, ifname,
+				errno == EBUSY || errno == EEXIST
+					? ": another XDP program is attached"
+					: "");
 			return -1;
 		}
 		log_err("kernel-tx: bpf_link unavailable (%s), attached with flags - the program will OUTLIVE this process\n",

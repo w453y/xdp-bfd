@@ -224,10 +224,13 @@ int ktx_load(void)
 		if (tl_fd >= 0)
 			m = mmap(NULL, (size_t)sess_max * sizeof(uint64_t), PROT_READ | PROT_WRITE,
 				 MAP_SHARED, tl_fd, 0);
-		if (m == MAP_FAILED)
+		if (m == MAP_FAILED) {
 			log_err("kernel-tx: tx_last not mapped (%s)\n", strerror(errno));
-		else
-			ktx_txlast_mem = m;
+			bpf_object__close(bpf_obj);
+			bpf_obj = NULL;
+			return -1;
+		}
+		ktx_txlast_mem = m;
 	}
 
 	/* Before attach, so the first packet cannot arm the sweeper on the

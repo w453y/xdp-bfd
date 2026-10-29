@@ -142,6 +142,7 @@ struct session {
 	/* no-sendable-key logged for this gap */
 	uint8_t auth_gap_warned;
 	uint8_t iface_warned; /* once; bfdd re-sends the ADD on every change */
+	uint8_t noif_warned;  /* likewise, for an ADD without an interface */
 	/* single-hop on an interface without the fast path */
 	uint8_t ktx_uncovered;
 	uint8_t peer_mac[6]; /* synced from the map, learned by XDP */

@@ -343,6 +343,14 @@ static void dp_add_iface(struct session *s, const struct bfddp_session_msg *sm)
 		ktx_attach_if((int)sif, ifn);
 	}
 	s->ktx_uncovered = (use_ktx && !s->is_mhop && sif && !ktx_covers((int)sif));
+	/* bfdd that had the session before we connected can send it without its
+	 * interface; nothing is attached for it then.
+	 */
+	if (use_ktx && !s->is_mhop && !sif && !s->noif_warned) {
+		s->noif_warned = 1;
+		log_info("dplane: lid=%u came without an interface - the program sees it only on an interface it already runs on\n",
+			 s->lid);
+	}
 	if (s->ktx_uncovered && !s->iface_warned) {
 		s->iface_warned = 1;
 		log_info("dplane: lid=%u is on %.*s (ifindex %u) and could not be attached - this session runs in userspace only\n",

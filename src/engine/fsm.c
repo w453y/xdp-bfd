@@ -435,6 +435,7 @@ static void tx_one(struct session *s)
 		txfd = s->family == AF_INET6 ? tx6_sock : tx_sock;
 		s->tx_port = s->family == AF_INET6 ? tx6_sock_port : tx_sock_port;
 	}
+	tx_last_mark(s, now_us() * 1000);
 	if (s->family == AF_INET6) {
 		struct sockaddr_in6 dst = { .sin6_family = AF_INET6,
 					    .sin6_port = htons(s->is_mhop ? BFD_PORT_MHOP
@@ -558,9 +559,11 @@ void fsm_tx(struct session *s, uint64_t t)
 		s->next_tx_us = t + tx_interval(s);
 
 	int due = (t >= s->next_tx_us) || s->send_final;
+	/* A periodic packet, which a fast-path reply can stand in for. */
+	int fast = use_ktx && !s->ktx_uncovered && ktx_answers(s) && !s->send_final &&
+		   !s->just_up && !demand_announce_due(s);
 
-	if (use_ktx && !s->ktx_uncovered && ktx_answers(s) && !s->send_final && !s->just_up &&
-	    !demand_announce_due(s)) {
+	if (fast) {
 		/* The fast path replies only at the peer's pace; transmit from
 		 * here if that is slower than our rate. last_ktx_us is 0 until
 		 * its first reply.
@@ -574,6 +577,13 @@ void fsm_tx(struct session *s, uint64_t t)
 	}
 	if (!due)
 		return;
+
+	/* The program answered for us since, or is answering now. */
+	if (fast && !tx_last_claim(s, t * 1000, tx_interval(s) * 500)) {
+		if (t >= s->next_tx_us)
+			tx_reschedule(s, t);
+		return;
+	}
 
 	tx_one(s);
 

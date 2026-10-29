@@ -91,6 +91,7 @@ static void case_cfg_update_race(void)
 		unsigned char out[FRAME_MAX];
 		unsigned int out_len = 0;
 
+		tx_last_clear();
 		if (run_frame(&f, out, &out_len) != XDP_TX) {
 			drops++;
 			continue;

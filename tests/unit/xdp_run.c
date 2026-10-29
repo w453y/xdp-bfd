@@ -43,7 +43,7 @@ static int cfg_fd = -1, sess_fd = -1, stats_fd = -1;
 static int tune_fd = -1, hb_fd = -1;
 static int flags_fd = -1;
 static int echo_peers_fd = -1, echo_disc_fd = -1;
-static int seq_fd = -1;
+static int seq_fd = -1, txlast_fd = -1;
 static int disc_fd = -1, budget_fd = -1, changes_fd = -1;
 static struct bpf_object *sweep_obj;
 static int sweep_prog_fd = -1, sweep_sess_fd = -1, sweep_cfg_fd = -1;
@@ -93,6 +93,7 @@ int main(void)
 	echo_peers_fd = bpf_object__find_map_fd_by_name(obj, "echo_peers");
 	echo_disc_fd = bpf_object__find_map_fd_by_name(obj, "echo_disc");
 	seq_fd = bpf_object__find_map_fd_by_name(obj, "auth_seq");
+	txlast_fd = bpf_object__find_map_fd_by_name(obj, "tx_last");
 	disc_fd = bpf_object__find_map_fd_by_name(obj, "our_discs");
 	budget_fd = bpf_object__find_map_fd_by_name(obj, "moved_budget");
 	changes_fd = bpf_object__find_map_fd_by_name(obj, "bfd_changes");
@@ -137,6 +138,7 @@ int main(void)
 	case_bounce_v4();
 	case_bounce_v4_frame();
 	case_reply_pacing();
+	case_answer_spacing();
 	case_pass_pacing();
 	case_poll_budget();
 	case_cfg_update_race();

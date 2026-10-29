@@ -130,6 +130,48 @@ static void case_add_without_auth(void)
 	report("add-without-auth", bad, "session up, unauthenticated");
 }
 
+/* bfdd can send a single-hop session with ifindex 0; say so rather than take it
+ * as covered. Sent again with one the stub fails to attach, it is uncovered,
+ * and that is said too.
+ */
+static void case_add_without_interface(void)
+{
+	unsigned char buf[256];
+	struct bfddp_session_msg *m = (void *)(buf + sizeof(struct bfddp_message_header));
+	size_t n;
+	struct session *s;
+	int bad = 0;
+
+	sessions_clear();
+	use_ktx = 1;
+
+	n = build_add(buf, 0x5160, "10.0.0.1", "10.0.0.61");
+	feed(buf, n);
+	dp_read();
+	s = sess_by_lid(0x5160);
+	if (!s || !s->noif_warned || s->iface_warned || s->ktx_uncovered) {
+		printf("     ifindex 0: noif %d iface %d uncovered %d, want 1 0 0\n",
+		       s ? s->noif_warned : -1, s ? s->iface_warned : -1,
+		       s ? s->ktx_uncovered : -1);
+		bad = 1;
+	}
+
+	m->ifindex = htonl(9);
+	memcpy(m->ifname, "eth9", 4);
+	feed(buf, n);
+	dp_read();
+	s = sess_by_lid(0x5160);
+	if (!s || !s->iface_warned || !s->ktx_uncovered) {
+		printf("     then ifindex 9, attach failed: iface %d uncovered %d, want 1 1\n",
+		       s ? s->iface_warned : -1, s ? s->ktx_uncovered : -1);
+		bad = 1;
+	}
+
+	use_ktx = 0;
+	sessions_clear();
+	report("add-without-interface", bad, "warned, not taken as covered");
+}
+
 /* ktx_mirror is stubbed, so the predicate is tested directly. */
 static void case_mirror_cache_tracks_key(void)
 {

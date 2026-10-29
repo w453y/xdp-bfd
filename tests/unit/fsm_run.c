@@ -24,6 +24,7 @@ int sess_max = BFD_MAX_SESSIONS;
 uint64_t sess_wake_at[SESSIONS_CEIL];
 int use_ktx;	       /* 0: the kernel-TX gate in fsm_tx stays shut */
 uint64_t *ktx_seq_mem; /* no program: the session's own counter */
+uint64_t *ktx_txlast_mem;
 
 /* No program, so no sweep ring unless a case pretends there is one. */
 static int stub_events_fd = -1;
@@ -79,6 +80,7 @@ int main(void)
 	case_failed_send_keeps_pending();
 	case_tx_bind_skips_taken_ports();
 	case_tx_next_at();
+	case_tx_turn();
 	case_authenticated_output_verifies();
 	case_no_sendable_key_sends_nothing();
 	case_echo_only_change_notifies();

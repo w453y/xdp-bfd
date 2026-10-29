@@ -142,6 +142,7 @@ struct session {
 	/* no-sendable-key logged for this gap */
 	uint8_t auth_gap_warned;
 	uint8_t iface_warned; /* once; bfdd re-sends the ADD on every change */
+	uint8_t noif_warned;  /* likewise, for an ADD without an interface */
 	/* single-hop on an interface without the fast path */
 	uint8_t ktx_uncovered;
 	uint8_t peer_mac[6]; /* synced from the map, learned by XDP */
@@ -293,6 +294,32 @@ static inline uint32_t auth_seq_next(struct session *s)
 		return (uint32_t)__atomic_add_fetch(&ktx_seq_mem[s - sessions], 1,
 						    __ATOMIC_RELAXED);
 	return ++s->auth_tx_seq;
+}
+
+/* The program's per-slot last TX times, mmapped; NULL without it. */
+extern uint64_t *ktx_txlast_mem;
+
+/* Before the send, so the program never answers the peer's reply to it. */
+static inline void tx_last_mark(const struct session *s, uint64_t ns)
+{
+	if (ktx_txlast_mem)
+		__atomic_store_n(&ktx_txlast_mem[s - sessions], ns, __ATOMIC_RELAXED);
+}
+
+/* The slot's turn to send, unless either plane sent within gap_ns. The program
+ * swaps the same word, so of two sends that cross, one goes.
+ */
+static inline int tx_last_claim(const struct session *s, uint64_t ns, uint64_t gap_ns)
+{
+	uint64_t *p, v;
+
+	if (!ktx_txlast_mem)
+		return 1;
+	p = &ktx_txlast_mem[s - sessions];
+	v = __atomic_load_n(p, __ATOMIC_RELAXED);
+	if ((int64_t)(ns - v) < (int64_t)gap_ns)
+		return 0;
+	return __atomic_compare_exchange_n(p, &v, ns, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
 }
 
 /* When the loop next visits each slot; 0 is the next pass. Set by whatever

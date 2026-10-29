@@ -53,6 +53,7 @@ int main(void)
 	case_fresh_v6();
 	case_update_keeps_disc();
 	case_add_without_auth();
+	case_add_without_interface();
 	case_mirror_cache_tracks_key();
 	case_repeated_add_during_poll();
 	case_address_move();

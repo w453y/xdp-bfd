@@ -401,6 +401,27 @@ int bfd_observer(struct xdp_md *ctx)
 			count(BFD_STAT_DEADMAN_HOLD);
 			return XDP_PASS;
 		}
+
+		/* Within half an interval of our last packet this is the peer's
+		 * answer to it; answered, two engines facing each other bounce
+		 * every packet. The swap loses to an engine send in between. A
+		 * Final is owed whenever.
+		 */
+		__u32 slot = cfg->slot;
+		__u64 *last = bpf_map_lookup_elem(&tx_last, &slot);
+		__u64 iv = cfg->min_tx_us > st->min_rx_us ? cfg->min_tx_us : st->min_rx_us;
+
+		if (last && !(bfd->flags & BFD_F_POLL)) {
+			__u64 prev = *last;
+
+			if ((__s64)(now - prev) < (__s64)(iv * 500) ||
+			    __sync_val_compare_and_swap(last, prev, now) != prev) {
+				count(BFD_STAT_TX_SPACED);
+				return XDP_DROP;
+			}
+		} else if (last) {
+			*last = now;
+		}
 		return rx_clocked_tx(ctx, eth, iph, ip6, udp, bfd, cfg, st, asc, data, data_end);
 	}
 

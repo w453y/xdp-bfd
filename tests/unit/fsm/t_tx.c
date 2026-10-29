@@ -345,3 +345,77 @@ static void case_tx_next_at(void)
 	use_ktx = 0;
 	report("tx-next-at", bad, "next send, a pending Final, the fast path's pace");
 }
+
+/* The program answered for us 2ms into a 10ms interval: that reply stands in
+ * for the periodic send. A Final does not wait.
+ */
+static void case_tx_turn(void)
+{
+	static uint64_t txlast[BFD_MAX_SESSIONS];
+	uint64_t t = 2000000;
+	struct session *s = sess_init(ST_UP);
+	int bad = 0;
+
+	ktx_txlast_mem = txlast;
+	use_ktx = 1;
+	sent_calls = 0;
+	fsm_send_hook = capture_send;
+
+	s->next_tx_us = t;
+	s->last_ktx_us = t - 20000;
+	txlast[TEST_SLOT] = (t - 2000) * 1000;
+	fsm_tx(s, t);
+	if (sent_calls) {
+		printf("     sent 2ms after the program answered\n");
+		bad = 1;
+	}
+	if (s->next_tx_us <= t) {
+		printf("     the skipped send was not rescheduled\n");
+		bad = 1;
+	}
+
+	s->send_final = 1;
+	fsm_tx(s, t);
+	if (sent_calls != 1) {
+		printf("     a Final waited for the turn\n");
+		bad = 1;
+	}
+
+	s->next_tx_us = t;
+	txlast[TEST_SLOT] = (t - 6000) * 1000;
+	fsm_tx(s, t);
+	if (sent_calls != 2) {
+		printf("     not sent 6ms after the program answered\n");
+		bad = 1;
+	}
+	if (txlast[TEST_SLOT] == (t - 6000) * 1000) {
+		printf("     the send did not take the turn\n");
+		bad = 1;
+	}
+
+	/* The first packet in Up and AdminDown do not wait either. */
+	s->send_final = 0;
+	s->next_tx_us = t;
+	s->just_up = 1;
+	txlast[TEST_SLOT] = (t - 2000) * 1000;
+	fsm_tx(s, t);
+	if (sent_calls != 3) {
+		printf("     the first packet in Up waited for the turn\n");
+		bad = 1;
+	}
+	s->just_up = 0;
+
+	s->state = ST_ADMINDOWN;
+	s->next_tx_us = t;
+	txlast[TEST_SLOT] = (t - 2000) * 1000;
+	fsm_tx(s, t);
+	if (sent_calls != 4) {
+		printf("     AdminDown waited for the turn\n");
+		bad = 1;
+	}
+
+	fsm_send_hook = NULL;
+	use_ktx = 0;
+	ktx_txlast_mem = NULL;
+	report("tx-turn", bad, "a fresh reply stands in; Final, first Up, AdminDown go");
+}

@@ -166,6 +166,17 @@ struct {
 	__type(value, __u64);
 } auth_seq SEC(".maps");
 
+/* CLOCK_MONOTONIC ns of each slot's last control packet from either plane,
+ * mmapped by the engine.
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, BFD_MAX_SESSIONS);
+	__uint(map_flags, BPF_F_MMAPABLE);
+	__type(key, __u32);
+	__type(value, __u64);
+} tx_last SEC(".maps");
+
 /* Per-CPU, since the 512-byte stack budget covers the whole call chain and the
  * digest uses most of it.
  */

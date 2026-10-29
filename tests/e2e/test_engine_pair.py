@@ -27,9 +27,10 @@ from conftest import (
 IV_S = 0.010
 WINDOW_S = 5.0
 DOWN_WAIT = 2.0
+KEY = "p41r-s3cr3t"
 
 
-def both(rootpath, family):
+def both(rootpath, family, extra=()):
     obj = str(rootpath / "bfd_xdp.o")
     for ns, stats, dev in ((NS_A, STATS, "rig-a"), (NS_B, STATS_B, "rig-b")):
         start_engine(
@@ -39,7 +40,7 @@ def both(rootpath, family):
             stats=stats,
             kernel_tx=dev,
             xdp_mode="generic",
-            extra=("--bpf-obj", obj),
+            extra=("--bpf-obj", obj) + tuple(extra),
         )
     wait_both_up()
 
@@ -52,24 +53,55 @@ def counters():
     return out
 
 
-@pytest.mark.parametrize("family", [4, 6])
-def test_pair_keeps_its_rate(request, family):
+def window():
+    """Past the handshake, whose first Up packet goes at once."""
+    time.sleep(1.0)
+    c0 = counters()
+    time.sleep(WINDOW_S)
+    c1 = counters()
+    keys = ("seen", "too-fast", "tx-spaced", "auth-bad", "auth-mismatch")
+    return {ns: {k: c1[ns].get(k, 0) - c0[ns].get(k, 0) for k in keys} for ns in c1}
+
+
+def no_flaps():
+    for ns, stats in ((NS_A, STATS), (NS_B, STATS_B)):
+        s = only_session(ns, stats)
+        assert s["state"] == "Up" and s["down_events"] == 0, "%s flapped" % ns
+
+
+@pytest.mark.parametrize(
+    "family,auth",
+    [
+        (4, None),
+        (6, None),
+        (4, "simple"),
+        (4, "keyed-sha1"),
+        (4, "meticulous-sha1"),
+    ],
+)
+def test_pair_keeps_its_rate(request, family, auth):
+    """Signed replies go through the same turn: the program signs what it
+    sends, so with auth a bounced packet would also cost a digest each way.
+    """
     setup()
     try:
-        both(request.config.rootpath, family)
-        # Past the handshake, whose first Up packet goes at once.
-        time.sleep(1.0)
-        c0 = counters()
-        time.sleep(WINDOW_S)
-        c1 = counters()
+        both(
+            request.config.rootpath,
+            family,
+            ("--auth", "%s:5:%s" % (auth, KEY)) if auth else (),
+        )
+        w = window()
         spaced = 0
         for ns in (NS_A, NS_B):
-            d = {k: c1[ns][k] - c0[ns][k] for k in ("seen", "too-fast", "tx-spaced")}
+            d = w[ns]
             rate = d["seen"] / WINDOW_S
             assert d["too-fast"] == 0, "%s: %d packets came too fast" % (
                 ns,
                 d["too-fast"],
             )
+            assert (
+                d["auth-bad"] == 0 and d["auth-mismatch"] == 0
+            ), "%s: authentication drops %r" % (ns, d)
             assert 0.9 / IV_S <= rate <= 1.4 / IV_S, "%s: %.0f packets/s, want ~%d" % (
                 ns,
                 rate,
@@ -78,9 +110,33 @@ def test_pair_keeps_its_rate(request, family):
             spaced += d["tx-spaced"]
         # Whichever side clocks the session withholds the answers to it.
         assert spaced > 0, "no answer withheld: the gate never ran"
-        for ns, stats in ((NS_A, STATS), (NS_B, STATS_B)):
-            s = only_session(ns, stats)
-            assert s["state"] == "Up" and s["down_events"] == 0, "%s flapped" % ns
+        no_flaps()
+    finally:
+        teardown()
+
+
+def test_pair_in_demand_mode_stays_quiet(request):
+    """RFC 5880 s6.6: once both sides demand, neither sends periodically. A
+    program answering the other's answers would keep the wire busy anyway.
+    """
+    setup()
+    try:
+        both(request.config.rootpath, 4, ("--demand",))
+        # The switch to demand rides a Poll sequence.
+        time.sleep(2.0)
+        w = window()
+        for ns in (NS_A, NS_B):
+            d = w[ns]
+            assert d["too-fast"] == 0, "%s: %d packets came too fast" % (
+                ns,
+                d["too-fast"],
+            )
+            # Only the demand-mode Polls are left, well under the 10 ms rate.
+            assert d["seen"] / WINDOW_S < 0.1 / IV_S, "%s: %.0f packets/s in demand" % (
+                ns,
+                d["seen"] / WINDOW_S,
+            )
+        no_flaps()
     finally:
         teardown()
 

@@ -393,8 +393,29 @@ static void case_tx_turn(void)
 		bad = 1;
 	}
 
+	/* The first packet in Up and AdminDown do not wait either. */
+	s->send_final = 0;
+	s->next_tx_us = t;
+	s->just_up = 1;
+	txlast[TEST_SLOT] = (t - 2000) * 1000;
+	fsm_tx(s, t);
+	if (sent_calls != 3) {
+		printf("     the first packet in Up waited for the turn\n");
+		bad = 1;
+	}
+	s->just_up = 0;
+
+	s->state = ST_ADMINDOWN;
+	s->next_tx_us = t;
+	txlast[TEST_SLOT] = (t - 2000) * 1000;
+	fsm_tx(s, t);
+	if (sent_calls != 4) {
+		printf("     AdminDown waited for the turn\n");
+		bad = 1;
+	}
+
 	fsm_send_hook = NULL;
 	use_ktx = 0;
 	ktx_txlast_mem = NULL;
-	report("tx-turn", bad, "a fresh fast-path reply stands in, a Final never waits");
+	report("tx-turn", bad, "a fresh reply stands in; Final, first Up, AdminDown go");
 }

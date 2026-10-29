@@ -521,6 +521,87 @@ static void case_reply_pacing(void)
 	}
 }
 
+/* Another engine as the peer answers each of our packets at once. Its answer
+ * must not be answered, or the two bounce every packet between them.
+ */
+static void case_answer_spacing(void)
+{
+	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct bfd_ctrl_pkt p = ctrl_up();
+	unsigned long long s0 = stat_get(BFD_STAT_TX_SPACED);
+	__u32 slot = 0;
+	__u64 last = 0;
+	struct frame f;
+	int bad = 0;
+
+	map_reset();
+	arm_session();
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+	if (run_frame(&f, NULL, NULL) != XDP_TX) {
+		printf("     first frame not answered\n");
+		bad = 1;
+	}
+	bpf_map_lookup_elem(txlast_fd, &slot, &last);
+	if (!last) {
+		printf("     the reply left no TX time\n");
+		bad = 1;
+	}
+
+	/* The peer's answer to that reply, inside the receive window. */
+	{
+		struct session_state st;
+
+		if (!bpf_map_lookup_elem(sess_fd, &k, &st)) {
+			st.last_act_ns = 0;
+			bpf_map_update_elem(sess_fd, &k, &st, BPF_ANY);
+		}
+	}
+	if (run_frame(&f, NULL, NULL) != XDP_DROP) {
+		printf("     the answer to our reply was answered\n");
+		bad = 1;
+	}
+	if (stat_get(BFD_STAT_TX_SPACED) != s0 + 1) {
+		printf("     tx-spaced did not move\n");
+		bad = 1;
+	}
+
+	/* A Final is owed whatever we sent last. */
+	reply_window_clear(&k);
+	last = mono_ns();
+	bpf_map_update_elem(txlast_fd, &slot, &last, BPF_ANY);
+	p.flags |= BFD_F_POLL;
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+	if (run_frame(&f, NULL, NULL) != XDP_TX) {
+		printf("     a Poll went unanswered\n");
+		bad = 1;
+	}
+	p.flags &= ~BFD_F_POLL;
+	build_v4(&f, 255, BFD_PORT_1HOP, &p, 0);
+
+	/* The engine sent just now, then 6 ms ago against a 10 ms interval. */
+	reply_window_clear(&k);
+	last = mono_ns();
+	bpf_map_update_elem(txlast_fd, &slot, &last, BPF_ANY);
+	if (run_frame(&f, NULL, NULL) != XDP_DROP) {
+		printf("     answered right after an engine send\n");
+		bad = 1;
+	}
+	reply_window_clear(&k);
+	last = mono_ns() - 6000000ull;
+	bpf_map_update_elem(txlast_fd, &slot, &last, BPF_ANY);
+	if (run_frame(&f, NULL, NULL) != XDP_TX) {
+		printf("     not answered half an interval after an engine send\n");
+		bad = 1;
+	}
+	map_reset();
+	if (bad) {
+		printf("FAIL %-40s\n", "answer-spacing");
+		fails++;
+	} else {
+		printf("ok   %-40s no answer to an answer, a Poll always\n", "answer-spacing");
+	}
+}
+
 /* The same spacing when the fast path is off: passed up once, then dropped,
  * so a forger who turns the fast path off cannot flood the socket instead.
  */

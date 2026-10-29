@@ -274,12 +274,22 @@ static void set_flags(__u32 v)
 	}
 }
 
+/* Slot 0 has sent nothing, so the next frame is not taken for an answer. */
+static void tx_last_clear(void)
+{
+	__u32 slot = 0;
+	__u64 zero = 0;
+
+	bpf_map_update_elem(txlast_fd, &slot, &zero, BPF_ANY);
+}
+
 static void map_reset(void)
 {
 	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
 
 	bpf_map_delete_elem(cfg_fd, &k);
 	bpf_map_delete_elem(sess_fd, &k);
+	tx_last_clear();
 	set_flags(0);
 }
 
@@ -373,6 +383,7 @@ static void map_reset_v6(void)
 
 	bpf_map_delete_elem(cfg_fd, &k);
 	bpf_map_delete_elem(sess_fd, &k);
+	tx_last_clear();
 	set_flags(0);
 }
 
@@ -425,7 +436,7 @@ static void arm_session_v6_ttl(__u32 min_ttl)
 }
 
 /* So the next frame is answered: the program takes at most two per
- * Required Min RX.
+ * Required Min RX, and answers none within half an interval of our last.
  */
 static void reply_window_clear(const struct session_key *k)
 {
@@ -435,6 +446,7 @@ static void reply_window_clear(const struct session_key *k)
 		st.last_act_ns = 0;
 		bpf_map_update_elem(sess_fd, k, &st, BPF_ANY);
 	}
+	tx_last_clear();
 }
 
 /* Read a session's kernel-owned state back after a run. */

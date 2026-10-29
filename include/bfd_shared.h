@@ -93,7 +93,8 @@ struct bfd_ctrl_pkt {
 	X(ECHO_RATELIMITED, "echo-ratelimited")	  /* over a peer's echo budget */                 \
 	X(CHANGES_LOST, "changes-lost")		  /* change ring full; engine resyncs */          \
 	X(TOO_FAST, "too-fast")			  /* faster than the peer may send; dropped */    \
-	X(VERIFY_LIMITED, "verify-limited")	  /* over the digest verify budget */
+	X(VERIFY_LIMITED, "verify-limited")	  /* over the digest verify budget */             \
+	X(TX_SPACED, "tx-spaced")		  /* reply withheld, ours just left */
 
 /* Written between load and attach. Their own map: .rodata would need rewriting
  * whole, and sweep_map holds a bpf_timer.

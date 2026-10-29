@@ -31,6 +31,7 @@ int ktx_spread_pass;
 /* mmapped so a beat is a plain store. */
 static __u64 *ktx_hb;
 uint64_t *ktx_seq_mem;
+uint64_t *ktx_txlast_mem;
 /* Closing a link fd detaches. link_fd -1 is a flags attach, which outlives us. */
 #define KTX_MAX_IFACES 8
 struct ktx_iface {
@@ -81,6 +82,7 @@ static int ktx_abi_check(struct bpf_object *o, const char *path)
 		{ "bfd_stats", BFD_STAT_MAX },
 		{ "tunables", BFD_TUNE_MAX },
 		{ "auth_seq", BFD_MAX_SESSIONS },
+		{ "tx_last", BFD_MAX_SESSIONS },
 	};
 	struct btf *btf = bpf_object__btf(o);
 	int bad = 0;
@@ -138,7 +140,8 @@ static int ktx_abi_check(struct bpf_object *o, const char *path)
 static int ktx_size_maps(struct bpf_object *o)
 {
 	static const char *const per_session[] = {
-		"bfd_sessions", "tx_config", "echo_peers", "echo_disc", "our_discs", "auth_seq",
+		"bfd_sessions", "tx_config", "echo_peers", "echo_disc",
+		"our_discs",	"auth_seq",  "tx_last",
 	};
 
 	for (size_t i = 0; i < sizeof(per_session) / sizeof(per_session[0]); i++) {
@@ -211,6 +214,20 @@ int ktx_load(void)
 			return -1;
 		}
 		ktx_seq_mem = m;
+	}
+
+	/* Without it the program also answers the peer's replies to us. */
+	{
+		int tl_fd = bpf_object__find_map_fd_by_name(bpf_obj, "tx_last");
+		void *m = MAP_FAILED;
+
+		if (tl_fd >= 0)
+			m = mmap(NULL, (size_t)sess_max * sizeof(uint64_t), PROT_READ | PROT_WRITE,
+				 MAP_SHARED, tl_fd, 0);
+		if (m == MAP_FAILED)
+			log_err("kernel-tx: tx_last not mapped (%s)\n", strerror(errno));
+		else
+			ktx_txlast_mem = m;
 	}
 
 	/* Before attach, so the first packet cannot arm the sweeper on the

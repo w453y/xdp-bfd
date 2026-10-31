@@ -81,6 +81,8 @@ static void adopt_one(struct session *s, const struct session_key *k, const stru
 	s->auth_flags = c->auth_flags;
 	memcpy(s->auth_kpad, c->auth_kpad, sizeof(s->auth_kpad));
 	memcpy(s->auth_key, c->auth_kpad, c->auth_keylen);
+	int send_found = 0;
+
 	for (int i = 0; i < c->auth_nkeys && i < BFDDP_AUTH_KEY_COUNT_MAX; i++) {
 		struct auth_key *ak = &s->auth_keys[i];
 		const struct xdp_auth_key *xk = &c->auth_accept[i];
@@ -98,7 +100,24 @@ static void adopt_one(struct session *s, const struct session_key *k, const stru
 		ak->accept_start = 0;
 		ak->send_start = sends ? 0 : -1;
 		ak->send_end = sends ? -1 : 0;
+		send_found |= sends;
 		s->auth_nkeys++;
+	}
+	/* The accept list leaves out a send key whose accept window has closed;
+	 * tx_cfg still holds it. Send only, so it stays off the accept list.
+	 */
+	if (c->auth_type && !send_found && s->auth_nkeys < BFDDP_AUTH_KEY_COUNT_MAX) {
+		struct auth_key *ak = &s->auth_keys[s->auth_nkeys++];
+
+		ak->type = c->auth_type;
+		ak->key_id = c->auth_keyid;
+		ak->keylen = c->auth_keylen;
+		ak->flags = c->auth_flags;
+		memcpy(ak->kpad, c->auth_kpad, sizeof(ak->kpad));
+		ak->send_start = 0;
+		ak->send_end = -1;
+		ak->accept_start = -1;
+		ak->accept_end = 0;
 	}
 
 	if (st) {

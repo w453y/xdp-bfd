@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
 /* xdp_fuzz.c - libFuzzer target for the XDP program: arbitrary payloads for a
- * configured session. A DROP must leave no trace, and an XDP_TX reply must be a
- * valid control packet with our discriminator at TTL 255. Root.
+ * configured session, each run with and without a packet of ours just sent. A
+ * DROP leaves no trace unless it withheld the reply to the peer's answer, and
+ * an XDP_TX reply is a valid control packet with our discriminator at TTL 255.
+ * Root.
  */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <stdint.h>
 #include <arpa/inet.h>
 #include <linux/if_ether.h>
@@ -27,7 +30,8 @@ const char *__lsan_default_options(void)
 	return "detect_leaks=0";
 }
 
-static int prog_fd = -1, cfg_fd = -1, sess_fd = -1, flags_fd = -1;
+static int prog_fd = -1, cfg_fd = -1, sess_fd = -1, flags_fd = -1, last_fd = -1, stats_fd = -1;
+static int ncpus;
 
 /* Our discriminator and the peer's, as configured below. */
 #define MY_DISC	  0x22222222u
@@ -67,7 +71,11 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
 	cfg_fd = bpf_object__find_map_fd_by_name(obj, "tx_config");
 	sess_fd = bpf_object__find_map_fd_by_name(obj, "bfd_sessions");
 	flags_fd = bpf_object__find_map_fd_by_name(obj, "prog_flags");
-	if (prog_fd < 0 || cfg_fd < 0 || sess_fd < 0 || flags_fd < 0) {
+	last_fd = bpf_object__find_map_fd_by_name(obj, "tx_last");
+	stats_fd = bpf_object__find_map_fd_by_name(obj, "bfd_stats");
+	ncpus = libbpf_num_possible_cpus();
+	if (prog_fd < 0 || cfg_fd < 0 || sess_fd < 0 || flags_fd < 0 || last_fd < 0 ||
+	    stats_fd < 0 || ncpus <= 0) {
 		fprintf(stderr, "prog/maps not found in %s\n", path);
 		exit(1);
 	}
@@ -131,15 +139,36 @@ static void build_envelope(unsigned char *f, const uint8_t *pl, size_t pn)
 	memcpy(f + HDRS, pl, pn);
 }
 
-int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+static uint64_t stat_sum(uint32_t idx)
 {
-	unsigned char frame[HDRS + PAYMAX];
-	unsigned char out[HDRS + PAYMAX + 64];
-	struct session_state st = { 0 };
-	size_t pn = size > PAYMAX ? PAYMAX : size;
+	uint64_t v[ncpus], sum = 0;
 
-	if (prog_fd < 0)
+	if (bpf_map_lookup_elem(stats_fd, &idx, v))
 		return 0;
+	for (int i = 0; i < ncpus; i++)
+		sum += v[i];
+	return sum;
+}
+
+/* bpf_ktime_get_ns() reads CLOCK_MONOTONIC. */
+static uint64_t mono_ns(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+/* recent: our last packet just left, so the peer's next is its answer. */
+static void run_one(const uint8_t *data, size_t pn, int recent)
+{
+	/* Offset by 2 so the IP header is 4-byte aligned. */
+	unsigned char fbuf[2 + HDRS + PAYMAX] __attribute__((aligned(8)));
+	unsigned char obuf[2 + HDRS + PAYMAX + 64] __attribute__((aligned(8)));
+	unsigned char *frame = fbuf + 2, *out = obuf + 2;
+	struct session_state st = { 0 };
+	uint32_t slot = 0;
+	uint64_t last = recent ? mono_ns() : 0, spaced;
 
 	/* A live Up session with nothing counted, so any trace shows. */
 	st.remote_state = ST_UP;
@@ -147,21 +176,32 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	st.local_disc = MY_DISC;
 	st.detect_mult = 3;
 	bpf_map_update_elem(sess_fd, &g_key, &st, BPF_ANY);
+	bpf_map_update_elem(last_fd, &slot, &last, BPF_ANY);
+	spaced = stat_sum(BFD_STAT_TX_SPACED);
 
 	build_envelope(frame, data, pn);
 
 	LIBBPF_OPTS(bpf_test_run_opts, topts, .data_in = frame,
 		    .data_size_in = (uint32_t)(HDRS + pn), .data_out = out,
-		    .data_size_out = sizeof(out), .repeat = 1);
+		    .data_size_out = sizeof(obuf) - 2, .repeat = 1);
 	if (bpf_prog_test_run_opts(prog_fd, &topts))
-		return 0; /* a run error is not a program bug */
+		return; /* a run error is not a program bug */
 
 	if (bpf_map_lookup_elem(sess_fd, &g_key, &st))
-		return 0;
+		return;
+	spaced = stat_sum(BFD_STAT_TX_SPACED) - spaced;
+
+	if (spaced && (!recent || topts.retval != 1 /* XDP_DROP */)) {
+		fprintf(stderr, "INVARIANT: tx-spaced counted (recent=%d retval=%u)\n", recent,
+			topts.retval);
+		abort();
+	}
 
 	if (topts.retval == 1 /* XDP_DROP */) {
-		/* A dropped frame must leave no trace of having arrived. */
-		if (st.rx_pkts != 0 || st.alive != 0) {
+		/* A dropped frame leaves no trace, except the peer's answer to
+		 * our packet, which counts and goes unanswered.
+		 */
+		if (!spaced && (st.rx_pkts != 0 || st.alive != 0)) {
 			fprintf(stderr,
 				"INVARIANT: DROP refreshed liveness (rx_pkts=%llu alive=%llu)\n",
 				(unsigned long long)st.rx_pkts, (unsigned long long)st.alive);
@@ -199,5 +239,15 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 			abort();
 		}
 	}
+}
+
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+{
+	size_t pn = size > PAYMAX ? PAYMAX : size;
+
+	if (prog_fd < 0)
+		return 0;
+	run_one(data, pn, 0);
+	run_one(data, pn, 1);
 	return 0;
 }

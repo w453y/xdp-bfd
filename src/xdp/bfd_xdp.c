@@ -410,9 +410,10 @@ int bfd_observer(struct xdp_md *ctx)
 		__u32 slot = cfg->slot;
 		__u64 *last = bpf_map_lookup_elem(&tx_last, &slot);
 		__u64 iv = cfg->min_tx_us > st->min_rx_us ? cfg->min_tx_us : st->min_rx_us;
+		__u64 prev = 0;
 
 		if (last && !(bfd->flags & BFD_F_POLL)) {
-			__u64 prev = *last;
+			prev = *last;
 
 			if ((__s64)(now - prev) < (__s64)(iv * 500) ||
 			    __sync_val_compare_and_swap(last, prev, now) != prev) {
@@ -420,9 +421,18 @@ int bfd_observer(struct xdp_md *ctx)
 				return XDP_DROP;
 			}
 		} else if (last) {
+			prev = *last;
 			*last = now;
 		}
-		return rx_clocked_tx(ctx, eth, iph, ip6, udp, bfd, cfg, st, asc, data, data_end);
+		int act = rx_clocked_tx(ctx, eth, iph, ip6, udp, bfd, cfg, st, asc, data, data_end);
+
+		/* Unless the engine has sent since, the turn is its again. */
+		if (act == BFD_TX_NO_ROOM) {
+			if (last)
+				__sync_val_compare_and_swap(last, now, prev);
+			return XDP_DROP;
+		}
+		return act;
 	}
 
 	return XDP_PASS;

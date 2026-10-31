@@ -184,8 +184,9 @@ static __always_inline __u32 xdp_auth_sum(const __u8 *blk)
 	return sum;
 }
 
-/* Build our auth section after the 24-byte header and return its 16-bit sum for
- * the v6 checksum. 0 if none could be built; then send nothing.
+/* Build header and auth section in sc->blk and return its 16-bit sum for the v6
+ * checksum; xdp_auth_store writes it once the frame has its final size. 0 if
+ * none could be built; then send nothing.
  */
 static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 					  const struct bfd_ctrl_pkt *bfd, const struct tx_cfg *cfg,
@@ -196,10 +197,8 @@ static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 	__u32 want = xdp_auth_len(cfg);
 	int rfc = cfg->auth_flags & BFD_AUTH_F_RFC_SHA1;
 	__u32 seq;
-	__u64 n;
 	int i;
 
-	/* Written back in one store, for the same verifier reason as the load. */
 	if (want < BFD_MIN_LEN || want > BFD_MAX_LEN)
 		return 0;
 	for (i = 0; i < SHA1_BLOCK_LEN; i++)
@@ -214,11 +213,6 @@ static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 	if (cfg->auth_type == BFD_AUTH_SIMPLE) {
 		for (i = 0; i < BFD_AUTH_SIMPLE_MAXKEY; i++)
 			blk[BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR + i] = cfg->auth_kpad[i];
-		n = xdp_len_pin(want);
-		if (n < BFD_MIN_LEN || n > BFD_MAX_LEN)
-			return 0;
-		if (bpf_xdp_store_bytes(ctx, boff, blk, n))
-			return 0;
 		*psum = xdp_auth_sum(blk);
 		return 1;
 	}
@@ -252,13 +246,19 @@ static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 	for (i = 0; i < SHA1_DIGEST_LEN; i++)
 		blk[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF + i] = dig[i];
 
-	n = xdp_len_pin(want);
-	if (n < BFD_MIN_LEN || n > BFD_MAX_LEN)
-		return 0;
-	if (bpf_xdp_store_bytes(ctx, boff, blk, n))
-		return 0;
 	*psum = xdp_auth_sum(blk);
 	return 1;
+}
+
+/* Written back in one store, for the same verifier reason as the load. */
+static __always_inline int xdp_auth_store(struct xdp_md *ctx, __u32 boff, __u32 len,
+					  struct auth_scratch *sc)
+{
+	__u64 n = xdp_len_pin(len);
+
+	if (n < BFD_MIN_LEN || n > BFD_MAX_LEN)
+		return 0;
+	return bpf_xdp_store_bytes(ctx, boff, sc->blk, n) == 0;
 }
 
 #endif /* BFD_XDP_AUTH_H */

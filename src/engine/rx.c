@@ -26,7 +26,7 @@ int rx_auth_ok(struct session *s, const __u8 *buf, __u8 len)
 		return 0;
 
 	/* Any key in its accept period, so a rollover does not refuse the peer. */
-	k = session_auth_key_for(s, buf[BFD_MIN_LEN + 2], (int64_t)time(NULL));
+	k = session_auth_key_for(s, buf[BFD_MIN_LEN], buf[BFD_MIN_LEN + 2], (int64_t)time(NULL));
 	if (!k) {
 		log_debug("lid=%u no key %u is currently accepted\n", s->lid, buf[BFD_MIN_LEN + 2]);
 		return 0;

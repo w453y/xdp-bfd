@@ -84,7 +84,11 @@ static void adopt_one(struct session *s, const struct session_key *k, const stru
 	for (int i = 0; i < c->auth_nkeys && i < BFDDP_AUTH_KEY_COUNT_MAX; i++) {
 		struct auth_key *ak = &s->auth_keys[i];
 		const struct xdp_auth_key *xk = &c->auth_accept[i];
-		int sends = c->auth_type && xk->key_id == c->auth_keyid;
+		/* The send key is the one tx_cfg holds, not the first with its ID. */
+		int sends = c->auth_type && xk->type == c->auth_type &&
+			    xk->key_id == c->auth_keyid && xk->flags == c->auth_flags &&
+			    xk->keylen == c->auth_keylen &&
+			    !memcmp(xk->kpad, c->auth_kpad, sizeof(xk->kpad));
 
 		ak->type = xk->type;
 		ak->key_id = xk->key_id;

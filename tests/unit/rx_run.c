@@ -241,6 +241,17 @@ int main(void)
 	check("auth-key-not-yet-acceptable", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_AUTH,
 	      "accept period has not opened");
 
+	/* Two keys share an ID, which DP_SESSION_AUTH allows: the packet's type
+	 * picks the key, as in the program.
+	 */
+	arm(1, 255);
+	sessions[0].auth_keys[1] = sessions[0].auth_keys[0];
+	sessions[0].auth_keys[0].type = BFD_AUTH_SIMPLE;
+	sessions[0].auth_nkeys = 2;
+	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, KEY, 1, 0);
+	check("auth-key-id-shared-across-types", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_ACCEPT,
+	      "the SHA1 key, not the first with that ID");
+
 	/* RFC 5880 s6.7.4 digests, and neither form takes the other. */
 	arm(1, 255);
 	sessions[0].auth_keys[0].flags = BFD_AUTH_F_RFC_SHA1;

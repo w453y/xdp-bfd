@@ -260,8 +260,11 @@ int session_auth_evaluate(struct session *s, int64_t now)
 	return changed;
 }
 
-/* Any acceptable key counts, so a rollover does not refuse the peer. */
-const struct auth_key *session_auth_key_for(const struct session *s, uint8_t key_id, int64_t now)
+/* Any acceptable key counts, so a rollover does not refuse the peer. Matched on
+ * type as well, as the program matches its accept list.
+ */
+const struct auth_key *session_auth_key_for(const struct session *s, uint8_t type, uint8_t key_id,
+					    int64_t now)
 {
 	unsigned int i;
 
@@ -271,7 +274,7 @@ const struct auth_key *session_auth_key_for(const struct session *s, uint8_t key
 	for (i = 0; i < s->auth_nkeys; i++) {
 		const struct auth_key *k = &s->auth_keys[i];
 
-		if (k->key_id == key_id && auth_key_acceptable(k, now))
+		if (k->type == type && k->key_id == key_id && auth_key_acceptable(k, now))
 			return k;
 	}
 	return NULL;

@@ -33,7 +33,7 @@ static void case_auth_rollover(void)
 		printf("     at 1500 signing with key %u, want 1\n", s->auth_keyid);
 		bad = 1;
 	}
-	if (!session_auth_key_for(s, 2, 1500)) {
+	if (!session_auth_key_for(s, BFD_AUTH_KEYED_SHA1, 2, 1500)) {
 		printf("     at 1500 key 2 is not accepted yet\n");
 		bad = 1;
 	}
@@ -44,13 +44,13 @@ static void case_auth_rollover(void)
 		printf("     at 2500 signing with key %u, want 2\n", s->auth_keyid);
 		bad = 1;
 	}
-	if (!session_auth_key_for(s, 1, 2500)) {
+	if (!session_auth_key_for(s, BFD_AUTH_KEYED_SHA1, 1, 2500)) {
 		printf("     at 2500 key 1 is no longer accepted\n");
 		bad = 1;
 	}
 
 	/* Once the first key's accept period closes it is refused. */
-	if (session_auth_key_for(s, 1, 3500)) {
+	if (session_auth_key_for(s, BFD_AUTH_KEYED_SHA1, 1, 3500)) {
 		printf("     at 3500 key 1 is still accepted\n");
 		bad = 1;
 	}

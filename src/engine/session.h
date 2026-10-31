@@ -341,7 +341,8 @@ struct session *sess_alloc_at(int slot);
 /* After setting a session's lid, wire_disc or addresses. */
 void sess_reindex(const struct session *s);
 int session_auth_evaluate(struct session *s, int64_t now);
-const struct auth_key *session_auth_key_for(const struct session *s, uint8_t key_id, int64_t now);
+const struct auth_key *session_auth_key_for(const struct session *s, uint8_t type, uint8_t key_id,
+					    int64_t now);
 struct session *sess_by_lid(uint32_t lid);
 struct session *sess_by_wire(uint32_t disc);
 void sm_addrs(const struct bfddp_session_msg *sm, struct bfd_addr *l, struct bfd_addr *p,

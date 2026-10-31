@@ -91,7 +91,8 @@ jobs:
 
   # Every clang the packages allow; compile only.
   toolchain:
-    runs-on: ubuntu-latest
+    # apt.llvm.org has no 26.04 builds before clang 21.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -99,7 +100,7 @@ jobs:
         include:
           - llvm: 17               # the Build-Depends floor
           - llvm: 18
-            preinstalled: "true"   # ubuntu-latest ships clang-18
+            preinstalled: "true"   # ubuntu-24.04 ships clang-18
           - llvm: 19
           - llvm: 20
           - llvm: 21
@@ -176,7 +177,9 @@ jobs:
 
   # BPFFLAGS takes the UAPI include path from the triple.
   cross:
-    runs-on: ubuntu-latest
+    # .github/arm64.sources is noble: on a newer image its headers
+    # replace the amd64 ones and clang goes with them.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4

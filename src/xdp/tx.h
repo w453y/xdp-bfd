@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 /* tx.h - RX-clocked TX: rewrite the received frame into our control packet and
- * bounce it with XDP_TX. The frame is resized to our packet after every write
- * through a packet pointer, as bpf_xdp_adjust_tail invalidates them; the auth
- * section goes in after it by offset.
+ * bounce it with XDP_TX. A frame too short for our packet grows before any
+ * write; one too long is trimmed after the last write through a packet
+ * pointer, as bpf_xdp_adjust_tail invalidates them, and the auth section
+ * goes in after that by offset.
  */
 #ifndef BFD_XDP_TX_H
 #define BFD_XDP_TX_H
@@ -11,7 +12,7 @@
 #include "tunables.h"
 #include "auth.h"
 
-/* Not an XDP action: the reply did not fit and nothing was sent. */
+/* Not an XDP action: no room for the reply; the frame is untouched. */
 #define BFD_TX_NO_ROOM (-1)
 
 static __always_inline int rx_clocked_tx(struct xdp_md *ctx, struct ethhdr *eth, struct iphdr *iph,
@@ -23,8 +24,42 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx, struct ethhdr *eth,
 	__u8 send_final = (bfd->flags & BFD_F_POLL) ? BFD_F_FINAL : 0;
 	struct auth_scratch *signed_sc = NULL;
 	__u32 auth_sum = 0;
-	__u64 auth_ctr = 0;
 	__u32 alen = 0;
+
+	if (cfg->auth_type) {
+		alen = xdp_auth_len(cfg);
+		if (!alen)
+			return XDP_DROP;
+	}
+
+	/* A peer signing with a shorter auth section than ours leaves the frame
+	 * too short. Grow it before touching it, so that without the room it
+	 * can go up as it came.
+	 */
+	int v6 = !iph;
+	int delta = (int)(sizeof(*eth) + (v6 ? sizeof(*ip6) : sizeof(*iph)) + sizeof(*udp) +
+			  (alen ? alen : BFD_MIN_LEN)) -
+		    (int)((long)data_end - (long)data);
+
+	if (delta > 0) {
+		if (bpf_xdp_adjust_tail(ctx, delta))
+			return BFD_TX_NO_ROOM;
+		/* The parser took no IP options or v6 extension headers. */
+		data = (void *)(long)ctx->data;
+		data_end = (void *)(long)ctx->data_end;
+		eth = data;
+		if (v6) {
+			ip6 = (void *)(eth + 1);
+			udp = (void *)(ip6 + 1);
+		} else {
+			iph = (void *)(eth + 1);
+			udp = (void *)(iph + 1);
+		}
+		bfd = (void *)(udp + 1);
+		if ((void *)(bfd + 1) > data_end)
+			return XDP_DROP;
+		delta = 0;
+	}
 
 	__u8 tmp[6];
 
@@ -80,10 +115,7 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx, struct ethhdr *eth,
 		bfd->flags |= BFD_F_DEMAND;
 	bfd->detect_mult = cfg->mult;
 	bfd->len = BFD_MIN_LEN;
-	if (cfg->auth_type) {
-		alen = xdp_auth_len(cfg);
-		if (!alen)
-			return XDP_DROP;
+	if (alen) {
 		bfd->flags |= BFD_F_AUTH;
 		bfd->len = (__u8)alen;
 	}
@@ -97,15 +129,10 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx, struct ethhdr *eth,
 
 	/* Sign before checksumming; without a digest send nothing. */
 	if (alen) {
-		if (!sc || !xdp_auth_build(ctx, boff, bfd, cfg, sc, &auth_sum, &auth_ctr))
+		if (!sc || !xdp_auth_build(ctx, boff, bfd, cfg, sc, &auth_sum))
 			return XDP_DROP;
 		signed_sc = sc;
 	}
-
-	/* A peer sending a shorter auth section than ours leaves us too short. */
-	int want = (int)(sizeof(*eth) + (iph ? sizeof(*iph) : sizeof(*ip6)) + sizeof(*udp) +
-			 bfd->len);
-	int delta = want - (int)((long)data_end - (long)data);
 
 	/* The received envelope may not describe the frame. */
 	udp->len = bpf_htons(sizeof(*udp) + bfd->len);
@@ -151,13 +178,9 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx, struct ethhdr *eth,
 		udp->check = c ? c : 0xffff; /* RFC 768: 0 -> 0xffff */
 	}
 
-	/* Without the room the frame is half-rewritten: drop it, and the
-	 * caller hands the turn back so the engine sends.
-	 */
-	if (delta && bpf_xdp_adjust_tail(ctx, delta)) {
-		xdp_auth_unseq(cfg, auth_ctr);
-		return BFD_TX_NO_ROOM;
-	}
+	/* On a trim failure drop: the frame is half-rewritten. */
+	if (delta < 0 && bpf_xdp_adjust_tail(ctx, delta))
+		return XDP_DROP;
 	if (signed_sc && !xdp_auth_store(ctx, boff, alen, signed_sc))
 		return XDP_DROP;
 

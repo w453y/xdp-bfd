@@ -426,11 +426,13 @@ int bfd_observer(struct xdp_md *ctx)
 		}
 		int act = rx_clocked_tx(ctx, eth, iph, ip6, udp, bfd, cfg, st, asc, data, data_end);
 
-		/* Unless the engine has sent since, the turn is its again. */
+		/* Up as it came, so the engine answers it, Final included; unless
+		 * it has sent since, the turn is its again.
+		 */
 		if (act == BFD_TX_NO_ROOM) {
 			if (last)
 				__sync_val_compare_and_swap(last, now, prev);
-			return XDP_DROP;
+			return XDP_PASS;
 		}
 		return act;
 	}

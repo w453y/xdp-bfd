@@ -77,6 +77,8 @@ def no_flaps():
         (4, "simple"),
         (4, "keyed-sha1"),
         (4, "meticulous-sha1"),
+        (4, "keyed-sha1-rfc"),
+        (4, "meticulous-sha1-rfc"),
     ],
 )
 def test_pair_keeps_its_rate(request, family, auth):

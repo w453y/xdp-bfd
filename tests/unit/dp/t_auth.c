@@ -125,3 +125,42 @@ static void case_auth_unsupported_type(void)
 	}
 	report("auth-unsupported-type-dropped", bad, "keyed MD5 ignored");
 }
+
+/* A key marked BFDDP_AUTH_KEY_RFC_SHA1 uses that digest; one we cannot honour
+ * is dropped.
+ */
+static void case_auth_rfc_flag(const char *name, uint8_t flags, uint8_t key_len, int want_kept,
+			       uint8_t want_flags)
+{
+	unsigned char buf[2048];
+	struct bfddp_session_auth *a = (void *)(buf + sizeof(struct bfddp_message_header));
+	struct session *s;
+	size_t n;
+	int bad = 0;
+
+	sessions_clear();
+	n = build_add_auth(buf, 0x2004, "10.0.0.1", "10.0.0.2");
+	feed(buf, n);
+	dp_read();
+	n = build_session_auth(buf, 0x2004);
+	a->keys[0].flags = flags;
+	a->keys[0].key_len = key_len;
+	memset(a->keys[0].key, 'k', key_len);
+	feed(buf, n);
+	dp_read();
+
+	s = sess_by_lid(0x2004);
+	if (!s) {
+		report(name, 1, "no session");
+		return;
+	}
+	if (s->auth_nkeys != (want_kept ? 2 : 1)) {
+		printf("     kept %u keys, want %u\n", s->auth_nkeys, want_kept ? 2 : 1);
+		bad = 1;
+	} else if (want_kept && (s->auth_keys[0].flags != want_flags || s->auth_keys[1].flags)) {
+		printf("     flags %u and %u, want %u and 0\n", s->auth_keys[0].flags,
+		       s->auth_keys[1].flags, want_flags);
+		bad = 1;
+	}
+	report(name, bad, NULL);
+}

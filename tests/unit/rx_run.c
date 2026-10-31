@@ -100,7 +100,7 @@ static size_t build(__u8 *buf, uint8_t state, uint32_t your_disc)
 
 /* Signed as the peer would. */
 static size_t build_auth(__u8 *buf, uint8_t state, uint32_t your_disc, uint8_t key_id,
-			 const char *key, uint32_t seq)
+			 const char *key, uint32_t seq, __u8 flags)
 {
 	struct bfd_ctrl_pkt *h = (void *)buf;
 	__u8 kpad[64] = { 0 };
@@ -112,7 +112,8 @@ static size_t build_auth(__u8 *buf, uint8_t state, uint32_t your_disc, uint8_t k
 	/* The digest covers the header. */
 	h->flags |= BFD_F_AUTH;
 	h->len = bfd_auth_pkt_len(BFD_AUTH_KEYED_SHA1, (__u8)strlen(key));
-	len = bfd_auth_build(buf, BFD_AUTH_KEYED_SHA1, key_id, kpad, (__u8)strlen(key), kpad, seq);
+	len = bfd_auth_build(buf, BFD_AUTH_KEYED_SHA1, key_id, kpad, (__u8)strlen(key), kpad,
+			     flags, seq);
 	return len;
 }
 
@@ -213,36 +214,54 @@ int main(void)
 	      "no A bit where the session requires one");
 
 	arm(1, 255);
-	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, KEY, 1);
+	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, KEY, 1, 0);
 	check("auth-signed-accepted", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_ACCEPT,
 	      "correct key and digest");
 
 	arm(1, 255);
-	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, KEY, 1);
+	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, KEY, 1, 0);
 	buf[BFD_MIN_LEN + 8] ^= 0xff; /* one digest byte */
 	check("auth-bad-digest", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_AUTH,
 	      "one flipped digest byte");
 
 	arm(1, 255);
-	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, "wrongkey", 1);
+	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, "wrongkey", 1, 0);
 	check("auth-wrong-key", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_AUTH,
 	      "signed with a key we do not hold");
 
 	arm(1, 255);
-	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID + 1, KEY, 1);
+	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID + 1, KEY, 1, 0);
 	check("auth-unknown-key-id", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_AUTH,
 	      "names a key id we never configured");
 
 	/* The other half of the rollover rule. */
 	arm(1, 255);
 	sessions[0].auth_keys[0].accept_start = (int64_t)time(NULL) + 3600;
-	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, KEY, 1);
+	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, KEY, 1, 0);
 	check("auth-key-not-yet-acceptable", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_AUTH,
 	      "accept period has not opened");
 
+	/* RFC 5880 s6.7.4 digests, and neither form takes the other. */
+	arm(1, 255);
+	sessions[0].auth_keys[0].flags = BFD_AUTH_F_RFC_SHA1;
+	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, KEY, 1, BFD_AUTH_F_RFC_SHA1);
+	check("auth-rfc-signed-accepted", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_ACCEPT,
+	      "RFC key, RFC digest");
+
+	arm(1, 255);
+	sessions[0].auth_keys[0].flags = BFD_AUTH_F_RFC_SHA1;
+	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, KEY, 1, 0);
+	check("auth-rfc-key-refuses-hmac", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_AUTH,
+	      "same key, HMAC digest");
+
+	arm(1, 255);
+	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, KEY, 1, BFD_AUTH_F_RFC_SHA1);
+	check("auth-hmac-key-refuses-rfc", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_AUTH,
+	      "same key, RFC digest");
+
 	/* A peer must not add or strip authentication. */
 	arm(0, 255);
-	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, KEY, 1);
+	n = build_auth(buf, ST_UP, MY_DISC, KEY_ID, KEY, 1, 0);
 	check("auth-signed-on-bare-session", buf, n, 255, &A_PEER, &A_LOCAL, 0, RX_AUTH,
 	      "A bit where the session has no key");
 

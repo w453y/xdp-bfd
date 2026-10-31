@@ -268,6 +268,20 @@ static void run_sweep_matrix(void)
 	arm_extra_keyid = 0;
 	arm_extra_key = "";
 
+	/* RFC 5880 s6.7.4 digests, and neither form takes the other. */
+	arm_flags = BFD_AUTH_F_RFC_SHA1;
+	build_flags = BFD_AUTH_F_RFC_SHA1;
+	case_auth_reject("auth-rfc-good-signature", KS, "topsecret", 7, 100, 0, 0, 1);
+	case_auth_reject("auth-rfc-meticulous-good", MS, "topsecret", 7, 101, 0, 100, 1);
+	case_auth_reject("auth-rfc-wrong-key", KS, "wrongkey!", 7, 100, 0, 0, 0);
+	case_auth_reject("auth-rfc-bad-digest", KS, "topsecret", 7, 100, 1, 0, 0);
+	build_flags = 0;
+	case_auth_reject("auth-rfc-session-refuses-hmac", KS, "topsecret", 7, 100, 0, 0, 0);
+	arm_flags = 0;
+	build_flags = BFD_AUTH_F_RFC_SHA1;
+	case_auth_reject("auth-hmac-session-refuses-rfc", KS, "topsecret", 7, 100, 0, 0, 0);
+	build_flags = 0;
+
 #undef KS
 #undef MS
 
@@ -281,6 +295,8 @@ static void run_sweep_matrix(void)
 
 	for (int i = 0; i < HMAC_NVECS; i++)
 		case_hmac(&hmac_vecs[i]);
+	for (int i = 0; i < AUTH_NVECS; i++)
+		case_auth_vec_kernel(&auth_vecs[i]);
 
 	/* One second bound throughout, the shipped default. */
 #define DM_BOUND (1000ull * 1000 * 1000)

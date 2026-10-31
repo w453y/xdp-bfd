@@ -24,6 +24,7 @@
 #include "hmac_sha1.h"
 #include "bfd_auth.h"
 #include "hmac_vectors.h"
+#include "auth_vectors.h"
 
 static struct bpf_object *obj;
 static int prog_fd = -1;
@@ -48,6 +49,7 @@ static int disc_fd = -1, budget_fd = -1, changes_fd = -1;
 static struct bpf_object *sweep_obj;
 static int sweep_prog_fd = -1, sweep_sess_fd = -1, sweep_cfg_fd = -1;
 static int hmac_prog_fd = -1, hmac_map_fd = -1;
+static int sha1_prog_fd = -1, sha1_map_fd = -1;
 #define FLAG_PROMISC 1u
 #define FLAG_MHOP    2u
 /* Varied to show the replay window uses the packet's Detect Mult. */
@@ -55,6 +57,9 @@ static __u8 arm_local_mult = 3;
 /* Second key in the accept set, as a rollover leaves; 0 means none. */
 static __u8 arm_extra_keyid;
 static const char *arm_extra_key = "";
+/* BFD_AUTH_F_* of the armed keys, and of the peer's signature. */
+static __u8 arm_flags;
+static __u8 build_flags;
 
 #include "xdp/harness.c"
 #include "xdp/t_parse.c"
@@ -116,6 +121,12 @@ int main(void)
 				hmac_map_fd = bpf_object__find_map_fd_by_name(sweep_obj,
 									      "hmac_scratch");
 			}
+			sp = bpf_object__find_program_by_name(sweep_obj, "sha1_once");
+			if (sp) {
+				sha1_prog_fd = bpf_program__fd(sp);
+				sha1_map_fd = bpf_object__find_map_fd_by_name(sweep_obj,
+									      "sha1_scratch");
+			}
 		}
 	} else {
 		/* Every sweep, window and HMAC case below would skip. */
@@ -135,6 +146,8 @@ int main(void)
 	case_auth_verify_budget();
 	case_auth_seq_shared();
 	case_auth_seq_by_slot();
+	case_auth_reply_digest(0, "auth-reply-hmac-digest");
+	case_auth_reply_digest(BFD_AUTH_F_RFC_SHA1, "auth-reply-rfc-digest");
 	case_bounce_v4();
 	case_bounce_v4_frame();
 	case_reply_pacing();

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* bfd_xdp_test.c - test-only entry points: one sweep pass, since bpf_timer does
- * not fire under test_run, and the shared HMAC. Its include list must match
- * bfd_xdp.c's.
+ * not fire under test_run, the shared HMAC and the RFC digest. Its include list
+ * must match bfd_xdp.c's.
  */
 
 #include <linux/bpf.h>
@@ -77,6 +77,34 @@ int hmac_once(struct xdp_md *ctx)
 	 * copy of a length read from a map. The vectors stay under 64.
 	 */
 	s->ok = hmac_sha1_blocks(s->kpad, s->mblk, s->msglen & 63, s->out, s->tmp);
+	return XDP_PASS;
+}
+
+/* The RFC 5880 s6.7.4 digest: blk holds the packet with the key in place. */
+struct sha1_scratch {
+	__u8 blk[SHA1_BLOCK_LEN];
+	__u8 out[SHA1_DIGEST_LEN];
+	__u32 len;
+	__u32 ok;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct sha1_scratch);
+} sha1_scratch SEC(".maps");
+
+SEC("xdp")
+int sha1_once(struct xdp_md *ctx)
+{
+	__u32 zero = 0;
+	struct sha1_scratch *s = bpf_map_lookup_elem(&sha1_scratch, &zero);
+
+	if (!s)
+		return XDP_ABORTED;
+	/* Masked as in hmac_once. */
+	s->ok = sha1_block(s->blk, s->len & 63, s->out);
 	return XDP_PASS;
 }
 

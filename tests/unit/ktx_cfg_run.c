@@ -131,6 +131,23 @@ int main(void)
 	       c.enable != 1 || c.auth_type != BFD_AUTH_KEYED_SHA1 || c.auth_keyid != 3,
 	       "keyed sha1 rides the fast path");
 
+	s = arm();
+	s->auth_present = 1;
+	s->auth_type = BFD_AUTH_KEYED_SHA1;
+	s->auth_keyid = 3;
+	s->auth_keylen = 8;
+	s->auth_flags = BFD_AUTH_F_RFC_SHA1;
+	s->auth_nkeys = 1;
+	s->auth_keys[0].type = BFD_AUTH_KEYED_SHA1;
+	s->auth_keys[0].key_id = 3;
+	s->auth_keys[0].keylen = 8;
+	s->auth_keys[0].flags = BFD_AUTH_F_RFC_SHA1;
+	ktx_cfg_for(s, NOW, &c, &k);
+	report("auth-rfc-flag-is-carried",
+	       c.auth_flags != BFD_AUTH_F_RFC_SHA1 || c.auth_nkeys != 1 ||
+		       c.auth_accept[0].flags != BFD_AUTH_F_RFC_SHA1,
+	       "send key and accept list");
+
 	/* --- the accept list at a lifetime boundary --- */
 	s = arm();
 	s->auth_present = 1;

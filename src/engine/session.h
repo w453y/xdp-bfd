@@ -30,6 +30,7 @@ struct auth_key {
 	uint8_t type;
 	uint8_t key_id;
 	uint8_t keylen;
+	uint8_t flags; /* BFD_AUTH_F_* */
 	uint8_t kpad[64];
 	int64_t send_start;
 	int64_t send_end;
@@ -130,6 +131,7 @@ struct session {
 	uint8_t auth_type; /* BFD_AUTH_*, 0 = unauthenticated */
 	uint8_t auth_keyid;
 	uint8_t auth_keylen;
+	uint8_t auth_flags;
 	uint8_t auth_key[BFDDP_AUTH_KEY_MAX];
 	/* the key zero-padded to one SHA1 block */
 	uint8_t auth_kpad[64];

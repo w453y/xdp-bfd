@@ -145,6 +145,14 @@ enum bfd_stat {
 /* type, length, key id, reserved, sequence, digest */
 #define BFD_AUTH_SHA1_LEN 28
 
+/* Key flag: keyed SHA1 as RFC 5880 s6.7.4 gives it, the key in the digest
+ * field. Without it, an HMAC over the packet with the field zeroed, which is
+ * what bfdd's hmac-sha-1 keys produce.
+ */
+#define BFD_AUTH_F_RFC_SHA1 0x01
+/* The RFC form carries the key in the 20-byte digest field. */
+#define BFD_AUTH_RFC_SHA1_MAXKEY 20
+
 /* Digest failures per detect interval before A-bit packets are dropped
  * unhashed. A rollover costs a handful.
  */
@@ -274,7 +282,7 @@ struct xdp_auth_key {
 	__u8 type;
 	__u8 key_id;
 	__u8 keylen;
-	__u8 pad;
+	__u8 flags; /* BFD_AUTH_F_* */
 	__u8 kpad[64];
 };
 
@@ -328,7 +336,8 @@ struct tx_cfg {
 
 	/* every key a packet may be signed with now */
 	__u8 auth_nkeys;
-	__u8 auth_nkeys_pad[3];
+	__u8 auth_flags; /* the send key's BFD_AUTH_F_* */
+	__u8 auth_nkeys_pad[2];
 	struct xdp_auth_key auth_accept[BFD_AUTH_ACCEPT_MAX];
 };
 

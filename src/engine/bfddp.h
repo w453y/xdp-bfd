@@ -22,9 +22,11 @@ enum bfddp_message_type {
 };
 
 /* BFD_DP_CAPABILITIES bits. bfdd offloads an authenticated session only to
- * a data plane that declared this one.
+ * a data plane that declared this one, and one with a sha-1 key only if it
+ * also declared the second.
  */
-#define BFDDP_CAP_SESSION_AUTH (1ULL << 0)
+#define BFDDP_CAP_SESSION_AUTH	(1ULL << 0)
+#define BFDDP_CAP_AUTH_RFC_SHA1 (1ULL << 1)
 
 /* Must match bfdd's BFDDP_AUTH_KEY_MAX. */
 #define BFDDP_AUTH_KEY_MAX 64
@@ -102,7 +104,8 @@ struct bfddp_auth_key {
 	uint8_t type;
 	uint8_t key_id;
 	uint8_t key_len;
-	uint8_t zero[5];
+	uint8_t flags; /* BFDDP_AUTH_KEY_* */
+	uint8_t zero[4];
 	struct bfddp_key_lifetime send;
 	struct bfddp_key_lifetime accept;
 	char key[BFDDP_AUTH_KEY_MAX];
@@ -117,6 +120,9 @@ struct bfddp_session_auth {
 } __attribute__((packed));
 
 #define BFDDP_SESSION_AUTH_MIN offsetof(struct bfddp_session_auth, keys)
+
+/* Keyed SHA1 as RFC 5880 s6.7.4 gives it; without it, the HMAC. */
+#define BFDDP_AUTH_KEY_RFC_SHA1 0x01
 
 struct bfddp_state_change {
 	uint32_t lid;

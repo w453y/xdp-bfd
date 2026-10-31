@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* auth.h - RFC 5880 s6.7 on the fast path: simple password, keyed and
- * meticulous SHA1. The packet is copied into a zero-padded scratch block so
- * everything works on fixed sizes. Include after maps.h.
+ * meticulous SHA1, either digest. The packet is copied into a zero-padded
+ * scratch block so everything works on fixed sizes. Include after maps.h.
  */
 #ifndef BFD_XDP_AUTH_H
 #define BFD_XDP_AUTH_H
@@ -71,7 +71,7 @@ static __always_inline int xdp_auth_load(struct xdp_md *ctx, __u32 off, __u32 le
 }
 
 /* Advance the replay window on success. The digest covers the packet with the
- * digest zeroed, hence the copy.
+ * key or zeros in the digest field, hence the copy.
  */
 static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 					   const struct bfd_ctrl_pkt *bfd, const struct tx_cfg *cfg,
@@ -84,7 +84,7 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 	__u32 want, idx, seq = 0;
 	__u8 key_id, type;
 	__u8 diff = 0;
-	int i, found = -1;
+	int i, rfc, found = -1;
 
 	/* Before anything is read. */
 	if (len < BFD_MIN_LEN + BFD_AUTH_SIMPLE_HDR || len > BFD_MAX_LEN)
@@ -116,6 +116,7 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 	/* Copied out so everything below uses a fixed offset. */
 	for (i = 0; i < SHA1_BLOCK_LEN; i++)
 		sc->kpad[i] = k->kpad[i];
+	rfc = k->flags & BFD_AUTH_F_RFC_SHA1;
 
 	/* The length the named key produces is what the packet must claim. */
 	if (type == BFD_AUTH_SIMPLE) {
@@ -149,12 +150,17 @@ static __always_inline int xdp_auth_verify(struct xdp_md *ctx, __u32 boff,
 			     bfd->detect_mult))
 		return 0;
 
+	/* The engine keeps an RFC key within the field and kpad zero past it. */
 	for (i = 0; i < SHA1_DIGEST_LEN; i++) {
 		sc->rcv[i] = blk[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF + i];
-		blk[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF + i] = 0;
+		blk[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF + i] = rfc ? sc->kpad[i] : 0;
 	}
-	if (!hmac_sha1_blocks(sc->kpad, blk, BFD_MIN_LEN + BFD_AUTH_SHA1_LEN, dig, sc->tmp))
+	if (rfc) {
+		if (!sha1_block(blk, BFD_MIN_LEN + BFD_AUTH_SHA1_LEN, dig))
+			return 0;
+	} else if (!hmac_sha1_blocks(sc->kpad, blk, BFD_MIN_LEN + BFD_AUTH_SHA1_LEN, dig, sc->tmp)) {
 		return 0;
+	}
 
 	for (i = 0; i < SHA1_DIGEST_LEN; i++)
 		diff |= (__u8)(dig[i] ^ sc->rcv[i]);
@@ -188,6 +194,7 @@ static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 	__u8 *blk = sc->blk;
 	__u8 *dig = sc->dig;
 	__u32 want = xdp_auth_len(cfg);
+	int rfc = cfg->auth_flags & BFD_AUTH_F_RFC_SHA1;
 	__u32 seq;
 	__u64 n;
 	int i;
@@ -233,10 +240,15 @@ static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 	blk[BFD_MIN_LEN + BFD_AUTH_SHA1_SEQ_OFF + 2] = (__u8)(seq >> 8);
 	blk[BFD_MIN_LEN + BFD_AUTH_SHA1_SEQ_OFF + 3] = (__u8)seq;
 	for (i = 0; i < SHA1_DIGEST_LEN; i++)
-		blk[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF + i] = 0;
+		blk[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF + i] = rfc ? cfg->auth_kpad[i] : 0;
 
-	if (!hmac_sha1_blocks(cfg->auth_kpad, blk, BFD_MIN_LEN + BFD_AUTH_SHA1_LEN, dig, sc->tmp))
+	if (rfc) {
+		if (!sha1_block(blk, BFD_MIN_LEN + BFD_AUTH_SHA1_LEN, dig))
+			return 0;
+	} else if (!hmac_sha1_blocks(cfg->auth_kpad, blk, BFD_MIN_LEN + BFD_AUTH_SHA1_LEN, dig,
+				     sc->tmp)) {
 		return 0;
+	}
 	for (i = 0; i < SHA1_DIGEST_LEN; i++)
 		blk[BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF + i] = dig[i];
 

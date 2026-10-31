@@ -78,6 +78,7 @@ static void adopt_one(struct session *s, const struct session_key *k, const stru
 	s->auth_type = c->auth_type;
 	s->auth_keyid = c->auth_keyid;
 	s->auth_keylen = c->auth_keylen;
+	s->auth_flags = c->auth_flags;
 	memcpy(s->auth_kpad, c->auth_kpad, sizeof(s->auth_kpad));
 	memcpy(s->auth_key, c->auth_kpad, c->auth_keylen);
 	for (int i = 0; i < c->auth_nkeys && i < BFDDP_AUTH_KEY_COUNT_MAX; i++) {
@@ -88,6 +89,7 @@ static void adopt_one(struct session *s, const struct session_key *k, const stru
 		ak->type = xk->type;
 		ak->key_id = xk->key_id;
 		ak->keylen = xk->keylen;
+		ak->flags = xk->flags;
 		memcpy(ak->kpad, xk->kpad, sizeof(ak->kpad));
 		ak->accept_start = 0;
 		ak->send_start = sends ? 0 : -1;

@@ -186,11 +186,12 @@ static __always_inline __u32 xdp_auth_sum(const __u8 *blk)
 
 /* Build header and auth section in sc->blk and return its 16-bit sum for the v6
  * checksum; xdp_auth_store writes it once the frame has its final size. 0 if
- * none could be built; then send nothing.
+ * none could be built; then send nothing. *pctr is the shared counter's value
+ * the sequence came from, 0 without one, for xdp_auth_unseq.
  */
 static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 					  const struct bfd_ctrl_pkt *bfd, const struct tx_cfg *cfg,
-					  struct auth_scratch *sc, __u32 *psum)
+					  struct auth_scratch *sc, __u32 *psum, __u64 *pctr)
 {
 	__u8 *blk = sc->blk;
 	__u8 *dig = sc->dig;
@@ -225,7 +226,8 @@ static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 
 		if (!sq)
 			return 0;
-		seq = (__u32)(__sync_fetch_and_add(sq, 1) + 1);
+		*pctr = __sync_fetch_and_add(sq, 1) + 1;
+		seq = (__u32)*pctr;
 	}
 
 	blk[BFD_MIN_LEN + 3] = 0;
@@ -248,6 +250,22 @@ static __always_inline int xdp_auth_build(struct xdp_md *ctx, __u32 boff,
 
 	*psum = xdp_auth_sum(blk);
 	return 1;
+}
+
+/* A sequence that never left goes back, unless either plane has taken one
+ * since: a sender that drops reply after reply would otherwise run the
+ * engine's next one past the peer's window.
+ */
+static __always_inline void xdp_auth_unseq(const struct tx_cfg *cfg, __u64 ctr)
+{
+	__u32 slot = cfg->slot;
+	__u64 *sq;
+
+	if (!ctr)
+		return;
+	sq = bpf_map_lookup_elem(&auth_seq, &slot);
+	if (sq)
+		__sync_val_compare_and_swap(sq, ctr, ctr - 1);
 }
 
 /* Written back in one store, for the same verifier reason as the load. */

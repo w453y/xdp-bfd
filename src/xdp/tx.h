@@ -23,6 +23,7 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx, struct ethhdr *eth,
 	__u8 send_final = (bfd->flags & BFD_F_POLL) ? BFD_F_FINAL : 0;
 	struct auth_scratch *signed_sc = NULL;
 	__u32 auth_sum = 0;
+	__u64 auth_ctr = 0;
 	__u32 alen = 0;
 
 	__u8 tmp[6];
@@ -96,7 +97,7 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx, struct ethhdr *eth,
 
 	/* Sign before checksumming; without a digest send nothing. */
 	if (alen) {
-		if (!sc || !xdp_auth_build(ctx, boff, bfd, cfg, sc, &auth_sum))
+		if (!sc || !xdp_auth_build(ctx, boff, bfd, cfg, sc, &auth_sum, &auth_ctr))
 			return XDP_DROP;
 		signed_sc = sc;
 	}
@@ -153,8 +154,10 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx, struct ethhdr *eth,
 	/* Without the room the frame is half-rewritten: drop it, and the
 	 * caller hands the turn back so the engine sends.
 	 */
-	if (delta && bpf_xdp_adjust_tail(ctx, delta))
+	if (delta && bpf_xdp_adjust_tail(ctx, delta)) {
+		xdp_auth_unseq(cfg, auth_ctr);
 		return BFD_TX_NO_ROOM;
+	}
 	if (signed_sc && !xdp_auth_store(ctx, boff, alen, signed_sc))
 		return XDP_DROP;
 

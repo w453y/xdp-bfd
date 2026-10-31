@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-/* hmac_run.c - the shared HMAC-SHA1 on the host, against known answers; xdp_run
- * runs them in the kernel.
+/* hmac_run.c - the shared HMAC-SHA1 and the keyed SHA1 section on the host,
+ * against known answers; xdp_run runs them in the kernel.
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -8,6 +8,8 @@
 
 #include "hmac_sha1.h"
 #include "hmac_vectors.h"
+#include "bfd_auth.h"
+#include "auth_vectors.h"
 
 static int fails;
 
@@ -94,6 +96,74 @@ static void case_refusal(void)
 	}
 }
 
+/* Accepted under its own digest only, and rebuilt byte for byte. */
+static void case_auth_vec(const struct auth_vec *v)
+{
+	__u8 klen = (__u8)strlen(v->key);
+	__u8 kpad[SHA1_BLOCK_LEN] = {}, buf[BFD_MAX_LEN] = {};
+	const __u8 *p = v->pkt;
+	__u32 seq = (__u32)p[28] << 24 | (__u32)p[29] << 16 | (__u32)p[30] << 8 | p[31];
+	__u32 rx_seq = 0;
+	int seen = 0, bad = 0;
+
+	memcpy(kpad, v->key, klen);
+	if (bfd_auth_check(p, sizeof(v->pkt), p[24], p[26], (const __u8 *)v->key, klen, kpad,
+			   v->flags, &rx_seq, &seen, p[2]) != BFD_AUTH_OK) {
+		printf("     refused\n");
+		bad = 1;
+	}
+	rx_seq = 0;
+	seen = 0;
+	if (bfd_auth_check(p, sizeof(v->pkt), p[24], p[26], (const __u8 *)v->key, klen, kpad,
+			   v->flags ^ BFD_AUTH_F_RFC_SHA1, &rx_seq, &seen,
+			   p[2]) != BFD_AUTH_BADDIGEST) {
+		printf("     the other digest accepted it too\n");
+		bad = 1;
+	}
+	memcpy(buf, p, BFD_MIN_LEN);
+	if (bfd_auth_build(buf, p[24], p[26], (const __u8 *)v->key, klen, kpad, v->flags, seq) !=
+		    sizeof(v->pkt) ||
+	    memcmp(buf, p, sizeof(v->pkt))) {
+		printf("     rebuilt section differs\n");
+		bad = 1;
+	}
+	if (bad) {
+		printf("FAIL %-28s\n", v->name);
+		fails++;
+		return;
+	}
+	printf("ok   %-28s verified and rebuilt\n", v->name);
+}
+
+/* An RFC key longer than the digest field cannot be padded into it. */
+static void case_auth_rfc_long_key(void)
+{
+	static const char key[] = "twenty-one-bytes-long";
+	__u8 kpad[SHA1_BLOCK_LEN] = {}, buf[BFD_MAX_LEN] = {};
+	int bad = 0;
+
+	memcpy(kpad, key, sizeof(key) - 1);
+	buf[0] = 0x20;
+	buf[1] = BFD_F_AUTH;
+	buf[3] = BFD_MAX_LEN;
+	if (bfd_auth_build(buf, BFD_AUTH_KEYED_SHA1, 1, (const __u8 *)key, sizeof(key) - 1, kpad,
+			   BFD_AUTH_F_RFC_SHA1, 1)) {
+		printf("     signed with a 21-byte RFC key\n");
+		bad = 1;
+	}
+	if (!bfd_auth_build(buf, BFD_AUTH_KEYED_SHA1, 1, (const __u8 *)key, sizeof(key) - 1, kpad,
+			    0, 1)) {
+		printf("     refused a 21-byte HMAC key\n");
+		bad = 1;
+	}
+	if (bad) {
+		printf("FAIL %-28s\n", "auth-rfc-key-over-20");
+		fails++;
+		return;
+	}
+	printf("ok   %-28s refused\n", "auth-rfc-key-over-20");
+}
+
 int main(void)
 {
 	for (int i = 0; i < HMAC_NVECS; i++)
@@ -101,6 +171,9 @@ int main(void)
 	for (int i = 0; i < HMAC_NVECS; i++)
 		case_blocks(&hmac_vecs[i]);
 	case_refusal();
+	for (int i = 0; i < AUTH_NVECS; i++)
+		case_auth_vec(&auth_vecs[i]);
+	case_auth_rfc_long_key();
 
 	printf("\n%d failure(s)\n", fails);
 	return fails ? 1 : 0;

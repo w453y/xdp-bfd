@@ -521,7 +521,7 @@ void dp_send_capabilities(void)
 	m.h.version = 1;
 	m.h.type = htons(BFD_DP_CAPABILITIES);
 	m.h.length = htons(sizeof(m));
-	m.c.capabilities = htobe64(BFDDP_CAP_SESSION_AUTH);
+	m.c.capabilities = htobe64(BFDDP_CAP_SESSION_AUTH | BFDDP_CAP_AUTH_RFC_SHA1);
 	dp_send(&m, sizeof(m));
 }
 
@@ -592,6 +592,7 @@ static void dp_session_auth(const struct bfddp_session_auth *sa, size_t plen)
 		const struct bfddp_auth_key *k = &sa->keys[i];
 		struct auth_key *dst = &s->auth_keys[kept];
 		uint8_t kl = k->key_len;
+		uint8_t fl = 0;
 
 		/* Drop rather than truncate: a truncated key fails every
 		 * packet.
@@ -607,10 +608,18 @@ static void dp_session_auth(const struct bfddp_session_auth *sa, size_t plen)
 				k->key_id, k->type);
 			continue;
 		}
+		if (k->flags & BFDDP_AUTH_KEY_RFC_SHA1)
+			fl |= BFD_AUTH_F_RFC_SHA1;
+		if ((k->flags & ~BFDDP_AUTH_KEY_RFC_SHA1) || !bfd_auth_key_ok(k->type, fl, kl)) {
+			log_err("dplane: lid=%u key id %u has unsupported flags 0x%x for type %u length %u, ignored\n",
+				lid, k->key_id, k->flags, k->type, kl);
+			continue;
+		}
 
 		dst->type = k->type;
 		dst->key_id = k->key_id;
 		dst->keylen = kl;
+		dst->flags = fl;
 		memcpy(dst->kpad, k->key, kl);
 		dst->send_start = (int64_t)be64toh((uint64_t)k->send.start);
 		dst->send_end = (int64_t)be64toh((uint64_t)k->send.end);

@@ -107,6 +107,7 @@ _Static_assert(sizeof(struct xdp_auth_key) == 68, "sizeof(struct xdp_auth_key)")
 _Static_assert(offsetof(struct xdp_auth_key, type) == 0, "offsetof(struct xdp_auth_key, type)");
 _Static_assert(offsetof(struct xdp_auth_key, key_id) == 1, "offsetof(struct xdp_auth_key, key_id)");
 _Static_assert(offsetof(struct xdp_auth_key, keylen) == 2, "offsetof(struct xdp_auth_key, keylen)");
+_Static_assert(offsetof(struct xdp_auth_key, flags) == 3, "offsetof(struct xdp_auth_key, flags)");
 _Static_assert(offsetof(struct xdp_auth_key, kpad) == 4, "offsetof(struct xdp_auth_key, kpad)");
 
 _Static_assert(sizeof(struct tx_cfg) == 1244, "sizeof(struct tx_cfg)");
@@ -137,6 +138,7 @@ _Static_assert(offsetof(struct tx_cfg, auth_present) == 87,
 	       "offsetof(struct tx_cfg, auth_present)");
 _Static_assert(offsetof(struct tx_cfg, auth_kpad) == 88, "offsetof(struct tx_cfg, auth_kpad)");
 _Static_assert(offsetof(struct tx_cfg, auth_nkeys) == 152, "offsetof(struct tx_cfg, auth_nkeys)");
+_Static_assert(offsetof(struct tx_cfg, auth_flags) == 153, "offsetof(struct tx_cfg, auth_flags)");
 _Static_assert(offsetof(struct tx_cfg, auth_accept) == 156, "offsetof(struct tx_cfg, auth_accept)");
 _Static_assert(sizeof(((struct tx_cfg *)0)->auth_kpad) == SHA1_BLOCK_LEN,
 	       "the mirrored key must be exactly one HMAC block");
@@ -145,6 +147,9 @@ _Static_assert(sizeof(((struct tx_cfg *)0)->auth_kpad) == SHA1_BLOCK_LEN,
 _Static_assert(BFD_AUTH_SHA1_LEN == 28, "BFD_AUTH_SHA1_LEN");
 _Static_assert(BFD_MAX_LEN == 52, "BFD_MAX_LEN");
 _Static_assert(BFD_MAX_LEN <= HMAC_SHA1_MAX_MSG, "a keyed-SHA1 packet must fit the shared digest");
+/* The RFC 5880 s6.7.4 digest is one compression: the packet, 0x80 and the length. */
+_Static_assert(BFD_MAX_LEN <= SHA1_BLOCK_LEN - 9, "a keyed-SHA1 packet must pad into one block");
+_Static_assert(BFD_AUTH_RFC_SHA1_MAXKEY == SHA1_DIGEST_LEN, "the RFC key fills the digest field");
 
 /* Enum values are indices on both planes, so they are pinned by value. */
 _Static_assert(BFD_TUNE_SWEEP_NS == 0, "BFD_TUNE_SWEEP_NS");

@@ -81,7 +81,9 @@ int main(void)
 	case_tx_bind_skips_taken_ports();
 	case_tx_next_at();
 	case_tx_turn();
-	case_authenticated_output_verifies();
+	case_authenticated_output_verifies(0, "auth-output-verifies", "auth-output-not-rfc");
+	case_authenticated_output_verifies(BFD_AUTH_F_RFC_SHA1, "auth-rfc-output-verifies",
+					   "auth-rfc-output-not-hmac");
 	case_no_sendable_key_sends_nothing();
 	case_echo_only_change_notifies();
 	case_passive();

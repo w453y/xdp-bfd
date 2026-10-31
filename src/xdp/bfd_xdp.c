@@ -272,7 +272,7 @@ int bfd_observer(struct xdp_md *ctx)
 		}
 
 		/* The failure budget counts only bad digests, so a peer that holds
-		 * the key could force an HMAC per packet; the s6.8.7 gate below is
+		 * the key could force a digest per packet; the s6.8.7 gate below is
 		 * past the digest. Cap verifies at twice the rate the peer may send,
 		 * a burst of two for a Final that follows a packet closely. Does not
 		 * read P or F: they are not yet authenticated.

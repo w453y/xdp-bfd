@@ -26,13 +26,13 @@ int rx_auth_ok(struct session *s, const __u8 *buf, __u8 len)
 		return 0;
 
 	/* Any key in its accept period, so a rollover does not refuse the peer. */
-	k = session_auth_key_for(s, buf[BFD_MIN_LEN + 2], (int64_t)time(NULL));
+	k = session_auth_key_for(s, buf[BFD_MIN_LEN], buf[BFD_MIN_LEN + 2], (int64_t)time(NULL));
 	if (!k) {
 		log_debug("lid=%u no key %u is currently accepted\n", s->lid, buf[BFD_MIN_LEN + 2]);
 		return 0;
 	}
 
-	v = bfd_auth_check(buf, len, k->type, k->key_id, k->kpad, k->keylen, k->kpad,
+	v = bfd_auth_check(buf, len, k->type, k->key_id, k->kpad, k->keylen, k->kpad, k->flags,
 			   &s->auth_rx_seq, &s->auth_rx_seen, h->detect_mult);
 	if (v != BFD_AUTH_OK) {
 		log_debug("lid=%u authentication rejected a packet (%d)\n", s->lid, v);

@@ -36,6 +36,7 @@ void ktx_cfg_for(const struct session *s, int64_t now, struct tx_cfg *c, struct 
 		.poll_seq = s->poll_seq,
 	};
 	memcpy(c->auth_kpad, s->auth_kpad, sizeof(c->auth_kpad));
+	c->auth_flags = s->auth_flags;
 
 	/* Lifetimes are wall-clock, which the program cannot read. */
 	{
@@ -50,6 +51,7 @@ void ktx_cfg_for(const struct session *s, int64_t now, struct tx_cfg *c, struct 
 			c->auth_accept[c->auth_nkeys].type = ak->type;
 			c->auth_accept[c->auth_nkeys].key_id = ak->key_id;
 			c->auth_accept[c->auth_nkeys].keylen = ak->keylen;
+			c->auth_accept[c->auth_nkeys].flags = ak->flags;
 			memcpy(c->auth_accept[c->auth_nkeys].kpad, ak->kpad,
 			       sizeof(c->auth_accept[0].kpad));
 			c->auth_nkeys++;

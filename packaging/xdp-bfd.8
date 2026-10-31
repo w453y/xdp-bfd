@@ -100,11 +100,15 @@ Demand mode and its poll interval; 0 turns the poll off.
 .TP
 .BI --auth " type:keyid:key"
 Authenticate the static session. \fItype\fR is \fBsimple\fR,
-\fBkeyed-sha1\fR or \fBmeticulous-sha1\fR; \fIkeyid\fR is 0-255 and
-\fIkey\fR is the shared secret, with no lifetimes, so it is always
-current. Static mode only: a session driven by bfdd takes its keys over
-the data-plane socket instead. Intended for testing an authenticated
-session end to end, which bfdd cannot ask this data plane to do.
+\fBkeyed-sha1\fR, \fBmeticulous-sha1\fR, \fBkeyed-sha1-rfc\fR or
+\fBmeticulous-sha1-rfc\fR; \fIkeyid\fR is 0-255 and \fIkey\fR is the
+shared secret, with no lifetimes, so it is always current. The \fB-rfc\fR
+types use the digest of RFC 5880 section 6.7.4, as FRR bfdd does for a
+\fBsha-1\fR key, and take a key of at most 20 bytes; the others use the
+HMAC-SHA1 bfdd computes for a \fBhmac-sha-1\fR key. Static mode only: a
+session driven by bfdd takes its keys over the data-plane socket instead.
+Intended for testing an authenticated session end to end, which bfdd
+cannot ask this data plane to do.
 .TP
 .BI --log-level " error|info|debug"
 Logging verbosity.

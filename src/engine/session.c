@@ -210,7 +210,7 @@ static int64_t auth_after(int64_t end)
 /* Non-zero if the send key changed. */
 int session_auth_evaluate(struct session *s, int64_t now)
 {
-	uint8_t type = 0, key_id = 0, keylen = 0;
+	uint8_t type = 0, key_id = 0, keylen = 0, flags = 0;
 	const struct auth_key *chosen = NULL;
 	int64_t soonest = 0;
 	unsigned int i;
@@ -233,9 +233,11 @@ int session_auth_evaluate(struct session *s, int64_t now)
 		type = chosen->type;
 		key_id = chosen->key_id;
 		keylen = chosen->keylen;
+		flags = chosen->flags;
 	}
 
 	changed = (type != s->auth_type || key_id != s->auth_keyid || keylen != s->auth_keylen ||
+		   flags != s->auth_flags ||
 		   (keylen && memcmp(s->auth_kpad, chosen->kpad, sizeof(s->auth_kpad))));
 
 	if (changed) {
@@ -248,6 +250,7 @@ int session_auth_evaluate(struct session *s, int64_t now)
 		s->auth_type = type;
 		s->auth_keyid = key_id;
 		s->auth_keylen = keylen;
+		s->auth_flags = flags;
 		/* The next gap gets its own log line. */
 		if (type)
 			s->auth_gap_warned = 0;
@@ -257,8 +260,11 @@ int session_auth_evaluate(struct session *s, int64_t now)
 	return changed;
 }
 
-/* Any acceptable key counts, so a rollover does not refuse the peer. */
-const struct auth_key *session_auth_key_for(const struct session *s, uint8_t key_id, int64_t now)
+/* Any acceptable key counts, so a rollover does not refuse the peer. Matched on
+ * type as well, as the program matches its accept list.
+ */
+const struct auth_key *session_auth_key_for(const struct session *s, uint8_t type, uint8_t key_id,
+					    int64_t now)
 {
 	unsigned int i;
 
@@ -268,7 +274,7 @@ const struct auth_key *session_auth_key_for(const struct session *s, uint8_t key
 	for (i = 0; i < s->auth_nkeys; i++) {
 		const struct auth_key *k = &s->auth_keys[i];
 
-		if (k->key_id == key_id && auth_key_acceptable(k, now))
+		if (k->type == type && k->key_id == key_id && auth_key_acceptable(k, now))
 			return k;
 	}
 	return NULL;

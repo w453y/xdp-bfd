@@ -549,6 +549,7 @@ static void arm_session_auth(__u8 type, __u8 keyid, const char *key)
 	cfg.auth_present = 1;
 	cfg.auth_keyid = keyid;
 	cfg.auth_keylen = (__u8)n;
+	cfg.auth_flags = arm_flags;
 	memcpy(cfg.auth_kpad, key, n);
 
 	/* The accept set: one key, unless the case adds a second. */
@@ -556,6 +557,7 @@ static void arm_session_auth(__u8 type, __u8 keyid, const char *key)
 	cfg.auth_accept[0].type = type;
 	cfg.auth_accept[0].key_id = keyid;
 	cfg.auth_accept[0].keylen = (__u8)n;
+	cfg.auth_accept[0].flags = arm_flags;
 	memcpy(cfg.auth_accept[0].kpad, key, n);
 
 	if (arm_extra_keyid) {
@@ -565,6 +567,7 @@ static void arm_session_auth(__u8 type, __u8 keyid, const char *key)
 		cfg.auth_accept[1].type = type;
 		cfg.auth_accept[1].key_id = arm_extra_keyid;
 		cfg.auth_accept[1].keylen = (__u8)m;
+		cfg.auth_accept[1].flags = arm_flags;
 		memcpy(cfg.auth_accept[1].kpad, arm_extra_key, m);
 	}
 
@@ -588,7 +591,8 @@ static void build_sha1_auth(struct frame *f, const char *key, __u8 keyid, __u32 
 	p.len = BFD_MIN_LEN + BFD_AUTH_SHA1_LEN;
 	memcpy(pkt, &p, BFD_MIN_LEN);
 	memcpy(kpad, key, strlen(key));
-	bfd_auth_build(pkt, type, keyid, (const __u8 *)key, (__u8)strlen(key), kpad, seq);
+	bfd_auth_build(pkt, type, keyid, (const __u8 *)key, (__u8)strlen(key), kpad, build_flags,
+		       seq);
 
 	/* The signed section goes in behind the 24-byte header. */
 	build_v4(f, 255, BFD_PORT_1HOP, (const struct bfd_ctrl_pkt *)pkt, BFD_AUTH_SHA1_LEN);

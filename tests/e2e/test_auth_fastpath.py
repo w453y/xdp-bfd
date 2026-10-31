@@ -20,7 +20,9 @@ from conftest import (
 KEY = "f4stp4ths3cr3t"
 
 
-@pytest.mark.parametrize("auth", ["keyed-sha1", "meticulous-sha1"])
+@pytest.mark.parametrize(
+    "auth", ["keyed-sha1", "meticulous-sha1", "keyed-sha1-rfc", "meticulous-sha1-rfc"]
+)
 def test_authenticated_session_up_over_the_fast_path(rig, binary, bpf_obj, auth):
     spec = ("--auth", "%s:5:%s" % (auth, KEY))
 

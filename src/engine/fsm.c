@@ -415,8 +415,8 @@ static void tx_one(struct session *s)
 		o.flags |= BFD_F_AUTH;
 		o.len = bfd_auth_pkt_len(s->auth_type, s->auth_keylen);
 		memcpy(buf, &o, BFD_MIN_LEN);
-		olen = bfd_auth_build(buf, s->auth_type, s->auth_keyid, s->auth_key,
-				      s->auth_keylen, s->auth_kpad, auth_seq_next(s));
+		olen = bfd_auth_build(buf, s->auth_type, s->auth_keyid, s->auth_key, s->auth_keylen,
+				      s->auth_kpad, s->auth_flags, auth_seq_next(s));
 		if (!olen) {
 			log_err("lid=%u cannot build its authentication section; nothing sent\n",
 				s->lid);

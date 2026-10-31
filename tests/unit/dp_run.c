@@ -46,6 +46,11 @@ int main(void)
 	case_auth_rollover();
 	case_auth_short();
 	case_auth_unsupported_type();
+	case_auth_rfc_flag("auth-rfc-flag-kept", BFDDP_AUTH_KEY_RFC_SHA1, 20, 1,
+			   BFD_AUTH_F_RFC_SHA1);
+	case_auth_rfc_flag("auth-no-flag-is-hmac", 0, 21, 1, 0);
+	case_auth_rfc_flag("auth-rfc-key-over-20-dropped", BFDDP_AUTH_KEY_RFC_SHA1, 21, 0, 0);
+	case_auth_rfc_flag("auth-unknown-flag-dropped", 0x02, 8, 0, 0);
 	case_torn();
 	case_batched();
 

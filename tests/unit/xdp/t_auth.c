@@ -192,6 +192,65 @@ static void case_hmac(const struct hmac_vec *v)
 	printf("ok   %-40s key %2u msg %2u\n", v->name, v->keylen, v->msglen);
 }
 
+/* The captured packets of auth_vectors.h, through the kernel's digests. */
+static void case_auth_vec_kernel(const struct auth_vec *v)
+{
+	unsigned char in[64] = { 0 }, out[64] = { 0 };
+	unsigned int klen = (unsigned int)strlen(v->key);
+	const __u8 *want = v->pkt + BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF;
+	__u8 got[SHA1_DIGEST_LEN] = { 0 };
+	int rfc = v->flags & BFD_AUTH_F_RFC_SHA1;
+	__u32 zero = 0;
+	int ok = 0;
+
+	LIBBPF_OPTS(bpf_test_run_opts, topts, .data_in = in, .data_size_in = sizeof(in),
+		    .data_out = out, .data_size_out = sizeof(out), .repeat = 1);
+
+	if (rfc) {
+		struct {
+			__u8 blk[SHA1_BLOCK_LEN];
+			__u8 out[SHA1_DIGEST_LEN];
+			__u32 len;
+			__u32 ok;
+		} sc = { 0 };
+
+		memcpy(sc.blk, v->pkt, sizeof(v->pkt));
+		memset(sc.blk + BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF, 0, SHA1_DIGEST_LEN);
+		memcpy(sc.blk + BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF, v->key, klen);
+		sc.len = sizeof(v->pkt);
+		if (sha1_prog_fd >= 0 && !bpf_map_update_elem(sha1_map_fd, &zero, &sc, BPF_ANY) &&
+		    !bpf_prog_test_run_opts(sha1_prog_fd, &topts) &&
+		    !bpf_map_lookup_elem(sha1_map_fd, &zero, &sc)) {
+			ok = sc.ok;
+			memcpy(got, sc.out, sizeof(got));
+		}
+	} else {
+		struct hmac_scratch_u sc = { 0 };
+
+		memcpy(sc.kpad, v->key, klen);
+		memcpy(sc.mblk, v->pkt, sizeof(v->pkt));
+		memset(sc.mblk + BFD_MIN_LEN + BFD_AUTH_SHA1_DIG_OFF, 0, SHA1_DIGEST_LEN);
+		sc.msglen = sizeof(v->pkt);
+		if (hmac_prog_fd >= 0 && !bpf_map_update_elem(hmac_map_fd, &zero, &sc, BPF_ANY) &&
+		    !bpf_prog_test_run_opts(hmac_prog_fd, &topts) &&
+		    !bpf_map_lookup_elem(hmac_map_fd, &zero, &sc)) {
+			ok = sc.ok;
+			memcpy(got, sc.out, sizeof(got));
+		}
+	}
+
+	if (!ok || memcmp(got, want, SHA1_DIGEST_LEN)) {
+		printf("     got  ");
+		for (int i = 0; i < SHA1_DIGEST_LEN; i++)
+			printf("%02x", got[i]);
+		printf("\n");
+		printf("FAIL %-40s\n", v->name);
+		fails++;
+		return;
+	}
+	printf("ok   %-40s kernel %s digest\n", v->name, rfc ? "RFC" : "HMAC");
+}
+
 /* Past BFD_AUTH_FAIL_MAX bad digests in an interval, the rest drop before hashing. */
 static void case_auth_ratelimit(void)
 {
@@ -346,6 +405,56 @@ static __u32 reply_seq(const unsigned char *out)
 	const unsigned char *a = out + 14 + 20 + 8 + BFD_MIN_LEN + BFD_AUTH_SHA1_SEQ_OFF;
 
 	return (__u32)a[0] << 24 | (__u32)a[1] << 16 | (__u32)a[2] << 8 | a[3];
+}
+
+/* The program signs its reply with the session's digest, which the userspace
+ * check takes and the other digest does not.
+ */
+static void case_auth_reply_digest(__u8 flags, const char *name)
+{
+	static const char key[] = "topsecret";
+	unsigned char out[FRAME_MAX];
+	unsigned int out_len = 0;
+	const __u8 *b = out + 14 + 20 + 8;
+	__u8 kpad[SHA1_BLOCK_LEN] = { 0 };
+	__u32 rx_seq = 0;
+	struct frame f;
+	int seen = 0, bad = 0;
+
+	memcpy(kpad, key, sizeof(key) - 1);
+	map_reset();
+	arm_flags = flags;
+	build_flags = flags;
+	arm_session_auth(BFD_AUTH_KEYED_SHA1, 7, key);
+	build_sha1_auth(&f, key, 7, 1, BFD_AUTH_KEYED_SHA1);
+	if (run_frame(&f, out, &out_len) != XDP_TX || out_len < 14 + 20 + 8 + BFD_MAX_LEN) {
+		printf("     no signed reply\n");
+		bad = 1;
+	} else {
+		if (bfd_auth_check(b, b[3], BFD_AUTH_KEYED_SHA1, 7, (const __u8 *)key,
+				   sizeof(key) - 1, kpad, flags, &rx_seq, &seen,
+				   b[2]) != BFD_AUTH_OK) {
+			printf("     the reply does not verify\n");
+			bad = 1;
+		}
+		rx_seq = 0;
+		seen = 0;
+		if (bfd_auth_check(b, b[3], BFD_AUTH_KEYED_SHA1, 7, (const __u8 *)key,
+				   sizeof(key) - 1, kpad, flags ^ BFD_AUTH_F_RFC_SHA1, &rx_seq,
+				   &seen, b[2]) == BFD_AUTH_OK) {
+			printf("     the reply verifies under the other digest too\n");
+			bad = 1;
+		}
+	}
+	arm_flags = 0;
+	build_flags = 0;
+	map_reset();
+	if (bad) {
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s\n", name);
+	}
 }
 
 static void case_auth_seq_shared(void)

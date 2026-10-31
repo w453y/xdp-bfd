@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Part of dp_run.c. */
 
-/* Declared as bfdd connects, so it offloads authenticated sessions. */
+/* Declared as bfdd connects, so it offloads authenticated sessions, sha-1 keys
+ * included.
+ */
 static void case_capabilities(void)
 {
 	int bad = 0;
@@ -10,12 +12,13 @@ static void case_capabilities(void)
 		printf("     first message on connect is type %d, want %d\n", caps_type,
 		       BFD_DP_CAPABILITIES);
 		bad = 1;
-	} else if (!(caps_bits & BFDDP_CAP_SESSION_AUTH)) {
-		printf("     capabilities 0x%llx lack SESSION_AUTH\n",
+	} else if (!(caps_bits & BFDDP_CAP_SESSION_AUTH) ||
+		   !(caps_bits & BFDDP_CAP_AUTH_RFC_SHA1)) {
+		printf("     capabilities 0x%llx lack SESSION_AUTH or AUTH_RFC_SHA1\n",
 		       (unsigned long long)caps_bits);
 		bad = 1;
 	}
-	report("capabilities-on-connect", bad, "SESSION_AUTH declared");
+	report("capabilities-on-connect", bad, "SESSION_AUTH and AUTH_RFC_SHA1 declared");
 }
 
 /* The baseline. */

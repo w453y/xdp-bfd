@@ -38,14 +38,20 @@ static int static_auth_apply(struct session *s, const char *spec)
 	type[tlen] = 0;
 
 	memset(s->auth_keys, 0, sizeof(s->auth_keys));
-	if (!strcmp(type, "simple"))
+	if (!strcmp(type, "simple")) {
 		k->type = BFD_AUTH_SIMPLE;
-	else if (!strcmp(type, "keyed-sha1"))
+	} else if (!strcmp(type, "keyed-sha1")) {
 		k->type = BFD_AUTH_KEYED_SHA1;
-	else if (!strcmp(type, "meticulous-sha1"))
+	} else if (!strcmp(type, "meticulous-sha1")) {
 		k->type = BFD_AUTH_METICULOUS_SHA1;
-	else {
-		log_err("--auth: type must be simple, keyed-sha1 or meticulous-sha1\n");
+	} else if (!strcmp(type, "keyed-sha1-rfc")) {
+		k->type = BFD_AUTH_KEYED_SHA1;
+		k->flags = BFD_AUTH_F_RFC_SHA1;
+	} else if (!strcmp(type, "meticulous-sha1-rfc")) {
+		k->type = BFD_AUTH_METICULOUS_SHA1;
+		k->flags = BFD_AUTH_F_RFC_SHA1;
+	} else {
+		log_err("--auth: type must be simple, keyed-sha1, meticulous-sha1, keyed-sha1-rfc or meticulous-sha1-rfc\n");
 		return -1;
 	}
 
@@ -55,8 +61,7 @@ static int static_auth_apply(struct session *s, const char *spec)
 		return -1;
 	}
 	klen = strlen(c2 + 1);
-	if (!klen || klen > sizeof(k->kpad) ||
-	    (k->type == BFD_AUTH_SIMPLE && klen > BFD_AUTH_SIMPLE_MAXKEY)) {
+	if (!klen || klen > sizeof(k->kpad) || !bfd_auth_key_ok(k->type, k->flags, (__u8)klen)) {
 		log_err("--auth: key length %zu is unusable for this type\n", klen);
 		return -1;
 	}

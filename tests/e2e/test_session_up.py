@@ -49,7 +49,16 @@ AUTH_KEY = "sup3rs3cr3tk3y"
 
 
 @pytest.mark.parametrize("family", [4, 6])
-@pytest.mark.parametrize("auth", ["simple", "keyed-sha1", "meticulous-sha1"])
+@pytest.mark.parametrize(
+    "auth",
+    [
+        "simple",
+        "keyed-sha1",
+        "meticulous-sha1",
+        "keyed-sha1-rfc",
+        "meticulous-sha1-rfc",
+    ],
+)
 def test_two_static_engines_reach_up_authenticated(rig, binary, family, auth):
     spec = ["--auth", "%s:5:%s" % (auth, AUTH_KEY)]
     start_engine(binary, family, ns=NS_A, stats=STATS, extra=spec)
@@ -57,7 +66,9 @@ def test_two_static_engines_reach_up_authenticated(rig, binary, family, auth):
     wait_both_up()
 
 
-@pytest.mark.parametrize("auth", ["keyed-sha1", "meticulous-sha1"])
+@pytest.mark.parametrize(
+    "auth", ["keyed-sha1", "meticulous-sha1", "keyed-sha1-rfc", "meticulous-sha1-rfc"]
+)
 def test_mismatched_key_never_comes_up(rig, binary, auth):
     """Otherwise the rows above pass with the digest unchecked."""
     start_engine(
@@ -75,6 +86,30 @@ def test_mismatched_key_never_comes_up(rig, binary, auth):
     while time.time() < end:
         if dump(NS_A, STATS)["sessions_up"]:
             pytest.fail("came up with mismatched keys")
+        time.sleep(0.5)
+
+
+def test_rfc_and_hmac_digests_never_come_up(rig, binary):
+    """Same key, the two keyed SHA1 digests."""
+    start_engine(
+        binary,
+        4,
+        ns=NS_A,
+        stats=STATS,
+        extra=["--auth", "keyed-sha1-rfc:5:%s" % AUTH_KEY],
+    )
+    start_engine(
+        binary,
+        4,
+        ns=NS_B,
+        stats=STATS_B,
+        extra=["--auth", "keyed-sha1:5:%s" % AUTH_KEY],
+    )
+
+    end = time.time() + 6
+    while time.time() < end:
+        if dump(NS_A, STATS)["sessions_up"]:
+            pytest.fail("came up between the RFC digest and the HMAC")
         time.sleep(0.5)
 
 

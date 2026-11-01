@@ -532,7 +532,8 @@ static __u64 mono_ns(void)
 
 static void arm_session_auth(__u8 type, __u8 keyid, const char *key)
 {
-	struct session_key k = key_v4("10.0.0.2", "10.0.0.1");
+	struct session_key k = arm_v6 ? key_v6("fd00::2", "fd00::1")
+				      : key_v4("10.0.0.2", "10.0.0.1");
 	struct tx_cfg cfg = { 0 };
 	struct session_state st = { 0 };
 	unsigned int n = (unsigned int)strlen(key);
@@ -564,7 +565,7 @@ static void arm_session_auth(__u8 type, __u8 keyid, const char *key)
 		unsigned int m = (unsigned int)strlen(arm_extra_key);
 
 		cfg.auth_nkeys = 2;
-		cfg.auth_accept[1].type = type;
+		cfg.auth_accept[1].type = arm_extra_type ? arm_extra_type : type;
 		cfg.auth_accept[1].key_id = arm_extra_keyid;
 		cfg.auth_accept[1].keylen = (__u8)m;
 		cfg.auth_accept[1].flags = arm_flags;

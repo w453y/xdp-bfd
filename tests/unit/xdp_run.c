@@ -57,6 +57,10 @@ static __u8 arm_local_mult = 3;
 /* Second key in the accept set, as a rollover leaves; 0 means none. */
 static __u8 arm_extra_keyid;
 static const char *arm_extra_key = "";
+/* The second key's type; 0 takes the first's. */
+static __u8 arm_extra_type;
+/* arm_session_auth on fd00::2 -> fd00::1. */
+static int arm_v6;
 /* BFD_AUTH_F_* of the armed keys, and of the peer's signature. */
 static __u8 arm_flags;
 static __u8 build_flags;
@@ -148,6 +152,8 @@ int main(void)
 	case_auth_seq_by_slot();
 	case_auth_reply_digest(0, "auth-reply-hmac-digest");
 	case_auth_reply_digest(BFD_AUTH_F_RFC_SHA1, "auth-reply-rfc-digest");
+	case_auth_reply_grows(0, "auth-reply-grows-short-frame-v4");
+	case_auth_reply_grows(1, "auth-reply-grows-short-frame-v6");
 	case_bounce_v4();
 	case_bounce_v4_frame();
 	case_reply_pacing();

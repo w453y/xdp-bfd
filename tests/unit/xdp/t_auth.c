@@ -457,6 +457,83 @@ static void case_auth_reply_digest(__u8 flags, const char *name)
 	}
 }
 
+/* The peer signs with a shorter section than ours (a simple password while we
+ * send keyed SHA1): the reply has to grow past the frame it arrived in.
+ */
+static void case_auth_reply_grows(int v6, const char *name)
+{
+	static const char key[] = "topsecret";
+	static const char pw[] = "pw";
+	unsigned int hdrs = 14 + (v6 ? 40 : 20) + 8;
+	unsigned char out[FRAME_MAX];
+	unsigned int out_len = 0;
+	const __u8 *b = out + hdrs;
+	__u8 kpad[SHA1_BLOCK_LEN] = { 0 };
+	struct bfd_ctrl_pkt p = ctrl_up();
+	__u8 pkt[BFD_MAX_LEN] = { 0 };
+	__u32 rx_seq = 0;
+	struct frame f;
+	int seen = 0, bad = 0, v;
+	__u8 len;
+
+	memcpy(kpad, key, sizeof(key) - 1);
+	map_reset();
+	arm_v6 = v6;
+	arm_extra_keyid = 3;
+	arm_extra_key = pw;
+	arm_extra_type = BFD_AUTH_SIMPLE;
+	arm_session_auth(BFD_AUTH_KEYED_SHA1, 7, key);
+
+	p.flags |= BFD_F_AUTH;
+	memcpy(pkt, &p, BFD_MIN_LEN);
+	len = bfd_auth_build(pkt, BFD_AUTH_SIMPLE, 3, (const __u8 *)pw, sizeof(pw) - 1, kpad, 0, 0);
+	((struct bfd_ctrl_pkt *)pkt)->len = len;
+	if (v6)
+		build_v6(&f, 255, BFD_PORT_1HOP, (const struct bfd_ctrl_pkt *)pkt,
+			 len - BFD_MIN_LEN);
+	else
+		build_v4(&f, 255, BFD_PORT_1HOP, (const struct bfd_ctrl_pkt *)pkt,
+			 len - BFD_MIN_LEN);
+	memcpy(f.b + hdrs + BFD_MIN_LEN, pkt + BFD_MIN_LEN, len - BFD_MIN_LEN);
+
+	v = run_frame(&f, out, &out_len);
+	if (v != XDP_TX || out_len != hdrs + BFD_MIN_LEN + BFD_AUTH_SHA1_LEN) {
+		printf("     want XDP_TX of %u bytes, got %s of %u\n",
+		       hdrs + BFD_MIN_LEN + BFD_AUTH_SHA1_LEN, verdict_str(v), out_len);
+		bad = 1;
+	} else {
+		if (b[3] != BFD_MIN_LEN + BFD_AUTH_SHA1_LEN ||
+		    bfd_auth_check(b, b[3], BFD_AUTH_KEYED_SHA1, 7, (const __u8 *)key,
+				   sizeof(key) - 1, kpad, 0, &rx_seq, &seen, b[2]) != BFD_AUTH_OK) {
+			printf("     the reply does not verify\n");
+			bad = 1;
+		}
+		if (v6 && !v6_udp_csum_ok(out, out_len)) {
+			printf("     bad v6 UDP checksum\n");
+			bad = 1;
+		}
+		if (!v6) {
+			const struct iphdr *ip = (const void *)(out + 14);
+
+			if (ntohs(ip->tot_len) != out_len - 14 || csum16(ip, 20, 0) != 0) {
+				printf("     bad v4 length or checksum\n");
+				bad = 1;
+			}
+		}
+	}
+	arm_v6 = 0;
+	arm_extra_keyid = 0;
+	arm_extra_key = "";
+	arm_extra_type = 0;
+	map_reset();
+	if (bad) {
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s\n", name);
+	}
+}
+
 static void case_auth_seq_shared(void)
 {
 	unsigned char out[FRAME_MAX];

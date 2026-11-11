@@ -314,6 +314,8 @@ static void dp_add_auth(struct session *s, uint32_t flags)
 	if (!authed && s->auth_present) {
 		memset(s->auth_keys, 0, sizeof(s->auth_keys));
 		s->auth_nkeys = 0;
+		s->auth_keys_seen = 0;
+		s->auth_keys_got = 0;
 	}
 	if (authed != s->auth_present) {
 		s->auth_present = (uint8_t)authed;
@@ -587,6 +589,8 @@ static void dp_session_auth(const struct bfddp_session_auth *sa, size_t plen)
 	}
 
 	memset(s->auth_keys, 0, sizeof(s->auth_keys));
+	s->auth_keys_seen = 1;
+	s->auth_keys_got = (uint8_t)count;
 
 	for (i = 0; i < count; i++) {
 		const struct bfddp_auth_key *k = &sa->keys[i];

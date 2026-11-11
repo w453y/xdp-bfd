@@ -140,7 +140,10 @@ struct session {
 	int auth_rx_seen;     /* auth_rx_seq is valid */
 	/* DP_SESSION_AUTH deadline after the ADD; 0 = not waiting */
 	uint64_t auth_keys_deadline_us;
-	uint8_t auth_nokeys_warned; /* said once */
+	uint8_t auth_nokeys_warned; /* said once; AUTH_WARN_* */
+	/* a DP_SESSION_AUTH arrived, and how many keys it carried */
+	uint8_t auth_keys_seen;
+	uint8_t auth_keys_got;
 	/* no-sendable-key logged for this gap */
 	uint8_t auth_gap_warned;
 	uint8_t iface_warned; /* once; bfdd re-sends the ADD on every change */

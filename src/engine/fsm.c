@@ -20,7 +20,6 @@
 #include "dplane.h"
 #include "ktx.h"
 
-
 int tx_sock = -1, tx6_sock = -1;
 uint16_t tx_sock_port, tx6_sock_port;
 
@@ -393,7 +392,7 @@ static void tx_one(struct session *s)
 		announcing = s->demand_announced < DEMAND_ANNOUNCE_N;
 	}
 	o.detect_mult = s->detect_mult;
-	o.len = 24;
+	o.len = BFD_MIN_LEN;
 	o.my_disc = htonl(s->wire_disc);
 	o.your_disc = htonl(s->rdisc);
 	o.min_tx = htonl(s->state == ST_UP ? s->min_tx_us : (uint32_t)SLOW_TX_US);
@@ -441,13 +440,13 @@ static void tx_one(struct session *s)
 	if (s->family == AF_INET6) {
 		struct sockaddr_in6 dst = { .sin6_family = AF_INET6,
 					    .sin6_port = htons(s->is_mhop ? BFD_PORT_MHOP
-									  : PORT_CTRL) };
+									  : BFD_PORT_1HOP) };
 		memcpy(&dst.sin6_addr, s->peer.b, 16);
 		sent = fsm_send(txfd, buf, olen, (void *)&dst, sizeof(dst));
 	} else {
 		struct sockaddr_in dst = { .sin_family = AF_INET,
 					   .sin_port = htons(s->is_mhop ? BFD_PORT_MHOP
-									: PORT_CTRL) };
+									: BFD_PORT_1HOP) };
 		memcpy(&dst.sin_addr.s_addr, &s->peer.b[12], 4);
 		sent = fsm_send(txfd, buf, olen, (void *)&dst, sizeof(dst));
 	}

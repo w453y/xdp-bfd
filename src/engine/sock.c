@@ -26,7 +26,7 @@ struct rx_sock rx_socks[RX_NSOCK] = {
 
 static int rx_open(struct rx_sock *r)
 {
-	uint16_t port = htons(r->mhop ? BFD_PORT_MHOP : PORT_CTRL);
+	uint16_t port = htons(r->mhop ? BFD_PORT_MHOP : BFD_PORT_1HOP);
 	int on = 1;
 	int fd = socket(r->family, SOCK_DGRAM, 0);
 

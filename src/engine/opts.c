@@ -252,7 +252,7 @@ int opts_complete(const struct opts *o, const char *argv0)
 		return 0;
 	}
 	if (!o->dplane && (!o->local || !o->peer)) {
-		log_err("usage: %s <local-ip> <peer-ip> [--kernel-tx <if>]\n"
+		log_err("usage: %s <local-ip> <peer-ip> [--kernel-tx <if>] [--auth <type:keyid:key>]\n"
 			"       %s --dplane <port|sock-path> [--kernel-tx <if>] [--dp-hold <sec>]\n"
 			"       [--dp-peer <user|uid>]  (the account bfdd runs as)\n"
 			"       [--bpf-obj <path>] [--xdp-mode drv|generic]\n"
@@ -265,8 +265,9 @@ int opts_complete(const struct opts *o, const char *argv0)
 			"       [--sched-deadline <runtime_us>/<period_us>|0]\n"
 			"       [--spread-pass]  (traffic not for BFD goes up on other CPUs)\n"
 			"       [--demand] [--demand-poll-us <0|10000-600000000>]\n"
-			"       [--log-level error|info|debug]\n",
-			argv0, argv0);
+			"       [--log-level error|info|debug]\n"
+			"       %s --check | --version\n",
+			argv0, argv0, argv0);
 		return 0;
 	}
 

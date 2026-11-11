@@ -10,7 +10,12 @@
 #include <errno.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <net/if.h>
 #include <netinet/in.h>
+#include <netinet/ip.h>
+#include <netinet/ip6.h>
+#include <netinet/udp.h>
 #include <linux/if_packet.h>
 #include <linux/if_ether.h>
 #include <bpf/libbpf.h>
@@ -21,14 +26,17 @@
 #include "util.h"
 #include "log.h"
 #include "session.h"
-#include <net/if.h>
-#include <sys/ioctl.h>
 #include "echo_tx.h"
 #include "ktx.h"
 
 int echo_sock = -1, echo_ifindex = 0;
 uint8_t echo_src_mac[6];
 static uint32_t echo_nonce_ctr;
+
+/* Ethernet, IP, UDP and a BFD packet without authentication. */
+#define ECHO_UDP_LEN (sizeof(struct udphdr) + BFD_MIN_LEN)
+#define ECHO_V4_LEN  (ETH_HLEN + sizeof(struct iphdr) + ECHO_UDP_LEN)
+#define ECHO_V6_LEN  (ETH_HLEN + sizeof(struct ip6_hdr) + ECHO_UDP_LEN)
 
 static uint16_t ip_csum(const void *data, size_t len)
 {
@@ -110,7 +118,7 @@ static void echo_payload(struct session *s, uint8_t *b, uint32_t nonce)
 	b[0] = (1 << 5);
 	b[1] = (ST_UP & 0x3) << 6;
 	b[2] = s->detect_mult;
-	b[3] = 24;
+	b[3] = BFD_MIN_LEN;
 	v = htonl(s->wire_disc);
 	memcpy(b + 4, &v, 4);
 	v = 0;
@@ -132,8 +140,8 @@ static unsigned int echo_build_v4(struct session *s, uint8_t *frame, uint32_t no
 	frame[12] = 0x08;
 	frame[13] = 0x00;
 
-	uint8_t *ip = frame + 14;
-	uint16_t tot = 20 + 8 + 24;
+	uint8_t *ip = frame + ETH_HLEN;
+	uint16_t tot = sizeof(struct iphdr) + ECHO_UDP_LEN;
 
 	ip[0] = 0x45;
 	ip[1] = BFD_TOS;
@@ -143,25 +151,26 @@ static unsigned int echo_build_v4(struct session *s, uint8_t *frame, uint32_t no
 	ip[9] = 17;
 	memcpy(ip + 12, s->local.b + 12, 4);
 	memcpy(ip + 16, s->local.b + 12, 4);
-	uint16_t ipc = ip_csum(ip, 20);
+	uint16_t ipc = ip_csum(ip, sizeof(struct iphdr));
 
 	memcpy(ip + 10, &ipc, 2);
 
-	uint8_t *udp = frame + 34;
-	uint16_t ulen = 8 + 24;
+	uint8_t *udp = ip + sizeof(struct iphdr);
+	uint16_t ulen = ECHO_UDP_LEN;
 
-	udp[0] = 3785 >> 8;
-	udp[1] = 3785 & 0xff;
-	udp[2] = 3785 >> 8;
-	udp[3] = 3785 & 0xff;
+	udp[0] = BFD_ECHO_PORT >> 8;
+	udp[1] = BFD_ECHO_PORT & 0xff;
+	udp[2] = BFD_ECHO_PORT >> 8;
+	udp[3] = BFD_ECHO_PORT & 0xff;
 	udp[4] = ulen >> 8;
 	udp[5] = ulen & 0xff;
 
-	uint8_t *b = frame + 42;
+	uint8_t *b = udp + sizeof(struct udphdr);
 
 	echo_payload(s, b, nonce);
 
-	uint8_t ps[12 + 8 + 24];
+	/* 12-byte pseudo-header, then the datagram. */
+	uint8_t ps[12 + ECHO_UDP_LEN];
 
 	memcpy(ps + 0, ip + 12, 4);
 	memcpy(ps + 4, ip + 16, 4);
@@ -169,15 +178,15 @@ static unsigned int echo_build_v4(struct session *s, uint8_t *frame, uint32_t no
 	ps[9] = 17;
 	ps[10] = ulen >> 8;
 	ps[11] = ulen & 0xff;
-	memcpy(ps + 12, udp, 8);
-	memcpy(ps + 20, b, 24);
+	memcpy(ps + 12, udp, sizeof(struct udphdr));
+	memcpy(ps + 12 + sizeof(struct udphdr), b, BFD_MIN_LEN);
 	uint16_t uc = ip_csum(ps, sizeof(ps));
 
 	if (!uc)
 		uc = 0xffff;
 	memcpy(udp + 6, &uc, 2);
 
-	return 14 + 20 + 8 + 24;
+	return ECHO_V4_LEN;
 }
 
 /* The v6 UDP checksum is mandatory. */
@@ -189,8 +198,8 @@ static unsigned int echo_build_v6(struct session *s, uint8_t *frame, uint32_t no
 	frame[12] = 0x86;
 	frame[13] = 0xdd;
 
-	uint8_t *ip = frame + 14;
-	uint16_t plen = 8 + 24;
+	uint8_t *ip = frame + ETH_HLEN;
+	uint16_t plen = ECHO_UDP_LEN;
 
 	ip[0] = 0x60 | BFD_TOS >> 4; /* version 6, traffic class BFD_TOS */
 	ip[1] = (BFD_TOS & 0x0f) << 4;
@@ -201,20 +210,21 @@ static unsigned int echo_build_v6(struct session *s, uint8_t *frame, uint32_t no
 	memcpy(ip + 8, s->local.b, 16);
 	memcpy(ip + 24, s->local.b, 16);
 
-	uint8_t *udp = frame + 54;
+	uint8_t *udp = ip + sizeof(struct ip6_hdr);
 
-	udp[0] = 3785 >> 8;
-	udp[1] = 3785 & 0xff;
-	udp[2] = 3785 >> 8;
-	udp[3] = 3785 & 0xff;
+	udp[0] = BFD_ECHO_PORT >> 8;
+	udp[1] = BFD_ECHO_PORT & 0xff;
+	udp[2] = BFD_ECHO_PORT >> 8;
+	udp[3] = BFD_ECHO_PORT & 0xff;
 	udp[4] = plen >> 8;
 	udp[5] = plen & 0xff;
 
-	uint8_t *b = frame + 62;
+	uint8_t *b = udp + sizeof(struct udphdr);
 
 	echo_payload(s, b, nonce);
 
-	uint8_t ps[40 + 8 + 24];
+	/* 40-byte pseudo-header, then the datagram. */
+	uint8_t ps[40 + ECHO_UDP_LEN];
 
 	memset(ps, 0, sizeof(ps));
 	memcpy(ps + 0, s->local.b, 16);
@@ -222,15 +232,15 @@ static unsigned int echo_build_v6(struct session *s, uint8_t *frame, uint32_t no
 	ps[34] = plen >> 8;
 	ps[35] = plen & 0xff;
 	ps[39] = 17;
-	memcpy(ps + 40, udp, 8);
-	memcpy(ps + 48, b, 24);
+	memcpy(ps + 40, udp, sizeof(struct udphdr));
+	memcpy(ps + 40 + sizeof(struct udphdr), b, BFD_MIN_LEN);
 	uint16_t uc = ip_csum(ps, sizeof(ps));
 
 	if (!uc)
 		uc = 0xffff;
 	memcpy(udp + 6, &uc, 2);
 
-	return 14 + 40 + 8 + 24;
+	return ECHO_V6_LEN;
 }
 
 /* The nonce is matched on return for RTT. */
@@ -269,7 +279,7 @@ void echo_tx_maybe(struct session *s, uint64_t t)
 			s->echo_disc_done = 1;
 	}
 
-	uint8_t frame[86];
+	uint8_t frame[ECHO_V6_LEN]; /* the larger */
 	uint32_t nonce = ++echo_nonce_ctr;
 	unsigned int flen;
 	uint32_t eif;

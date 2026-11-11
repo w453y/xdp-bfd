@@ -206,7 +206,8 @@ static void resolve_local(int family, const struct bfd_addr *peer, struct bfd_ad
 	if (fd < 0)
 		return;
 	if (family == AF_INET6) {
-		struct sockaddr_in6 pa = { .sin6_family = AF_INET6, .sin6_port = htons(PORT_CTRL) };
+		struct sockaddr_in6 pa = { .sin6_family = AF_INET6,
+					   .sin6_port = htons(BFD_PORT_1HOP) };
 		struct sockaddr_in6 la = { 0 };
 		socklen_t ll = sizeof(la);
 
@@ -214,7 +215,7 @@ static void resolve_local(int family, const struct bfd_addr *peer, struct bfd_ad
 		if (!connect(fd, (void *)&pa, sizeof(pa)) && !getsockname(fd, (void *)&la, &ll))
 			key_set_v6(local, &la.sin6_addr);
 	} else {
-		struct sockaddr_in pa = { .sin_family = AF_INET, .sin_port = htons(PORT_CTRL) };
+		struct sockaddr_in pa = { .sin_family = AF_INET, .sin_port = htons(BFD_PORT_1HOP) };
 		struct sockaddr_in la = { 0 };
 		socklen_t ll = sizeof(la);
 

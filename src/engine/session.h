@@ -11,7 +11,6 @@
 #include "bfd_shared.h"
 #include "bfddp.h"
 
-#define PORT_CTRL BFD_PORT_1HOP
 /* --max-sessions sets sess_max, at most SESSIONS_CEIL, which sizes the
  * per-slot arrays. Source ports are the top sess_max of the range, as
  * BFD_SRC_PORT is for the default.
@@ -23,7 +22,6 @@ extern int sess_max;
 #define DEF_MIN_RX 10000
 #define DEF_MULT   3
 #define SLOW_TX_US 1000000ull
-
 
 /* One key as bfdd sent it. send and accept overlap during a rollover. */
 struct auth_key {

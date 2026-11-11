@@ -100,43 +100,52 @@ static __always_inline int parse_l3(struct ethhdr *eth, void *data_end, struct l
 		if ((void *)(c->ip6 + 1) > data_end)
 			return XDP_PASS;
 		/* ICMPv6 and unresolved chains pass, so ND is untouched. UDP to
-		 * a BFD port behind one extension header is dropped.
+		 * a BFD port behind up to four extension headers is dropped.
 		 */
 		if (c->ip6->nexthdr != IPPROTO_UDP) {
 			__u8 nh = c->ip6->nexthdr;
-			struct exthdr2 {
-				__u8 nexthdr;
-				__u8 hdrlen;
-			} *eh;
+			void *xp = (void *)(c->ip6 + 1);
 			struct udphdr *ou;
-			__u32 ehlen;
 
-			if (nh != IPPROTO_HOPOPTS && nh != IPPROTO_ROUTING &&
-			    nh != IPPROTO_DSTOPTS && nh != IPPROTO_FRAGMENT)
-				return XDP_PASS;
+#pragma unroll
+			for (int i = 0; i < V6_EXTHDR_MAX; i++) {
+				struct exthdr2 {
+					__u8 nexthdr;
+					__u8 hdrlen;
+				} *eh = xp;
+				__u32 ehlen;
 
-			eh = (void *)(c->ip6 + 1);
-			if ((void *)(eh + 1) > data_end)
-				return XDP_PASS;
-			if (eh->nexthdr != IPPROTO_UDP)
-				return XDP_PASS;
-
-			if (nh == IPPROTO_FRAGMENT) {
-				const __be16 *fo = (const void *)eh + 2;
-
-				if ((void *)(fo + 1) > data_end)
+				if (nh != IPPROTO_HOPOPTS && nh != IPPROTO_ROUTING &&
+				    nh != IPPROTO_DSTOPTS && nh != IPPROTO_FRAGMENT)
 					return XDP_PASS;
-				/* A later fragment has no UDP header to read. */
-				if (*fo & bpf_htons(0xfff8))
+				if ((void *)(eh + 1) > data_end)
 					return XDP_PASS;
+
+				if (nh == IPPROTO_FRAGMENT) {
+					const __be16 *fo = xp + 2;
+
+					if ((void *)(fo + 1) > data_end)
+						return XDP_PASS;
+					/* A later fragment has no UDP header to read. */
+					if (*fo & bpf_htons(0xfff8))
+						return XDP_PASS;
+				}
+
+				/* Bounded so the variable offset stays provable. */
+				ehlen = nh == IPPROTO_FRAGMENT ? 8u
+							       : (((__u32)eh->hdrlen + 1u) * 8u);
+				if (ehlen > 64u)
+					return XDP_PASS;
+
+				nh = eh->nexthdr;
+				xp += ehlen;
+				if (nh == IPPROTO_UDP)
+					break;
 			}
-
-			/* Bounded so the variable offset stays provable. */
-			ehlen = nh == IPPROTO_FRAGMENT ? 8u : (((__u32)eh->hdrlen + 1u) * 8u);
-			if (ehlen > 64u)
+			if (nh != IPPROTO_UDP)
 				return XDP_PASS;
 
-			ou = (void *)eh + ehlen;
+			ou = xp;
 			if ((void *)(ou + 1) > data_end)
 				return XDP_PASS;
 			if (!bfd_dport(ou->dest))

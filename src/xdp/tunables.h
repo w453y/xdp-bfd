@@ -21,5 +21,7 @@
  */
 #define PF_MAX	  32
 #define PF_WIN_NS 100000000ull
+/* IPv6 extension headers the parser walks to find UDP behind them. */
+#define V6_EXTHDR_MAX 4
 
 #endif /* BFD_XDP_TUNABLES_H */

@@ -11,7 +11,7 @@ static void case_notify_coalesce(void)
 		struct bfddp_state_change sc;
 	} __attribute__((packed));
 	static char buf[1 << 20];
-	int alive, hit_overflow = 0, last_state = -1, bad = 0;
+	int alive, hit_overflow = 0, counted = 0, last_state = -1, bad = 0;
 	size_t carry = 0;
 	ssize_t n;
 
@@ -32,8 +32,10 @@ static void case_notify_coalesce(void)
 	for (int i = 0; i < 20000; i++) {
 		s->state = (i & 1) ? ST_UP : ST_DOWN;
 		dp_notify_state(s);
-		if (s->notify_pending)
+		if (s->notify_pending) {
 			hit_overflow = 1;
+			counted |= dp_notify_pending_count() > 0;
+		}
 	}
 	s->state = ST_UP; /* the state that must win */
 	dp_notify_state(s);
@@ -70,6 +72,11 @@ static void case_notify_coalesce(void)
 	}
 	if (s->notify_pending) {
 		printf("     deferred notification never delivered\n");
+		bad = 1;
+	}
+	if (!counted || dp_notify_pending_count()) {
+		printf("     pending count %s, then %d after the flush\n",
+		       counted ? "rose" : "never rose", dp_notify_pending_count());
 		bad = 1;
 	}
 	if (last_state != ST_UP) {

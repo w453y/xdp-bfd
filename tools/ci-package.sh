@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
 # Build the package in the current distro container, for ci.yml;
 # tools/build-packages.sh starts its own.
 # Usage: tools/ci-package.sh deb|rpm

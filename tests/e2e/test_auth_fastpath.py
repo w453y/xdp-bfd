@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """Authentication on the fast path. Stock bfdd will not offload it, so two static
 engines stand in: A in XDP, B in userspace; Up needs their digests to agree.
 """

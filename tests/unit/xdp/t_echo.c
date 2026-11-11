@@ -121,6 +121,44 @@ static void case_echo_budget(void)
 	}
 }
 
+/* Multihop configured, so the parser admits an echo below 255: echo.h passes
+ * it up and counts ECHO_TTL. Clears the flag again.
+ */
+static void echo_ttl_run(const char *name, const struct frame *f)
+{
+	unsigned long long before = stat_get(BFD_STAT_ECHO_TTL);
+	int v, bad = 0;
+
+	set_flags(FLAG_MHOP);
+	v = run_frame(f, NULL, NULL);
+	set_flags(0);
+
+	if (v != XDP_PASS) {
+		printf("     verdict %s, want PASS\n", v < 0 ? "syscall-error" : verdict_str(v));
+		bad = 1;
+	}
+	if (stat_get(BFD_STAT_ECHO_TTL) != before + 1) {
+		printf("     echo-ttl +%llu, want +1\n", stat_get(BFD_STAT_ECHO_TTL) - before);
+		bad = 1;
+	}
+	if (bad) {
+		printf("FAIL %-40s\n", name);
+		fails++;
+	} else {
+		printf("ok   %-40s PASS\n", name);
+	}
+}
+
+static void case_echo_ttl(void)
+{
+	struct frame f;
+
+	map_reset();
+	build_echo(&f, 200, "10.0.0.2", "10.0.0.2", 0x33333333, 0xa5a5a5a5);
+	echo_ttl_run("echo-ttl-mhop-passes", &f);
+	map_reset();
+}
+
 static void run_echo_matrix(void)
 {
 	case_echo_budget();
@@ -130,9 +168,11 @@ static void run_echo_matrix(void)
 	/* The parser's GTSM rejects it. */
 	case_echo("echo-254-not-self-rejected", 254, "10.0.0.2", "10.0.0.1", 1, 0, XDP_DROP,
 		  BFD_STAT_REJECTED);
-	/* The parser's GTSM; echo.h's ECHO_TTL check is never reached. */
+	/* Off-link and no multihop: the parser's GTSM rejects it. */
 	case_echo("echo-off-link-rejected", 200, "10.0.0.2", "10.0.0.2", 1, 0, XDP_DROP,
 		  BFD_STAT_REJECTED);
+	/* Off-link with multihop: echo.h's single-hop check passes it. */
+	case_echo_ttl();
 	/* not self-addressed at 255 */
 	case_echo("echo-not-self", 255, "10.0.0.2", "10.0.0.1", 1, 0, XDP_PASS, BFD_STAT_NOT_SELF);
 	/* self-addressed but the peer is not echo-active: no amplifier */
@@ -316,6 +356,16 @@ static void case_echo_v6_return(int arm_disc, int want_v, const char *name)
 	map_reset_v6();
 }
 
+static void case_echo_v6_ttl(void)
+{
+	struct frame f;
+
+	map_reset_v6();
+	build_echo_v6(&f, 200, "fd00::2", "fd00::2", 0x33333333, 0xa5a5a5a5);
+	echo_ttl_run("echo-v6-ttl-mhop-passes", &f);
+	map_reset_v6();
+}
+
 static void run_echo_v6_matrix(void)
 {
 	/* our own echo returning: 254 and self-addressed, consumed */
@@ -328,6 +378,8 @@ static void run_echo_v6_matrix(void)
 	/* off-link echo: same parser GTSM, same disposition */
 	case_echo_v6("echo-v6-off-link-rejected", 200, "fd00::2", "fd00::2", 1, XDP_DROP,
 		     BFD_STAT_REJECTED);
+	/* off-link with multihop: passed up, as v4 */
+	case_echo_v6_ttl();
 	/* sent to us for a session we hold, as bfdd does: returned */
 	case_echo_v6("echo-v6-to-us", 255, "fd00::2", "fd00::1", 1, XDP_TX, BFD_STAT_REFLECTED);
 	case_echo_v6_to_us();

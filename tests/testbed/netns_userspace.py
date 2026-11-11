@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0
 """The userspace receive path in two namespaces (10.77.0.0/24), which
 inject_matrix's BPF counters cannot see: acceptance, GTSM, demux. Root.
 """

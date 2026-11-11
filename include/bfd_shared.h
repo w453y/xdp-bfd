@@ -65,10 +65,11 @@ struct bfd_ctrl_pkt {
 #define BFD_DIAG(h)  ((h)->vers_diag & 0x1f)
 #define BFD_STATE(h) (((h)->flags >> 6) & 0x3)
 
-/* Stat slots, defined once. MALFORMED, REJECTED, UNSUPPORTED_FLAGS and
- * SWEEP_INIT_FAIL stay flat on a healthy system; NOT_SELF does not, as FRR
- * sources v6 echoes at the peer. ECHO_TTL is unreachable and keeps the
- * numbering.
+/* Stat slots, defined once. MALFORMED, REJECTED, UNSUPPORTED_FLAGS,
+ * SWEEP_INIT_FAIL and NOT_SELF stay flat on a healthy system. NOT_SELF is an
+ * echo neither self-addressed nor, in v6, for a session we hold. ECHO_TTL is an
+ * echo below TTL 255, which the parser admits only while a multihop session
+ * exists.
  */
 #define BFD_STAT_LIST(X)                                                                          \
 	X(SEEN, "seen")				  /* every packet seen */                         \
@@ -78,8 +79,8 @@ struct bfd_ctrl_pkt {
 	X(REFLECTED, "reflected")		  /* echo bounced */                              \
 	X(ECHO_RETURNS, "echo-returns")		  /* our echo came back */                        \
 	X(DECLINED, "declined")			  /* echo, peer unknown */                        \
-	X(NOT_SELF, "not-self")			  /* echo, not self-addr */                       \
-	X(ECHO_TTL, "echo-ttl")			  /* unreachable, see above */                    \
+	X(NOT_SELF, "not-self")			  /* echo, not self-addr or ours */               \
+	X(ECHO_TTL, "echo-ttl")			  /* echo below TTL 255, passed */                \
 	X(UNSUPPORTED_FLAGS, "unsupported-flags") /* M bit */                                     \
 	X(SWEEP_INIT_FAIL, "sweep-init-fail")	  /* sweeper never armed */                       \
 	X(IP_OPTIONS, "ip-options")		  /* BFD port, IP options */                      \
@@ -96,13 +97,13 @@ struct bfd_ctrl_pkt {
 	X(VERIFY_LIMITED, "verify-limited")	  /* over the digest verify budget */             \
 	X(TX_SPACED, "tx-spaced")		  /* reply withheld, ours just left */
 
-/* Written between load and attach. Their own map: .rodata would need rewriting
- * whole, and sweep_map holds a bpf_timer.
- */
 /* pass_cpus: CPUs other traffic may be handed to, and each one's queue. */
 #define BFD_PASS_CPUS_MAX 256
 #define BFD_PASS_QSIZE	  512
 
+/* Written between load and attach. Their own map: .rodata would need rewriting
+ * whole, and sweep_map holds a bpf_timer.
+ */
 enum bfd_tunable {
 	BFD_TUNE_SWEEP_NS, /* 0 = compiled default */
 	/* max heartbeat age before the fast path stops answering; 0 = off */
@@ -235,25 +236,25 @@ struct session_state {
 	__u32 final_seq;  /* the peer's F acked cfg->poll_seq */
 	__u8 peer_mac[6]; /* learned on RX, for echo TX */
 	__u8 mac_valid;
-	__u8 pad2;
+	__u8 pad1;
 	__u64 echo_rx_pkts; /* our own echoes seen returning */
 	__u64 echo_last_seen_ns;
 	__u32 echo_last_nonce;
-	__u32 pad3;
+	__u32 pad2;
 	__u32 echo_alive; /* advisory echo verdict, kernel-owned */
-	__u32 pad4;
+	__u32 pad3;
 	/* for bfdd's echo negotiation (s6.8.9) */
 	__u32 remote_min_echo_us;
 	__u32 auth_rx_seq;  /* highest sequence accepted from the peer */
 	__u32 auth_rx_seen; /* auth_rx_seq is valid */
-	__u32 auth_fail_n;  /* digest failures this interval; kernel-owned */
+	__u32 auth_fail_n;  /* verify failures this interval; kernel-owned */
 	__u32 chg_pending;  /* a change not yet announced on bfd_changes */
 	__u64 auth_fail_ts; /* start of the current interval, ns */
 	__u64 chg_emit_ns;  /* the last announcement */
 	__u64 last_act_ns;  /* the last packet answered or passed up */
 	__u64 pf_win_ns;    /* Poll and Final budget window */
 	__u32 pf_n;
-	__u32 pad6;
+	__u32 pad4;
 	/* Digest verify budget, as a virtual clock: one verify per half the
 	 * Required Min RX, a burst of two. Kernel-owned.
 	 */

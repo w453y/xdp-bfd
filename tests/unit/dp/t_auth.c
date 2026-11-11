@@ -126,6 +126,49 @@ static void case_auth_unsupported_type(void)
 	report("auth-unsupported-type-dropped", bad, "keyed MD5 ignored");
 }
 
+/* A chain of keyed MD5 only: the message arrived, nothing is kept, and a later
+ * usable key clears it.
+ */
+static void case_auth_only_unsupported(void)
+{
+	unsigned char buf[2048];
+	struct bfddp_session_auth *a = (void *)(buf + sizeof(struct bfddp_message_header));
+	struct session *s;
+	size_t n;
+	int bad = 0;
+
+	sessions_clear();
+	n = build_add_auth(buf, 0x2005, "10.0.0.1", "10.0.0.2");
+	feed(buf, n);
+	dp_read();
+	n = build_session_auth(buf, 0x2005);
+	a->key_count = htons(1);
+	a->keys[0].type = 2;
+	feed(buf, n);
+	dp_read();
+
+	s = sess_by_lid(0x2005);
+	if (!s) {
+		report("auth-only-unsupported", 1, "no session");
+		return;
+	}
+	if (!s->auth_keys_seen || s->auth_keys_got != 1 || s->auth_nkeys != 0) {
+		printf("     seen=%u got=%u nkeys=%u, want 1, 1 and 0\n", s->auth_keys_seen,
+		       s->auth_keys_got, s->auth_nkeys);
+		bad = 1;
+	}
+
+	n = build_session_auth(buf, 0x2005);
+	a->key_count = htons(1);
+	feed(buf, n);
+	dp_read();
+	if (s->auth_nkeys != 1) {
+		printf("     usable key after it: nkeys=%u, want 1\n", s->auth_nkeys);
+		bad = 1;
+	}
+	report("auth-only-unsupported", bad, "seen, none kept, then one");
+}
+
 /* A key marked BFDDP_AUTH_KEY_RFC_SHA1 uses that digest; one we cannot honour
  * is dropped.
  */

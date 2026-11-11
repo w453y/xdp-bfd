@@ -40,7 +40,6 @@ static void case_deferred_gtsm(void)
 	expect("deferred-gtsm-flag-clear-drops", run_frame(&f, NULL, NULL), XDP_DROP);
 }
 
-
 /* Nothing to do with BFD. The program must not claim it. */
 static void case_not_bfd(void)
 {
@@ -778,6 +777,9 @@ static void case_unknown_session(void)
 /* Dropped for a BFD port; a non-BFD port and ICMPv6 (ND) pass. */
 static void case_v6_exthdr(void)
 {
+	static const uint8_t chain2[] = { IPPROTO_HOPOPTS, IPPROTO_DSTOPTS };
+	static const uint8_t chain5[] = { IPPROTO_HOPOPTS, IPPROTO_DSTOPTS, IPPROTO_ROUTING,
+					  IPPROTO_DSTOPTS, IPPROTO_DSTOPTS };
 	struct bfd_ctrl_pkt p = ctrl_up();
 	struct frame f;
 	unsigned long long e0, e1;
@@ -805,6 +807,51 @@ static void case_v6_exthdr(void)
 		fails++;
 	} else
 		printf("ok   %-40s not counted\n", "v6-exthdr-nonbfd-counter");
+
+	/* hop-by-hop, dest-opts, then UDP to a BFD port: the walk follows the chain. */
+	e0 = stat_get(BFD_STAT_V6_EXTHDR);
+	build_v6_chain(&f, chain2, 2, BFD_PORT_1HOP, &p);
+	expect("v6-exthdr-chain2-bfd-drops", run_frame(&f, NULL, NULL), XDP_DROP);
+	e1 = stat_get(BFD_STAT_V6_EXTHDR);
+	if (e1 - e0 != 1) {
+		printf("FAIL %-40s v6-exthdr+%llu, want +1\n", "v6-exthdr-chain2-counter", e1 - e0);
+		fails++;
+	} else
+		printf("ok   %-40s v6-exthdr+1\n", "v6-exthdr-chain2-counter");
+
+	/* The same chain to a non-BFD port: passes, not counted. */
+	e0 = stat_get(BFD_STAT_V6_EXTHDR);
+	build_v6_chain(&f, chain2, 2, 1234, &p);
+	expect("v6-exthdr-chain2-nonbfd-passes", run_frame(&f, NULL, NULL), XDP_PASS);
+	e1 = stat_get(BFD_STAT_V6_EXTHDR);
+	if (e1 != e0) {
+		printf("FAIL %-40s counted a non-BFD-port pass\n",
+		       "v6-exthdr-chain2-nonbfd-counter");
+		fails++;
+	} else
+		printf("ok   %-40s not counted\n", "v6-exthdr-chain2-nonbfd-counter");
+
+	/* Four headers, the most the walk follows. */
+	e0 = stat_get(BFD_STAT_V6_EXTHDR);
+	build_v6_chain(&f, chain5, 4, BFD_PORT_1HOP, &p);
+	expect("v6-exthdr-chain4-bfd-drops", run_frame(&f, NULL, NULL), XDP_DROP);
+	e1 = stat_get(BFD_STAT_V6_EXTHDR);
+	if (e1 - e0 != 1) {
+		printf("FAIL %-40s v6-exthdr+%llu, want +1\n", "v6-exthdr-chain4-counter", e1 - e0);
+		fails++;
+	} else
+		printf("ok   %-40s v6-exthdr+1\n", "v6-exthdr-chain4-counter");
+
+	/* Five headers: past the walk's limit, left to the stack. */
+	e0 = stat_get(BFD_STAT_V6_EXTHDR);
+	build_v6_chain(&f, chain5, 5, BFD_PORT_1HOP, &p);
+	expect("v6-exthdr-chain5-passes", run_frame(&f, NULL, NULL), XDP_PASS);
+	e1 = stat_get(BFD_STAT_V6_EXTHDR);
+	if (e1 != e0) {
+		printf("FAIL %-40s counted a chain past the limit\n", "v6-exthdr-chain5-counter");
+		fails++;
+	} else
+		printf("ok   %-40s not counted\n", "v6-exthdr-chain5-counter");
 
 	/* ICMPv6 is not an extension header: ND must pass. */
 	build_v6_exthdr(&f, IPPROTO_ICMPV6, 0, BFD_PORT_1HOP, &p);

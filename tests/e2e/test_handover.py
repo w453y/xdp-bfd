@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """--pin: an engine restart the peer does not notice. A second engine loads,
 has the first hand over (SIGUSR2), takes over the pinned program and adopts
 its sessions until bfdd re-adds them.

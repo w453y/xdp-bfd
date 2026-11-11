@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """RFC 5880 s6.3: once Your Discriminator is known, it alone selects the
 session, so a peer whose source address moves keeps the session Up. B's
 packets are rewritten to a new source after both sides are Up; A runs the

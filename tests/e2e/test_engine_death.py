@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """SIGKILL detaches the program, and the peer times out on its own budget. A
 wedged engine is test_deadman.py's case.
 """

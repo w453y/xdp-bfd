@@ -20,7 +20,6 @@
 #include "dplane.h"
 #include "ktx.h"
 
-
 int tx_sock = -1, tx6_sock = -1;
 uint16_t tx_sock_port, tx6_sock_port;
 
@@ -325,11 +324,16 @@ void fsm_detect(struct session *s, uint64_t t)
 
 	/* The sweep detects what the kernel sees; for those this is a backstop
 	 * at twice the budget. A session whose packets bypass the program, such
-	 * as multihop arriving elsewhere, keeps the plain budget.
+	 * as multihop arriving elsewhere, keeps the plain budget, as does every
+	 * session when the sweep never armed. Its state is read only when the
+	 * plain budget has run out.
 	 */
 	if (use_ktx && ktx_events_fd() >= 0 && s->ktx_seen_us &&
-	    s->last_rx_us <= s->ktx_seen_us + iv)
-		budget *= 2;
+	    s->last_rx_us <= s->ktx_seen_us + iv && (uint64_t)sd > budget) {
+		ktx_sweep_refresh();
+		if (ktx_sweep_ok())
+			budget *= 2;
+	}
 
 	/* The kernel's view is read only now, when it could save the session. */
 	if ((uint64_t)sd > budget && use_ktx) {
@@ -341,8 +345,13 @@ void fsm_detect(struct session *s, uint64_t t)
 			return;
 		sd = t > s->last_rx_us ? (int64_t)(t - s->last_rx_us) : 0;
 		budget = (uint64_t)mult * iv;
-		if (ktx_events_fd() >= 0 && s->ktx_seen_us && s->last_rx_us <= s->ktx_seen_us + iv)
-			budget *= 2;
+		/* The sync may have been the kernel's first sighting. */
+		if (ktx_events_fd() >= 0 && s->ktx_seen_us &&
+		    s->last_rx_us <= s->ktx_seen_us + iv && (uint64_t)sd > budget) {
+			ktx_sweep_refresh();
+			if (ktx_sweep_ok())
+				budget *= 2;
+		}
 	}
 	if ((uint64_t)sd > budget) {
 		log_debug("[%llu] lid=%u DETECT TIMEOUT (silent %.1fms)\n", (unsigned long long)t,
@@ -391,7 +400,7 @@ static void tx_one(struct session *s)
 		announcing = s->demand_announced < DEMAND_ANNOUNCE_N;
 	}
 	o.detect_mult = s->detect_mult;
-	o.len = 24;
+	o.len = BFD_MIN_LEN;
 	o.my_disc = htonl(s->wire_disc);
 	o.your_disc = htonl(s->rdisc);
 	o.min_tx = htonl(s->state == ST_UP ? s->min_tx_us : (uint32_t)SLOW_TX_US);
@@ -439,13 +448,13 @@ static void tx_one(struct session *s)
 	if (s->family == AF_INET6) {
 		struct sockaddr_in6 dst = { .sin6_family = AF_INET6,
 					    .sin6_port = htons(s->is_mhop ? BFD_PORT_MHOP
-									  : PORT_CTRL) };
+									  : BFD_PORT_1HOP) };
 		memcpy(&dst.sin6_addr, s->peer.b, 16);
 		sent = fsm_send(txfd, buf, olen, (void *)&dst, sizeof(dst));
 	} else {
 		struct sockaddr_in dst = { .sin_family = AF_INET,
 					   .sin_port = htons(s->is_mhop ? BFD_PORT_MHOP
-									: PORT_CTRL) };
+									: BFD_PORT_1HOP) };
 		memcpy(&dst.sin_addr.s_addr, &s->peer.b[12], 4);
 		sent = fsm_send(txfd, buf, olen, (void *)&dst, sizeof(dst));
 	}

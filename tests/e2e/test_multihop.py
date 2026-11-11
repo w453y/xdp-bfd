@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """Multihop through a router namespace: packets arrive decremented on 4784.
 
 container A (bfdd + engine)     router ns      container B (bfdd)

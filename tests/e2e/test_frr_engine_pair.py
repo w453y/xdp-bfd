@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """bfdd and an engine on both ends: what the static pair cannot drive.
 
 container A                         container B

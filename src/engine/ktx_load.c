@@ -50,6 +50,7 @@ int sess_fd = -1, echo_peers_fd = -1;
 int echo_disc_fd = -1;
 int disc_fd = -1;
 int stats_fd = -1;
+int sweep_fd = -1;
 int ktx_flags_fd = -1;
 static struct bpf_object *bpf_obj;
 
@@ -183,8 +184,18 @@ fail:
 	return NULL;
 }
 
+/* 0 if written. */
+static int ktx_tune_set(int fd, __u32 key, __u64 val)
+{
+	if (fd < 0)
+		return -1;
+	return bpf_map_update_elem(fd, &key, &val, 0) ? -1 : 0;
+}
+
 int ktx_load(void)
 {
+	int tune_fd;
+
 	if (bpf_obj)
 		return 0;
 
@@ -237,15 +248,11 @@ int ktx_load(void)
 	 * default. Always written, as below: pinned tunables are the previous
 	 * engine's, and 0 is the default.
 	 */
-	{
-		int tune_fd = bpf_object__find_map_fd_by_name(bpf_obj, "tunables");
-		__u32 k = BFD_TUNE_SWEEP_NS;
-
-		if (tune_fd < 0 || bpf_map_update_elem(tune_fd, &k, &ktx_sweep_ns, 0)) {
-			if (ktx_sweep_ns)
-				log_err("kernel-tx: sweep interval NOT applied, running the compiled default\n");
-			ktx_sweep_ns = 0;
-		}
+	tune_fd = bpf_object__find_map_fd_by_name(bpf_obj, "tunables");
+	if (ktx_tune_set(tune_fd, BFD_TUNE_SWEEP_NS, ktx_sweep_ns)) {
+		if (ktx_sweep_ns)
+			log_err("kernel-tx: sweep interval NOT applied, running the compiled default\n");
+		ktx_sweep_ns = 0;
 	}
 
 	/* Map first, so a failed mmap leaves no bound. */
@@ -270,22 +277,15 @@ int ktx_load(void)
 	/* On failure disarm, so the log matches what is in force. Written as
 	 * 0 too, which turns off a bound a previous engine pinned.
 	 */
-	{
-		int tune_fd = bpf_object__find_map_fd_by_name(bpf_obj, "tunables");
-		__u32 k = BFD_TUNE_DEADMAN_NS;
-
-		if (tune_fd < 0 || bpf_map_update_elem(tune_fd, &k, &ktx_deadman_ns, 0)) {
-			if (ktx_deadman_ns)
-				log_err("kernel-tx: dead-man bound NOT applied, the fast path will answer for a wedged engine\n");
-			ktx_deadman_ns = 0;
-		}
+	if (ktx_tune_set(tune_fd, BFD_TUNE_DEADMAN_NS, ktx_deadman_ns)) {
+		if (ktx_deadman_ns)
+			log_err("kernel-tx: dead-man bound NOT applied, the fast path will answer for a wedged engine\n");
+		ktx_deadman_ns = 0;
 	}
 
 	/* Always written: a takeover without the option turns it off. */
 	{
-		int tune_fd = bpf_object__find_map_fd_by_name(bpf_obj, "tunables");
 		int cpu_fd = bpf_object__find_map_fd_by_name(bpf_obj, "pass_cpus");
-		__u32 k = BFD_TUNE_SPREAD_CPUS;
 		__u64 n = 0;
 
 		if (ktx_spread_pass) {
@@ -302,7 +302,7 @@ int ktx_load(void)
 				log_err("kernel-tx: --spread-pass NOT applied (%s), other traffic is passed in place\n",
 					strerror(errno));
 		}
-		if (tune_fd < 0 || bpf_map_update_elem(tune_fd, &k, &n, 0))
+		if (ktx_tune_set(tune_fd, BFD_TUNE_SPREAD_CPUS, n))
 			n = 0;
 		if (n)
 			log_info("kernel-tx: other traffic spread over %llu CPUs\n",
@@ -323,6 +323,7 @@ int ktx_load(void)
 	disc_fd = bpf_object__find_map_fd_by_name(bpf_obj, "our_discs");
 	ktx_flags_fd = bpf_object__find_map_fd_by_name(bpf_obj, "prog_flags");
 	stats_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_stats");
+	sweep_fd = bpf_object__find_map_fd_by_name(bpf_obj, "sweep_map");
 
 	/* Optional: fsm_detect covers detection without it. */
 	ktx_events_init(bpf_object__find_map_fd_by_name(bpf_obj, "bfd_events"),
@@ -351,13 +352,13 @@ int ktx_covers(int ifindex)
 	return 0;
 }
 
-/* Idempotent. */
 /* Another program, in either mode, or another engine's link. */
 static int ktx_xdp_busy(int err)
 {
 	return err == -EBUSY || err == -EEXIST;
 }
 
+/* Idempotent. */
 int ktx_attach_if(int ifindex, const char *ifname)
 {
 	if (ktx_covers(ifindex))

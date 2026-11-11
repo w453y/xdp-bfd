@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """SIGTERM sends AdminDown: the peer goes down with diag 3, which only a received
 AdminDown produces. SIGKILL gives diag 1 (test_engine_death.py).
 """

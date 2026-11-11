@@ -11,7 +11,6 @@
 #include "bfd_shared.h"
 #include "bfddp.h"
 
-#define PORT_CTRL BFD_PORT_1HOP
 /* --max-sessions sets sess_max, at most SESSIONS_CEIL, which sizes the
  * per-slot arrays. Source ports are the top sess_max of the range, as
  * BFD_SRC_PORT is for the default.
@@ -23,7 +22,6 @@ extern int sess_max;
 #define DEF_MIN_RX 10000
 #define DEF_MULT   3
 #define SLOW_TX_US 1000000ull
-
 
 /* One key as bfdd sent it. send and accept overlap during a rollover. */
 struct auth_key {
@@ -140,7 +138,10 @@ struct session {
 	int auth_rx_seen;     /* auth_rx_seq is valid */
 	/* DP_SESSION_AUTH deadline after the ADD; 0 = not waiting */
 	uint64_t auth_keys_deadline_us;
-	uint8_t auth_nokeys_warned; /* said once */
+	uint8_t auth_nokeys_warned; /* said once; AUTH_WARN_* */
+	/* a DP_SESSION_AUTH arrived, and how many keys it carried */
+	uint8_t auth_keys_seen;
+	uint8_t auth_keys_got;
 	/* no-sendable-key logged for this gap */
 	uint8_t auth_gap_warned;
 	uint8_t iface_warned; /* once; bfdd re-sends the ADD on every change */

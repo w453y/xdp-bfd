@@ -84,7 +84,6 @@ int bfd_observer(struct xdp_md *ctx)
 	if ((void *)(eth + 1) > data_end)
 		return XDP_PASS;
 
-
 	struct l3ctx c = {};
 	int pv = parse_l3(eth, data_end, &c);
 
@@ -271,11 +270,11 @@ int bfd_observer(struct xdp_md *ctx)
 			return XDP_DROP;
 		}
 
-		/* The failure budget counts only bad digests, so a peer that holds
-		 * the key could force a digest per packet; the s6.8.7 gate below is
-		 * past the digest. Cap verifies at twice the rate the peer may send,
-		 * a burst of two for a Final that follows a packet closely. Does not
-		 * read P or F: they are not yet authenticated.
+		/* The failure budget counts only failed verifies, so a peer that
+		 * holds the key could force a digest per packet; the s6.8.7 gate
+		 * below is past the digest. Cap verifies at twice the rate the peer
+		 * may send, a burst of two for a Final that follows a packet
+		 * closely. Does not read P or F: they are not yet authenticated.
 		 */
 		__u64 viv = (__u64)cfg->min_rx_us * 500ull;
 
@@ -297,7 +296,8 @@ int bfd_observer(struct xdp_md *ctx)
 		 */
 		if (!asc || (cfg->auth_type && !xdp_auth_fast(cfg)) ||
 		    !xdp_auth_verify(ctx, iph ? BFD_OFF_V4 : BFD_OFF_V6, bfd, cfg, st, asc)) {
-			/* Bad digests are the failure budget's; a forger without the
+			/* Any failed verify (key id, length, replay window or
+			 * digest) is the failure budget's; a forger without the
 			 * key must not spend the peer's verifies.
 			 */
 			if (viv)

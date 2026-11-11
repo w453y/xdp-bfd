@@ -227,22 +227,34 @@ static void loop_gap_record(uint64_t t)
 	prev = t;
 }
 
-/* SESSION_AUTH but no DP_SESSION_AUTH: a bfdd without the key extension. It
- * never heals, so warn after 1s.
+#define AUTH_WARN_NOMSG 1
+#define AUTH_WARN_NOUSE 2
+
+/* SESSION_AUTH but no usable key. No DP_SESSION_AUTH within 1s: a bfdd without
+ * the key extension, which never heals. A message whose keys were all refused:
+ * the key chain holds none we run.
  */
 static void auth_keys_watch(struct session *cs, uint64_t t)
 {
-	if (cs->auth_present && cs->auth_nkeys == 0) {
-		if (!cs->auth_keys_deadline_us)
-			cs->auth_keys_deadline_us = t + 1000000;
-		else if (!cs->auth_nokeys_warned && t >= cs->auth_keys_deadline_us) {
-			log_err("lid=%u: bfdd offloaded an authenticated session but sent no keys within 1s; this bfdd predates the DP_SESSION_AUTH key extension. Upgrade bfdd or keep authenticated sessions off the data plane.\n",
-				cs->lid);
-			cs->auth_nokeys_warned = 1;
-		}
-	} else {
+	if (!cs->auth_present || cs->auth_nkeys) {
 		cs->auth_keys_deadline_us = 0;
 		cs->auth_nokeys_warned = 0;
+		return;
+	}
+	if (cs->auth_keys_seen) {
+		if (cs->auth_nokeys_warned != AUTH_WARN_NOUSE) {
+			log_err("lid=%u: bfdd sent %u key(s) and none is of a type this data plane runs (keyed MD5 is not supported); the session stays down until the key chain has a usable key\n",
+				cs->lid, cs->auth_keys_got);
+			cs->auth_nokeys_warned = AUTH_WARN_NOUSE;
+		}
+		return;
+	}
+	if (!cs->auth_keys_deadline_us) {
+		cs->auth_keys_deadline_us = t + 1000000;
+	} else if (!cs->auth_nokeys_warned && t >= cs->auth_keys_deadline_us) {
+		log_err("lid=%u: bfdd offloaded an authenticated session but sent no keys within 1s; this bfdd predates the DP_SESSION_AUTH key extension. Upgrade bfdd or keep authenticated sessions off the data plane.\n",
+			cs->lid);
+		cs->auth_nokeys_warned = AUTH_WARN_NOMSG;
 	}
 }
 
@@ -387,13 +399,14 @@ int main(int argc, char **argv)
 	/* Before the first pass, so nothing overwrites what the program holds. */
 	if (ktx_reused)
 		ktx_adopt(dp_hold_us);
-	ktx_pin_claim();
-	sd_note("READY=1");
-
 	srandom(getpid() ^ time(NULL));
-
+	/* After the adopt, which it may take over; before the claim, so a
+	 * failure leaves no pid file behind.
+	 */
 	if (o.local && static_session_add(&o))
 		return 1;
+	ktx_pin_claim();
+	sd_note("READY=1");
 	sigprocmask(SIG_UNBLOCK, &startup, NULL);
 
 	for (;;) {

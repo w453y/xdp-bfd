@@ -114,6 +114,25 @@ static void build_v6_exthdr(struct frame *f, uint8_t ext, uint8_t inner, uint16_
 	f->len = sizeof(*eth) + sizeof(*ip6) + 8 + sizeof(*udp) + sizeof(*bfd);
 }
 
+/* A chain of n 8-byte extension headers, ext[0] first, the last before UDP. */
+static void build_v6_chain(struct frame *f, const uint8_t *ext, unsigned int n, uint16_t dport,
+			   const struct bfd_ctrl_pkt *bfd)
+{
+	build_v6_exthdr(f, ext[0], IPPROTO_UDP, dport, bfd);
+
+	struct ipv6hdr *ip6 = (void *)(f->b + sizeof(struct ethhdr));
+	unsigned char *xh = (void *)(ip6 + 1);
+	unsigned int tail = sizeof(struct udphdr) + sizeof(*bfd);
+
+	/* Move UDP and BFD past the added headers. */
+	memmove(xh + 8 * n, xh + 8, tail);
+	memset(xh, 0, 8 * n);
+	for (unsigned int i = 0; i < n; i++)
+		xh[8 * i] = i + 1 < n ? ext[i + 1] : IPPROTO_UDP;
+	ip6->payload_len = htons(8 * n + tail);
+	f->len = sizeof(struct ethhdr) + sizeof(*ip6) + 8 * n + tail;
+}
+
 /* An IPv6 BFD control packet with a chosen hop limit. */
 static void build_v6(struct frame *f, uint8_t hlim, uint16_t dport, const struct bfd_ctrl_pkt *bfd,
 		     unsigned int extra)
@@ -181,7 +200,6 @@ static int v6_udp_csum_ok(const unsigned char *frm, unsigned int len)
 	return sum == 0xffff;
 }
 
-
 static const char *verdict_str(int v)
 {
 	switch (v) {
@@ -233,7 +251,6 @@ static void expect(const char *name, int got, int want)
 	       got < 0 ? "syscall-error" : verdict_str(got));
 	fails++;
 }
-
 
 /* Peer is the frame's source. Backwards gives a silent XDP_PASS. */
 static struct session_key key_v4(const char *peer, const char *local)
@@ -519,7 +536,6 @@ static int sweep_put(const struct session_key *k, const struct session_state *st
 	}
 	return 1;
 }
-
 
 /* CLOCK_MONOTONIC, the clock bpf_ktime_get_ns reads. */
 static __u64 mono_ns(void)

@@ -67,19 +67,10 @@ DerivePointerAlignment: false
 DisableFormat: false
 ExperimentalAutoDetectBinPacking: false
 FixNamespaceComments: false
-# Some taken from:
-#   git grep -h '^#define [^[:space:]]*frr_(each|with)[^[:space:]]*(' ./ \
-#   | sed "s,^#define \([^[:space:]]*frr_(each|with)[^[:space:]]*\)(.*$,  - '\1'," \
-#   | LC_ALL=C sort -u
-# and
-#   git grep -h '^#define [^[:space:]]*FOREACH[^[:space:]]*(' ./
-#   | sed "s,^#define \([^[:space:]]*FOREACH[^)]*\)(.*,  - '\1',"
-#   | LC_ALL=C sort -u
 IncludeBlocks: Preserve
 IncludeCategories:
   - Regex:           '^(<|lib)'
     Priority:        0
-## New: XXX whats it mean?
 IncludeIsMainRegex: '(Test)?$'
 IndentCaseLabels: false
 IndentGotoLabels: false
@@ -91,8 +82,7 @@ JavaScriptWrapImports: true
 KeepEmptyLinesAtTheStartOfBlocks: false
 MacroBlockBegin: ''
 MacroBlockEnd: ''
-## Linux: MaxEmptyLinesToKeep: 1
-MaxEmptyLinesToKeep: 2
+MaxEmptyLinesToKeep: 1
 NamespaceIndentation: None
 ObjCBinPackProtocolList: Auto
 ObjCBlockIndentWidth: 8
@@ -100,8 +90,7 @@ ObjCSpaceAfterProperty: true
 ObjCSpaceBeforeProtocolList: true
 
 ## Lowest Penalty Value wins. Values are used by clang-format to influence
-## the brak decisions, it's a bit of voodoo magic though.
-## Originally from linux which was "Taken from git's rules"
+## the break decisions, it's a bit of voodoo magic though.
 PenaltyBreakAssignment: 30
 PenaltyBreakComment: 10
 PenaltyBreakFirstLessLess: 0

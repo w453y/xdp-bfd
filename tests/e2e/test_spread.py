@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """--spread-pass: traffic that is not BFD still reaches the host, by way of
 the cpumap, and the session it shares the link with stays Up."""
 

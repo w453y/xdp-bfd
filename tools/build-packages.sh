@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
 # Build the .deb, and the .rpm where mock is available, in clean containers.
 # Usage: tools/build-packages.sh [deb|rpm|all]
 set -euo pipefail

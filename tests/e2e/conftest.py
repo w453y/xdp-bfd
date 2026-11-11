@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """End-to-end fixtures. Root: sudo python3 -m pytest tests/e2e"""
 
 import json

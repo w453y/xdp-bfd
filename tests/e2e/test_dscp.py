@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """Every control packet carries CS6, as bfdd marks them: sent by userspace and
 answered by the program alike.
 """

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """Hundreds of sessions through FRR at once: all come up, a few cut are
 detected on time, and the rest never notice.
 

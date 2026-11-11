@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
 # Style checks, as FRR runs them: clang-format and checkpatch on C, black on
 # Python. Exits non-zero on any finding.
 #

@@ -89,12 +89,10 @@ static __always_inline int rx_clocked_tx(struct xdp_md *ctx, struct ethhdr *eth,
 	}
 
 	/* RFC 5883: send at 255, not at the TTL this arrived with. */
-	if (iph && iph->ttl != 255) {
-		/* The v4 checksum is recomputed below. */
+	if (iph && iph->ttl != 255)
 		iph->ttl = 255;
-	} else if (ip6 && ip6->hop_limit != 255) {
+	else if (ip6 && ip6->hop_limit != 255)
 		ip6->hop_limit = 255; /* no checksum in v6 */
-	}
 
 	__be16 in_dport = udp->dest;
 

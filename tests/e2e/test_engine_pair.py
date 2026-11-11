@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """Two engines facing each other, both answering in XDP. Each answers the
 other's packets at once, so without the TX turn they bounce every packet:
 each side sees the other's answers too fast and drops them. With it, every

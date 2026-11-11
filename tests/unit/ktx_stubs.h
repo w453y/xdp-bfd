@@ -50,15 +50,17 @@ void ktx_mirror(struct session *s)
 {
 	(void)s;
 }
-void ktx_poll_map(struct session *s, uint64_t t)
-{
-	(void)s;
-	(void)t;
-}
 /* No program, no sweep, no ring; fsm_detect keeps the whole budget. */
 int ktx_events_fd(void)
 {
 	return -1;
+}
+int ktx_sweep_ok(void)
+{
+	return 1;
+}
+void ktx_sweep_refresh(void)
+{
 }
 /* No map: userspace's counts are all of them. */
 void ktx_session_counters(const struct session *s, uint64_t *rx, uint64_t *tx)

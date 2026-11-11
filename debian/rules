@@ -1,9 +1,6 @@
 #!/usr/bin/make -f
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
-# The newest versioned clang present; the floor is 17.
-CLANG := $(shell command -v clang-21 || command -v clang-20 || command -v clang-19 || command -v clang-18 || command -v clang-17 || command -v clang)
-
 # Version for --version: the changelog version without the Debian revision.
 DEB_VERSION := $(shell dpkg-parsechangelog -SVersion)
 VERSION := $(shell echo '$(DEB_VERSION)' | sed 's/-[^-]*$$//')
@@ -12,13 +9,13 @@ VERSION := $(shell echo '$(DEB_VERSION)' | sed 's/-[^-]*$$//')
 	dh $@
 
 override_dh_auto_build:
-	$(MAKE) CLANG=$(CLANG) VERSION=$(VERSION)
+	$(MAKE) VERSION=$(VERSION)
 
 override_dh_auto_test:
-	$(MAKE) check-host CLANG=$(CLANG)
+	$(MAKE) check-host
 
 override_dh_auto_install:
-	$(MAKE) install DESTDIR=debian/xdp-bfd CLANG=$(CLANG) VERSION=$(VERSION)
+	$(MAKE) install DESTDIR=debian/xdp-bfd VERSION=$(VERSION)
 
 # postinst reloads a running engine on upgrade (after-upgrade), which a stop in
 # preinst would turn into a restart the peers see.

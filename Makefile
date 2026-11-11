@@ -1,4 +1,7 @@
-CLANG     ?= clang
+# The newest versioned clang present; the floor is 17.
+NEWEST_CLANG := $(firstword $(foreach v,21 20 19 18 17,\
+			$(shell command -v clang-$v 2>/dev/null)) clang)
+CLANG     ?= $(NEWEST_CLANG)
 CC        ?= gcc
 WERROR    ?= -Werror
 # CFLAGS takes a distro's codegen and hardening flags; ours are in XDP_CFLAGS.
@@ -25,10 +28,7 @@ XDP_CFLAGS += -DBFD_XDP_OBJDIR='"$(LIBDIR)"' -DBFD_XDP_VERSION='"$(VERSION)"'
 
 SHARED_HDRS := $(wildcard include/*.h)
 
-ENGINE_OBJS := src/engine/log.o src/engine/main.o src/engine/session.o src/engine/dplane.o src/engine/ktx.o src/engine/echo_tx.o src/engine/fsm.o src/engine/stats.o src/engine/rx.o src/engine/ktx_cfg.o \
-	       src/engine/opts.o src/engine/sock.o src/engine/static.o \
-	       src/engine/dplane_conn.o src/engine/ktx_load.o src/engine/ktx_pin.o src/engine/notify.o \
-	       src/engine/ktx_adopt.o src/engine/sched_dl.o
+ENGINE_OBJS := $(patsubst %.c,%.o,$(wildcard src/engine/*.c))
 
 all: abi-check bfd_xdp.o bfd_loader bfd_tx
 

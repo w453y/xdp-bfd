@@ -387,13 +387,14 @@ int main(int argc, char **argv)
 	/* Before the first pass, so nothing overwrites what the program holds. */
 	if (ktx_reused)
 		ktx_adopt(dp_hold_us);
-	ktx_pin_claim();
-	sd_note("READY=1");
-
 	srandom(getpid() ^ time(NULL));
-
+	/* After the adopt, which it may take over; before the claim, so a
+	 * failure leaves no pid file behind.
+	 */
 	if (o.local && static_session_add(&o))
 		return 1;
+	ktx_pin_claim();
+	sd_note("READY=1");
 	sigprocmask(SIG_UNBLOCK, &startup, NULL);
 
 	for (;;) {

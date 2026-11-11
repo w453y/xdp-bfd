@@ -50,6 +50,7 @@ int sess_fd = -1, echo_peers_fd = -1;
 int echo_disc_fd = -1;
 int disc_fd = -1;
 int stats_fd = -1;
+int sweep_fd = -1;
 int ktx_flags_fd = -1;
 static struct bpf_object *bpf_obj;
 
@@ -323,6 +324,7 @@ int ktx_load(void)
 	disc_fd = bpf_object__find_map_fd_by_name(bpf_obj, "our_discs");
 	ktx_flags_fd = bpf_object__find_map_fd_by_name(bpf_obj, "prog_flags");
 	stats_fd = bpf_object__find_map_fd_by_name(bpf_obj, "bfd_stats");
+	sweep_fd = bpf_object__find_map_fd_by_name(bpf_obj, "sweep_map");
 
 	/* Optional: fsm_detect covers detection without it. */
 	ktx_events_init(bpf_object__find_map_fd_by_name(bpf_obj, "bfd_events"),

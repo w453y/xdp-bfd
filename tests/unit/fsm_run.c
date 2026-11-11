@@ -52,6 +52,14 @@ int ktx_events_fd(void)
 	return stub_events_fd;
 }
 
+/* The sweep armed unless a case says it did not. */
+static int stub_sweep_ok = 1;
+
+int ktx_sweep_ok(void)
+{
+	return stub_sweep_ok;
+}
+
 static int notify_calls;
 
 void dp_notify_state(struct session *s)
@@ -105,6 +113,7 @@ int main(void)
 	case_detect_negative();
 	case_detect_guards();
 	case_backstop_needs_kernel_sight();
+	case_backstop_needs_armed_sweep();
 
 	case_jitter(3, 75, 100, "jitter-mult3-75-100pct");
 	case_jitter(1, 75, 90, "jitter-mult1-75-90pct");

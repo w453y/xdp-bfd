@@ -325,9 +325,10 @@ void fsm_detect(struct session *s, uint64_t t)
 
 	/* The sweep detects what the kernel sees; for those this is a backstop
 	 * at twice the budget. A session whose packets bypass the program, such
-	 * as multihop arriving elsewhere, keeps the plain budget.
+	 * as multihop arriving elsewhere, keeps the plain budget, as does every
+	 * session when the sweep never armed.
 	 */
-	if (use_ktx && ktx_events_fd() >= 0 && s->ktx_seen_us &&
+	if (use_ktx && ktx_events_fd() >= 0 && ktx_sweep_ok() && s->ktx_seen_us &&
 	    s->last_rx_us <= s->ktx_seen_us + iv)
 		budget *= 2;
 
@@ -341,7 +342,8 @@ void fsm_detect(struct session *s, uint64_t t)
 			return;
 		sd = t > s->last_rx_us ? (int64_t)(t - s->last_rx_us) : 0;
 		budget = (uint64_t)mult * iv;
-		if (ktx_events_fd() >= 0 && s->ktx_seen_us && s->last_rx_us <= s->ktx_seen_us + iv)
+		if (ktx_events_fd() >= 0 && ktx_sweep_ok() && s->ktx_seen_us &&
+		    s->last_rx_us <= s->ktx_seen_us + iv)
 			budget *= 2;
 	}
 	if ((uint64_t)sd > budget) {

@@ -158,3 +158,42 @@ static void case_backstop_needs_kernel_sight(void)
 	stub_events_fd = -1;
 	report("backstop-needs-kernel-sight", bad, "plain budget when the kernel is blind");
 }
+
+/* The doubled budget also assumes the sweep armed. When the program reports
+ * it did not, a session the kernel sees goes Down at the plain budget.
+ */
+static void case_backstop_needs_armed_sweep(void)
+{
+	struct session *s;
+	int bad = 0;
+
+	use_ktx = 1;
+	stub_events_fd = 3;
+
+	stub_sweep_ok = 0;
+	s = sess_init(ST_UP);
+	s->ktx_seen_us = s->last_rx_us;
+	fsm_detect(s, s->last_rx_us + 40000);
+	if (s->state != ST_DOWN) {
+		printf("     sweep not armed, still %s past the 30ms budget\n", st_name(s->state));
+		bad = 1;
+	}
+
+	stub_sweep_ok = 1;
+	s = sess_init(ST_UP);
+	s->ktx_seen_us = s->last_rx_us;
+	fsm_detect(s, s->last_rx_us + 40000);
+	if (s->state != ST_UP) {
+		printf("     sweep armed, but %s within twice the budget\n", st_name(s->state));
+		bad = 1;
+	}
+	fsm_detect(s, s->last_rx_us + 70000);
+	if (s->state != ST_DOWN) {
+		printf("     sweep armed, still %s past twice the budget\n", st_name(s->state));
+		bad = 1;
+	}
+
+	use_ktx = 0;
+	stub_events_fd = -1;
+	report("backstop-needs-armed-sweep", bad, "plain budget when the sweep never armed");
+}

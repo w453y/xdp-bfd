@@ -449,16 +449,70 @@ static uint64_t ktx_stat_total(__u32 idx)
 	return tot;
 }
 
+/* sweep_map's value, laid out as in src/xdp/maps.h. */
+struct ktx_sweep {
+	struct bpf_timer timer;
+	__u64 inited;
+	__s32 init_err;
+};
+
+static int sweep_broken;
+
+/* fsm_detect leaves a kernel-covered session to the sweep only while this
+ * holds.
+ */
+int ktx_sweep_ok(void)
+{
+	return !sweep_broken;
+}
+
+/* The program records a failed arm and carries on with no sweep. A value of
+ * another size is another layout, not a failure.
+ */
+static void ktx_sweep_check(void)
+{
+	static int layout = -1; /* unchecked */
+	struct ktx_sweep v;
+	__u32 zero = 0;
+
+	if (sweep_fd < 0)
+		return;
+	if (layout < 0) {
+		struct bpf_map_info info = {};
+		__u32 len = sizeof(info);
+
+		layout = !bpf_obj_get_info_by_fd(sweep_fd, &info, &len) &&
+			 info.value_size == sizeof(v);
+		if (!layout)
+			log_err("kernel-tx: sweep_map value is not %zu bytes, sweep arming not checked\n",
+				sizeof(v));
+	}
+	if (!layout || bpf_map_lookup_elem(sweep_fd, &zero, &v))
+		return;
+	if (v.init_err && !sweep_broken) {
+		sweep_broken = 1;
+		log_err("kernel-tx: the detection sweep did not arm (errno %d); detection runs in the loop at its full budget\n",
+			-v.init_err);
+	} else if (!v.init_err && sweep_broken) {
+		sweep_broken = 0;
+		log_info("kernel-tx: the detection sweep is back, the loop is its backstop\n");
+	}
+}
+
 /* The whole map each second, and whenever the change ring overflowed; each
- * pass without the ring.
+ * pass without the ring. The sweep's health each second.
  */
 void ktx_sync_due(uint64_t t)
 {
-	static uint64_t last_us, lost_seen;
+	static uint64_t last_us, lost_seen, sweep_us;
 	uint64_t lost;
 
 	if (!use_ktx)
 		return;
+	if (!sweep_us || t - sweep_us >= 1000000) {
+		sweep_us = t;
+		ktx_sweep_check();
+	}
 	for (int k = 0; k < ndirty; k++) {
 		struct session *s = &sessions[dirty[k]];
 

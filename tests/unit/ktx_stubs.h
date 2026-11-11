@@ -60,6 +60,10 @@ int ktx_events_fd(void)
 {
 	return -1;
 }
+int ktx_sweep_ok(void)
+{
+	return 1;
+}
 /* No map: userspace's counts are all of them. */
 void ktx_session_counters(const struct session *s, uint64_t *rx, uint64_t *tx)
 {

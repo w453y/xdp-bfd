@@ -17,7 +17,6 @@
 
 #include "report.h"
 
-
 static struct session table[BFD_MAX_SESSIONS];
 struct session *sessions = table;
 int sess_max = BFD_MAX_SESSIONS;
@@ -67,7 +66,6 @@ void dp_notify_state(struct session *s)
 	(void)s;
 	notify_calls++;
 }
-
 
 #include "fsm/harness.c"
 #include "fsm/t_rx.c"

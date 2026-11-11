@@ -50,11 +50,6 @@ void ktx_mirror(struct session *s)
 {
 	(void)s;
 }
-void ktx_poll_map(struct session *s, uint64_t t)
-{
-	(void)s;
-	(void)t;
-}
 /* No program, no sweep, no ring; fsm_detect keeps the whole budget. */
 int ktx_events_fd(void)
 {

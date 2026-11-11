@@ -129,7 +129,6 @@ void ktx_drain_events(void)
 		ring_buffer__consume(sweep_rb);
 }
 
-
 void ktx_poll_all(void)
 {
 	poll_n = 0;
@@ -284,7 +283,6 @@ void ktx_clear(struct session *s)
 	s->min_ttl = 0;
 	ktx_update_mhop_flag();
 }
-
 
 /* 0 if unavailable. */
 void ktx_session_counters(const struct session *s, uint64_t *rx, uint64_t *tx)

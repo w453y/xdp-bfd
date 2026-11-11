@@ -79,6 +79,8 @@ void ktx_sync_all(uint64_t t);
 void ktx_sync_due(uint64_t t);
 /* 0 once the program reports its detection sweep never armed. */
 int ktx_sweep_ok(void);
+/* Reads the sweep's state from the map into ktx_sweep_ok. */
+void ktx_sweep_refresh(void);
 void ktx_session_counters(const struct session *s, uint64_t *rx, uint64_t *tx);
 
 /* ktx_cfg.c */

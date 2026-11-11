@@ -59,6 +59,15 @@ int ktx_sweep_ok(void)
 	return stub_sweep_ok;
 }
 
+/* What the map read finds; -1 leaves stub_sweep_ok as it is. */
+static int stub_sweep_next = -1;
+
+void ktx_sweep_refresh(void)
+{
+	if (stub_sweep_next >= 0)
+		stub_sweep_ok = stub_sweep_next;
+}
+
 static int notify_calls;
 
 void dp_notify_state(struct session *s)

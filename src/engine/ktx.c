@@ -467,7 +467,7 @@ int ktx_sweep_ok(void)
 /* The program records a failed arm and carries on with no sweep. A value of
  * another size is another layout, not a failure.
  */
-static void ktx_sweep_check(void)
+void ktx_sweep_refresh(void)
 {
 	static int layout = -1; /* unchecked */
 	struct ktx_sweep v;
@@ -509,7 +509,7 @@ void ktx_sync_due(uint64_t t)
 		return;
 	if (!sweep_us || t - sweep_us >= 1000000) {
 		sweep_us = t;
-		ktx_sweep_check();
+		ktx_sweep_refresh();
 	}
 	for (int k = 0; k < ndirty; k++) {
 		struct session *s = &sessions[dirty[k]];

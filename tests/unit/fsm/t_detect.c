@@ -193,6 +193,19 @@ static void case_backstop_needs_armed_sweep(void)
 		bad = 1;
 	}
 
+	/* The last poll said armed; the read at detection finds it did not. */
+	stub_sweep_next = 0;
+	s = sess_init(ST_UP);
+	s->ktx_seen_us = s->last_rx_us;
+	fsm_detect(s, s->last_rx_us + 40000);
+	if (s->state != ST_DOWN) {
+		printf("     sweep failed since the poll, still %s past the 30ms budget\n",
+		       st_name(s->state));
+		bad = 1;
+	}
+	stub_sweep_ok = 1;
+	stub_sweep_next = -1;
+
 	use_ktx = 0;
 	stub_events_fd = -1;
 	report("backstop-needs-armed-sweep", bad, "plain budget when the sweep never armed");

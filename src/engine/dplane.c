@@ -43,6 +43,32 @@ static uint32_t rflags_from_wire(uint8_t wire)
 	return r;
 }
 
+/* Sessions with notify_pending set, so the flush skips the table walk while
+ * there are none. A table cleared behind our back leaves it high; the walk
+ * recounts.
+ */
+static int notify_pending_n;
+
+static void notify_pending_set(struct session *s, uint8_t v)
+{
+	if (v && !s->notify_pending)
+		notify_pending_n++;
+	else if (!v && s->notify_pending && notify_pending_n > 0)
+		notify_pending_n--;
+	s->notify_pending = v;
+}
+
+int dp_notify_pending_count(void)
+{
+	return notify_pending_n;
+}
+
+/* Frees the slot. */
+static void sess_zero(struct session *s)
+{
+	notify_pending_set(s, 0);
+	memset(s, 0, sizeof(*s));
+}
 
 static void dp_sessions_teardown(const char *why)
 {
@@ -52,7 +78,7 @@ static void dp_sessions_teardown(const char *why)
 		if (sessions[i].used) {
 			fsm_announce_down(&sessions[i]);
 			ktx_clear(&sessions[i]);
-			memset(&sessions[i], 0, sizeof(sessions[i]));
+			sess_zero(&sessions[i]);
 			n++;
 		}
 	if (n)
@@ -64,7 +90,7 @@ void sess_teardown_one(struct session *s, const char *why)
 	log_info("dplane: lid=%u %s - torn down\n", s->lid, why);
 	fsm_announce_down(s);
 	ktx_clear(s);
-	memset(s, 0, sizeof(*s));
+	sess_zero(s);
 }
 
 /* Connection lost: with --dp-hold, keep sessions as orphans for bfdd to
@@ -113,7 +139,7 @@ void dp_notify_state(struct session *s)
 
 	/* Held for bfdd's return, which dp_notify_flush_pending serves. */
 	if (!dp_connected()) {
-		s->notify_pending = 1;
+		notify_pending_set(s, 1);
 		return;
 	}
 
@@ -136,21 +162,26 @@ void dp_notify_state(struct session *s)
 	 * replies, which bfdd waits on and which cannot be deferred.
 	 */
 	if (sizeof(m) + DP_REPLY_ROOM > dp_out_room()) {
-		s->notify_pending = 1;
+		notify_pending_set(s, 1);
 		return;
 	}
-	s->notify_pending = 0;
+	notify_pending_set(s, 0);
 	dp_send(&m, sizeof(m));
 }
 
 /* Called after dp_flush. */
 void dp_notify_flush_pending(void)
 {
-	if (!dp_connected())
+	int n = 0;
+
+	if (!notify_pending_n || !dp_connected())
 		return;
 	for (int i = 0; i < sess_max; i++)
-		if (sessions[i].used && sessions[i].notify_pending)
+		if (sessions[i].used && sessions[i].notify_pending) {
 			dp_notify_state(&sessions[i]);
+			n += sessions[i].notify_pending;
+		}
+	notify_pending_n = n;
 }
 
 /* bfdd sends 0.0.0.0 or :: without a local-address, but the fast path keys on
@@ -270,7 +301,7 @@ static struct session *dp_add_find(uint32_t lid, const struct bfddp_session_msg 
 			dp_notify_state(stale);
 		}
 		ktx_clear(stale);
-		memset(stale, 0, sizeof(*stale));
+		sess_zero(stale);
 	}
 	s = sess_alloc();
 	if (!s) {
@@ -475,7 +506,7 @@ static void dp_handle_delete(const struct bfddp_session_msg *sm)
 	log_info("dplane: DELETE session lid=%u\n", s->lid);
 	fsm_announce_down(s);
 	ktx_clear(s);
-	memset(s, 0, sizeof(*s));
+	sess_zero(s);
 }
 
 static void dp_handle_echo_req(const struct bfddp_message_header *h, const struct bfddp_echo *e)

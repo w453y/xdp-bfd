@@ -15,6 +15,8 @@ extern uint64_t dp_reconcile_us;
 
 void dp_notify_state(struct session *s);
 void dp_notify_flush_pending(void);
+/* Sessions waiting on dp_notify_flush_pending; may run high, never low. */
+int dp_notify_pending_count(void);
 void sess_teardown_one(struct session *s, const char *why);
 void dp_reresolve_wildcard(struct session *s, uint64_t now);
 /* Header included. */

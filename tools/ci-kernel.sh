@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
 # Fetch a distro kernel for ci.yml's kernel job and print the image path for
 # vng -r. Its modules go under /usr/lib/modules, where vng finds 9p; the image
 # stays out of /boot, so the runner's bootloader never sees it.

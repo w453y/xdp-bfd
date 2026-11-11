@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """The engine refuses a kernel object built against another ABI and accepts its
 own; two structs' BTF depends on the witness in maps.h.
 """

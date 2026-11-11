@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """--max-sessions sizes the table, the program's maps and the source-port
 block, which is the top of the range.
 """

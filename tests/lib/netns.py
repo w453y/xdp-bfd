@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """Namespace fixture for netns_userspace.py and the e2e suite."""
 
 import json

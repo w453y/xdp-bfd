@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """RFC 5881 s4: one source port per session, in 49152-65535, from both planes,
 even when the session's own port is taken.
 """

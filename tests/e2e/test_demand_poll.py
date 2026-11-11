@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """RFC 5880 s6.6: detection is held while demanding, so the periodic Poll is what
 takes the session down when the peer vanishes; with --demand-poll-us 0 nothing
 does.

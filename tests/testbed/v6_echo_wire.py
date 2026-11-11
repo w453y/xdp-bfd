@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0
 """The IPv6 echo originator, end to end on the wire.
 
 A self-addressed v6 echo returns at hop limit 254 when the neighbour has

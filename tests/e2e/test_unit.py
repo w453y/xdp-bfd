@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """The packaged unit, run for real: its user, its bpffs mount, and a
 systemctl reload the peer does not notice. The unit is generated from
 packaging/xdp-bfd.service, changed only where a test must be.

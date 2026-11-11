@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """The dead-man gate. Engine A is SIGSTOPped: armed, XDP stops answering and B
 times out; disarmed (--deadman-us 0), B stays Up, so it is the gate that takes
 B down.

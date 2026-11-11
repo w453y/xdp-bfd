@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """Fixture self-test: two static engines reach Up over the veth pair."""
 
 import time

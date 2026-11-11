@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """Against stock bfdd. Needs a container runtime and an FRR image.
 
     container A                         container B

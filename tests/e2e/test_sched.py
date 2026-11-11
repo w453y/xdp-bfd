@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 """--sched-deadline outside the unit. Taken, the loop runs SCHED_DEADLINE and
 CAP_SYS_NICE is gone; refused, here for want of CAP_SYS_NICE, the engine says
 so and runs on its inherited policy.

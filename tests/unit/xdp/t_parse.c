@@ -40,7 +40,6 @@ static void case_deferred_gtsm(void)
 	expect("deferred-gtsm-flag-clear-drops", run_frame(&f, NULL, NULL), XDP_DROP);
 }
 
-
 /* Nothing to do with BFD. The program must not claim it. */
 static void case_not_bfd(void)
 {

@@ -181,7 +181,6 @@ static int v6_udp_csum_ok(const unsigned char *frm, unsigned int len)
 	return sum == 0xffff;
 }
 
-
 static const char *verdict_str(int v)
 {
 	switch (v) {
@@ -233,7 +232,6 @@ static void expect(const char *name, int got, int want)
 	       got < 0 ? "syscall-error" : verdict_str(got));
 	fails++;
 }
-
 
 /* Peer is the frame's source. Backwards gives a silent XDP_PASS. */
 static struct session_key key_v4(const char *peer, const char *local)
@@ -519,7 +517,6 @@ static int sweep_put(const struct session_key *k, const struct session_state *st
 	}
 	return 1;
 }
-
 
 /* CLOCK_MONOTONIC, the clock bpf_ktime_get_ns reads. */
 static __u64 mono_ns(void)

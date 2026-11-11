@@ -30,7 +30,6 @@ static struct bpf_object *obj;
 static int prog_fd = -1;
 static int fails;
 
-
 /* Room for the trailing bytes some cases append. */
 #define FRAME_MAX 256
 
@@ -38,7 +37,6 @@ struct frame {
 	unsigned char b[FRAME_MAX];
 	unsigned int len;
 };
-
 
 static int cfg_fd = -1, sess_fd = -1, stats_fd = -1;
 static int tune_fd = -1, hb_fd = -1;

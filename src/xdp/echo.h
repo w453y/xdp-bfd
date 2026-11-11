@@ -5,7 +5,6 @@
 
 #include "parse.h"
 
-/* Reflect a v4 echo, or consume our own coming back. */
 /* Racy across CPUs, which at worst lets a few more through. */
 static __always_inline int echo_budget(struct echo_peer *ep)
 {
@@ -21,6 +20,7 @@ static __always_inline int echo_budget(struct echo_peer *ep)
 	return 1;
 }
 
+/* Reflect a v4 echo, or consume our own coming back. */
 static __always_inline int echo_reflect_v4(struct ethhdr *eth, struct iphdr *iph,
 					   struct udphdr *udp, void *data_end)
 {
